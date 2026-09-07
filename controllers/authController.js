@@ -70,6 +70,20 @@ export const login = async (req, res) => {
         const isExpired =
           org.subscriptionEndDate && new Date(org.subscriptionEndDate) < now;
 
+        if (isExpired) {
+          return res.status(403).json({
+            success: false,
+            subscriptionExpired: true,
+            message: `Your organization's subscription (${org.name}) expired on ${new Date(
+              org.subscriptionEndDate
+            ).toLocaleDateString("en-IN", {
+              day: "2-digit",
+              month: "short",
+              year: "numeric",
+            })}. Please contact administrator to renew.`,
+          });
+        }
+
         // Fetch current live seats used in tenant
         let usedSeats = 0;
         try {

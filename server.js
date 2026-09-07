@@ -6,7 +6,10 @@ import path from "path";
 import { fileURLToPath } from "url";
 import dns from "dns";
 import connectDB from "./configs/db.js";
-import { tenantMiddleware } from "./middleware/tenantMiddleware.js";
+import {
+  tenantMiddleware,
+  checkSubscriptionActive,
+} from "./middleware/tenantMiddleware.js";
 
 // Route Imports
 import authRoutes from "./routes/authRoutes.js";
@@ -60,6 +63,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Attach tenant-scoped database models and organization metadata
 app.use(tenantMiddleware);
+app.use(checkSubscriptionActive);
 
 // Serve static uploads
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));

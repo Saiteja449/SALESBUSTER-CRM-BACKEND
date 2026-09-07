@@ -52,11 +52,15 @@ export const sendTenantWelcomeEmail = async ({
 
   const formattedStartDate = formatDate(organization.subscriptionStartDate);
   const formattedEndDate = formatDate(organization.subscriptionEndDate);
-  const formattedAmount = organization.amountPaid != null ? `₹${Number(organization.amountPaid).toLocaleString("en-IN")}` : "Paid";
+  const formattedAmount =
+    organization.amountPaid != null
+      ? `₹${Number(organization.amountPaid).toLocaleString("en-IN")}`
+      : "Paid";
   const rawPlan = organization.subscriptionPlan || "monthly";
   const formattedPlan = rawPlan.charAt(0).toUpperCase() + rawPlan.slice(1);
 
-  const appLoginUrl = loginUrl || process.env.FRONTEND_URL || "http://localhost:5173/login";
+  const appLoginUrl =
+    loginUrl || process.env.FRONTEND_URL || "http://localhost:5173/login";
 
   const htmlMessage = `
 <!DOCTYPE html>
@@ -122,9 +126,7 @@ export const sendTenantWelcomeEmail = async ({
           </div>
         </div>
 
-        <p style="margin: 0; font-size: 12px; color: #b45309;">
-          ⚠️ <strong>Security Notice:</strong> For security reasons, please change your password immediately after logging into your dashboard.
-        </p>
+       
       </div>
 
       <!-- Action Button -->

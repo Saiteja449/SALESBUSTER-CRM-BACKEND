@@ -9,8 +9,19 @@ export const protect = async (req, res, next) => {
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
   ) {
+    token = req.headers.authorization.split(" ")[1];
+  } else if (req.headers["x-access-token"]) {
+    token = req.headers["x-access-token"];
+  } else if (
+    req.headers["x-admin-key"] &&
+    (req.headers["x-admin-key"].startsWith("ey") ||
+      req.headers["x-admin-key"].startsWith("Bearer "))
+  ) {
+    token = req.headers["x-admin-key"].replace(/^Bearer\s+/i, "").trim();
+  }
+
+  if (token) {
     try {
-      token = req.headers.authorization.split(" ")[1];
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
@@ -56,11 +67,61 @@ export const protect = async (req, res, next) => {
         return res.status(401).json({ success: false, message: "Not authorized, user not found" });
       }
 
+      // Check if individual user account is deactivated
+      if (user.status === "inactive") {
+        return res.status(403).json({
+          success: false,
+          accountSuspended: true,
+          message: "Your user account is deactivated. Please contact your administrator.",
+        });
+      }
+
       req.user = user;
       req.user.role = decoded.role || user.role;
       req.user.tenantDbName = tenantDbName;
-      req.user.organizationId = decoded.organizationId;
+      req.user.organizationId = decoded.organizationId || user.organizationId;
       req.user.isOrgOwner = decoded.isOrgOwner || user.isOrgOwner;
+
+      // Super admin is exempt from tenant organization suspension checks
+      if (req.user.role !== "super_admin") {
+        // Ensure organization is loaded
+        if (!req.organization && req.user.organizationId) {
+          try {
+            const { Organization } = getMasterModels();
+            req.organization = await Organization.findById(req.user.organizationId);
+          } catch (orgErr) {
+            console.error("Error loading organization in protect:", orgErr);
+          }
+        }
+
+        if (req.organization) {
+          if (req.organization.status === "inactive" || req.organization.status === "suspended") {
+            return res.status(403).json({
+              success: false,
+              accountSuspended: true,
+              organizationStatus: req.organization.status,
+              message: `Your organization workspace (${req.organization.name || "account"}) is currently ${req.organization.status}. Please contact SalesBuster administrator.`,
+            });
+          }
+
+          if (req.organization.subscriptionEndDate) {
+            const isExpired = new Date() > new Date(req.organization.subscriptionEndDate);
+            if (isExpired) {
+              return res.status(403).json({
+                success: false,
+                subscriptionExpired: true,
+                message: `Your organization's subscription expired on ${new Date(
+                  req.organization.subscriptionEndDate
+                ).toLocaleDateString("en-IN", {
+                  day: "2-digit",
+                  month: "short",
+                  year: "numeric",
+                })}. Please contact SalesBuster administrator to renew.`,
+              });
+            }
+          }
+        }
+      }
 
       return next();
     } catch (error) {
@@ -83,6 +144,7 @@ export const protect = async (req, res, next) => {
  * Also supports x-admin-key header for backward-compatible server-to-server operations.
  */
 export const verifySuperAdmin = async (req, res, next) => {
+  
   const adminApiKey = req.headers["x-admin-key"];
   const validApiKey =
     process.env.ADMIN_API_KEY || "salesbuster_super_admin_secret_key_2026";
@@ -96,6 +158,8 @@ export const verifySuperAdmin = async (req, res, next) => {
     token = req.headers.authorization.split(" ")[1];
   } else if (req.headers["x-access-token"]) {
     token = req.headers["x-access-token"];
+  } else if (adminApiKey && (adminApiKey.startsWith("ey") || adminApiKey.startsWith("Bearer "))) {
+    token = adminApiKey.replace(/^Bearer\s+/i, "").trim();
   }
 
   // If token is provided, verify it strictly

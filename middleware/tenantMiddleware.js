@@ -54,6 +54,16 @@ export const tenantMiddleware = async (req, res, next) => {
       } catch (orgErr) {
         console.error("Error loading organization in tenantMiddleware:", orgErr);
       }
+    } else if (tenantDbName) {
+      try {
+        const { Organization } = getMasterModels();
+        const org = await Organization.findOne({ tenantDbName });
+        if (org) {
+          req.organization = org;
+        }
+      } catch (orgErr) {
+        console.error("Error loading organization by tenantDbName in tenantMiddleware:", orgErr);
+      }
     }
 
     next();
@@ -67,12 +77,43 @@ export const tenantMiddleware = async (req, res, next) => {
  * Middleware to check if organization subscription is active
  */
 export const checkSubscriptionActive = (req, res, next) => {
+  // 1. Bypass Super Admin (via role, token data, or admin API key)
+  if (req.user?.role === "super_admin" || req.userTokenData?.role === "super_admin") {
+    return next();
+  }
+
+  const adminApiKey = req.headers["x-admin-key"];
+  const validApiKey =
+    process.env.ADMIN_API_KEY || "salesbuster_super_admin_secret_key_2026";
+  if (adminApiKey && adminApiKey === validApiKey) {
+    return next();
+  }
+
+  // 2. Bypass public authentication routes and health checks
+  const path = req.path || req.originalUrl || "";
+  if (
+    path.startsWith("/api/auth/login") ||
+    path.startsWith("/api/auth/forgot-password") ||
+    path.startsWith("/api/auth/reset-password") ||
+    path === "/" ||
+    path === "/health"
+  ) {
+    return next();
+  }
+
+  // 3. Bypass Super Admin organization management endpoints
+  if (path.startsWith("/api/organizations") && !path.startsWith("/api/organizations/my-org")) {
+    return next();
+  }
+
+  // 4. Check organization status if attached
   if (req.organization) {
     if (req.organization.status === "inactive" || req.organization.status === "suspended") {
       return res.status(403).json({
         success: false,
         accountSuspended: true,
-        message: "Your organization account is currently inactive or suspended. Please contact SalesBuster administrator.",
+        organizationStatus: req.organization.status,
+        message: `Your organization workspace (${req.organization.name || "account"}) is currently ${req.organization.status}. Please contact SalesBuster administrator.`,
       });
     }
 

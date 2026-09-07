@@ -509,6 +509,7 @@ export const renewSubscription = async (req, res) => {
 export const toggleStatus = async (req, res) => {
   try {
     const { status } = req.body;
+    
 
     if (!["active", "inactive", "suspended"].includes(status)) {
       return res.status(400).json({
@@ -535,6 +536,19 @@ export const toggleStatus = async (req, res) => {
       { organizationId: org._id },
       { status: status === "active" ? "active" : "inactive" }
     );
+
+    // Also sync status to tenant database User collection
+    try {
+      if (org.tenantDbName) {
+        const tenantModels = getTenantModels(org.tenantDbName);
+        await tenantModels.User.updateMany(
+          {},
+          { status: status === "active" ? "active" : "inactive" }
+        );
+      }
+    } catch (tenantUserErr) {
+      console.error("Error updating tenant users status:", tenantUserErr);
+    }
 
     const io = getIO();
     if (io) {
