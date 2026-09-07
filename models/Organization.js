@@ -1,5 +1,74 @@
 import mongoose from "mongoose";
 
+// Formal Sub-Schema for Organization Services Catalog
+export const serviceSubSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: [true, "Service name is required"],
+      trim: true,
+    },
+    description: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    keywords: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
+    category: {
+      type: String,
+      default: "General",
+      trim: true,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+  },
+  { _id: true }
+);
+
+// Formal Sub-Schema for Lead Qualification Fields / Questions
+export const qualificationFieldSubSchema = new mongoose.Schema(
+  {
+    key: {
+      type: String,
+      required: [true, "Field key is required"],
+      trim: true,
+    },
+    label: {
+      type: String,
+      required: [true, "Field label is required"],
+      trim: true,
+    },
+    type: {
+      type: String,
+      enum: ["string", "number", "boolean", "select"],
+      default: "string",
+    },
+    description: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    options: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
+    required: {
+      type: Boolean,
+      default: false,
+    },
+  },
+  { _id: true }
+);
+
 const organizationSchema = new mongoose.Schema(
   {
     name: {
@@ -86,6 +155,15 @@ const organizationSchema = new mongoose.Schema(
       default: "",
     },
     aiSettings: {
+      isAiConfigured: {
+        type: Boolean,
+        default: false,
+        index: true,
+      },
+      aiSetupCompletedAt: {
+        type: Date,
+        default: null,
+      },
       companyName: {
         type: String,
         default: "",
@@ -106,27 +184,8 @@ const organizationSchema = new mongoose.Schema(
         default: "",
         trim: true,
       },
-      services: [
-        {
-          name: { type: String, required: true, trim: true },
-          description: { type: String, default: "", trim: true },
-          keywords: [{ type: String, trim: true }],
-        },
-      ],
-      qualificationFields: [
-        {
-          key: { type: String, required: true, trim: true },
-          label: { type: String, required: true, trim: true },
-          type: {
-            type: String,
-            enum: ["string", "number", "boolean", "select"],
-            default: "string",
-          },
-          description: { type: String, default: "", trim: true },
-          options: [{ type: String, trim: true }],
-          required: { type: Boolean, default: false },
-        },
-      ],
+      services: [serviceSubSchema],
+      qualificationFields: [qualificationFieldSubSchema],
       qdrantCollection: {
         type: String,
         default: "",
@@ -280,10 +339,14 @@ export const getDefaultAISettings = (orgName = "") => {
         },
       ],
       knowledgeDocs: [],
+      isAiConfigured: true,
+      aiSetupCompletedAt: new Date("2024-01-01"),
     };
   }
 
   return {
+    isAiConfigured: false,
+    aiSetupCompletedAt: null,
     companyName: orgName || "Our Company",
     businessDescription: `${orgName || "Our company"} provides premium quality products, consultations, and professional services tailored to our clients' needs.`,
     agentPersona: "friendly, professional sales representative",

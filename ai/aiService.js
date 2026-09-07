@@ -431,6 +431,19 @@ export const generateAIResponse = async (
     const organization = await resolveOrganization(organizationContext, tenantModels);
     const defaults = getDefaultAISettings(organization?.name || "");
 
+    // Check if AI setup has been completed for this organization
+    const isConfigured =
+      organization?.aiSettings?.isAiConfigured !== undefined
+        ? organization.aiSettings.isAiConfigured
+        : defaults.isAiConfigured;
+
+    if (!isConfigured) {
+      console.warn(
+        `[AI Service] AI response paused for ${organization?.name || "organization"}: AI setup is incomplete.`
+      );
+      return "Thank you for reaching out! Our team is currently finalizing our automated assistant. A sales representative will be with you shortly.";
+    }
+
     const effectiveSettings = {
       companyName:
         organization?.aiSettings?.companyName ||

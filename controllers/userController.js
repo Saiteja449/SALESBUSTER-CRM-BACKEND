@@ -222,6 +222,18 @@ export const deleteSalesPerson = async (req, res) => {
       });
     }
 
+    // Ensure the organization maintains at least 1 sales representative
+    const currentSalesCount = await UserModel.countDocuments({
+      role: "sales person",
+    });
+    if (user.role === "sales person" && currentSalesCount <= 1) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "An organization must have at least 1 sales representative. You cannot delete the only representative.",
+      });
+    }
+
     // Delete from tenant DB
     await UserModel.findByIdAndDelete(req.params.id);
 

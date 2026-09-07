@@ -677,9 +677,18 @@ export const getMyOrganization = async (req, res) => {
 
     const defaults = getDefaultAISettings(org.name);
     const orgJson = org.toJSON();
+    const isAiConfigured = Boolean(
+      org.aiSettings?.isAiConfigured !== undefined
+        ? org.aiSettings.isAiConfigured
+        : defaults.isAiConfigured
+    );
+    const hasSalesPerson = usedSeats >= 1;
+
     const effectiveAiSettings = {
       ...defaults,
       ...(orgJson.aiSettings || {}),
+      isAiConfigured,
+      aiSetupCompletedAt: org.aiSettings?.aiSetupCompletedAt || defaults.aiSetupCompletedAt || null,
       services:
         orgJson.aiSettings?.services && orgJson.aiSettings.services.length > 0
           ? orgJson.aiSettings.services
@@ -691,12 +700,16 @@ export const getMyOrganization = async (req, res) => {
           : defaults.qualificationFields,
     };
     orgJson.aiSettings = effectiveAiSettings;
+    orgJson.isAiConfigured = isAiConfigured;
 
     res.status(200).json({
       success: true,
       data: {
         ...orgJson,
         usedSeats,
+        salesPersonCount: usedSeats,
+        hasSalesPerson,
+        isAiConfigured,
         remainingSeats: Math.max(0, org.seats - usedSeats),
         totalLeads,
         totalFollowups,
@@ -743,6 +756,13 @@ export const getMyAISettings = async (req, res) => {
     const aiSettings = org.aiSettings || {};
 
     const effective = {
+      isAiConfigured: Boolean(
+        aiSettings.isAiConfigured !== undefined
+          ? aiSettings.isAiConfigured
+          : defaults.isAiConfigured
+      ),
+      aiSetupCompletedAt:
+        aiSettings.aiSetupCompletedAt || defaults.aiSetupCompletedAt || null,
       companyName: aiSettings.companyName || defaults.companyName || org.name,
       businessDescription:
         aiSettings.businessDescription || defaults.businessDescription || "",
@@ -766,6 +786,7 @@ export const getMyAISettings = async (req, res) => {
     res.status(200).json({
       success: true,
       data: effective,
+      isAiConfigured: effective.isAiConfigured,
       isCustomized: !!(
         org.aiSettings &&
         (org.aiSettings.services?.length > 0 || org.aiSettings.companyName)
@@ -807,9 +828,62 @@ export const updateMyAISettings = async (req, res) => {
       services,
       qualificationFields,
       qdrantCollection,
+      isAiConfigured,
     } = req.body;
 
     if (!org.aiSettings) org.aiSettings = {};
+
+    // If attempting to mark AI as configured / complete, enforce strict business validations
+    if (isAiConfigured === true) {
+      const targetServices = Array.isArray(services)
+        ? services
+        : org.aiSettings.services || [];
+      const targetFields = Array.isArray(qualificationFields)
+        ? qualificationFields
+        : org.aiSettings.qualificationFields || [];
+
+      if (!targetServices || targetServices.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "An organization must configure at least 1 service in its catalog before completing AI setup.",
+        });
+      }
+
+      const invalidService = targetServices.find(
+        (s) => !s.name || !s.name.trim()
+      );
+      if (invalidService) {
+        return res.status(400).json({
+          success: false,
+          message: "All services in catalog must have a valid non-empty name.",
+        });
+      }
+
+      if (!targetFields || targetFields.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "An organization must define at least 1 lead qualification question in its schema before completing AI setup.",
+        });
+      }
+
+      const invalidField = targetFields.find(
+        (f) => !f.key || !f.key.trim() || !f.label || !f.label.trim()
+      );
+      if (invalidField) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "All qualification fields must have a valid identifier key and display label.",
+        });
+      }
+
+      org.aiSettings.isAiConfigured = true;
+      org.aiSettings.aiSetupCompletedAt = new Date();
+    } else if (isAiConfigured === false) {
+      org.aiSettings.isAiConfigured = false;
+    }
 
     if (companyName !== undefined) org.aiSettings.companyName = companyName.trim();
     if (businessDescription !== undefined)
@@ -835,6 +909,7 @@ export const updateMyAISettings = async (req, res) => {
       success: true,
       message: "Organization AI settings updated successfully.",
       data: org.aiSettings,
+      isAiConfigured: org.aiSettings.isAiConfigured,
     });
   } catch (error) {
     console.error("Error in updateMyAISettings:", error);
