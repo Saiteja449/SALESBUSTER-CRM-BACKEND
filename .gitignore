@@ -1,0 +1,9 @@
+node_modules/
+.env
+*.log
+.DS_Store
+coverage/
+build/
+dist/
+whatsapp_auth_info/
+uploads/
