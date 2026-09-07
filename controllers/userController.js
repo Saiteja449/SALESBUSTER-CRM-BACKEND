@@ -38,6 +38,17 @@ export const getUsers = async (req, res) => {
       success: true,
       data: users,
       seats: seatMeta,
+      organization: req.organization
+        ? {
+            id: req.organization._id,
+            name: req.organization.name,
+            seats: req.organization.seats,
+            subscriptionPlan: req.organization.subscriptionPlan,
+            subscriptionStartDate: req.organization.subscriptionStartDate,
+            subscriptionEndDate: req.organization.subscriptionEndDate,
+            status: req.organization.status,
+          }
+        : null,
     });
   } catch (error) {
     console.error("Error fetching users:", error);

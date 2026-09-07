@@ -6,6 +6,7 @@ import {
   generateSecurePassword,
 } from "../services/tenantManager.js";
 import { sendTenantWelcomeEmail } from "../helpers/emailHelper.js";
+import { getIO } from "../socket/socket.js";
 
 /**
  * Calculates exactly 1 calendar month later, ending at 23:59:59.999
@@ -338,6 +339,17 @@ export const updateOrganizationSeats = async (req, res) => {
     org.seats = newSeats;
     await org.save();
 
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit("organization_updated", {
+        ...org.toJSON(),
+        seats: newSeats,
+        totalSeats: newSeats,
+        usedSeats: currentUsed,
+        remainingSeats: Math.max(0, newSeats - currentUsed),
+      });
+    }
+
     res.status(200).json({
       success: true,
       message: `Licensed seats updated to ${newSeats}`,
@@ -399,6 +411,11 @@ export const renewSubscription = async (req, res) => {
 
     await org.save();
 
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit("organization_updated", org.toJSON());
+    }
+
     res.status(200).json({
       success: true,
       message: `Subscription successfully renewed until ${newEndDate.toLocaleDateString("en-IN")}`,
@@ -445,6 +462,11 @@ export const toggleStatus = async (req, res) => {
       { organizationId: org._id },
       { status: status === "active" ? "active" : "inactive" }
     );
+
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit("organization_updated", org.toJSON());
+    }
 
     res.status(200).json({
       success: true,
