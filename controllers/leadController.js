@@ -115,15 +115,32 @@ export const getPaginatedLeads = async (req, res) => {
 
     if (search) {
       const searchRegex = new RegExp(search, "i");
-      query.$or = [
+      const searchConditions = [
         { name: searchRegex },
         { phone: searchRegex },
-        { "aiQualification.liftType": searchRegex },
-        { "aiQualification.propertyType": searchRegex },
-        { "aiQualification.issueDescription": searchRegex },
-        { "aiQualification.city": searchRegex },
         { email: searchRegex },
+        { service: searchRegex },
+        { city: searchRegex },
+        { "aiQualification.city": searchRegex },
+        { "aiQualification.intent": searchRegex },
       ];
+
+      const qualFields = req.organization?.aiSettings?.qualificationFields;
+      if (Array.isArray(qualFields) && qualFields.length > 0) {
+        for (const f of qualFields) {
+          if (f.key && !["city", "intent"].includes(f.key)) {
+            searchConditions.push({ [`aiQualification.${f.key}`]: searchRegex });
+          }
+        }
+      } else {
+        searchConditions.push(
+          { "aiQualification.liftType": searchRegex },
+          { "aiQualification.propertyType": searchRegex },
+          { "aiQualification.issueDescription": searchRegex },
+        );
+      }
+
+      query.$or = searchConditions;
     }
 
     if (service !== "All") query.service = service;
@@ -183,15 +200,32 @@ export const getPaginatedLeads = async (req, res) => {
     }
     if (search) {
       const searchRegex = new RegExp(search, "i");
-      baseCountQuery.$or = [
+      const searchConditions = [
         { name: searchRegex },
         { phone: searchRegex },
-        { "aiQualification.liftType": searchRegex },
-        { "aiQualification.propertyType": searchRegex },
-        { "aiQualification.issueDescription": searchRegex },
-        { "aiQualification.city": searchRegex },
         { email: searchRegex },
+        { service: searchRegex },
+        { city: searchRegex },
+        { "aiQualification.city": searchRegex },
+        { "aiQualification.intent": searchRegex },
       ];
+
+      const qualFields = req.organization?.aiSettings?.qualificationFields;
+      if (Array.isArray(qualFields) && qualFields.length > 0) {
+        for (const f of qualFields) {
+          if (f.key && !["city", "intent"].includes(f.key)) {
+            searchConditions.push({ [`aiQualification.${f.key}`]: searchRegex });
+          }
+        }
+      } else {
+        searchConditions.push(
+          { "aiQualification.liftType": searchRegex },
+          { "aiQualification.propertyType": searchRegex },
+          { "aiQualification.issueDescription": searchRegex },
+        );
+      }
+
+      baseCountQuery.$or = searchConditions;
     }
     if (service !== "All") baseCountQuery.service = service;
     if (salesperson !== "All") baseCountQuery.assignedTo = salesperson;

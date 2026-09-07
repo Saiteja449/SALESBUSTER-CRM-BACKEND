@@ -2,7 +2,6 @@ import {
   GoogleGenerativeAIEmbeddings,
   ChatGoogleGenerativeAI,
 } from "@langchain/google-genai";
-import { ChatOpenAI } from "@langchain/openai";
 import { QdrantVectorStore } from "@langchain/qdrant";
 import { VoyageAIClient } from "voyageai";
 import { QdrantClient } from "@qdrant/js-client-rest";
@@ -18,25 +17,34 @@ import Followup from "../models/Followup.js";
 import Notification from "../models/Notification.js";
 import User from "../models/User.js";
 import AssignmentState from "../models/AssignmentState.js";
+import Organization, { getDefaultAISettings } from "../models/Organization.js";
+import { getMasterModels } from "../services/tenantManager.js";
+import { getOrgCollectionName } from "../services/knowledgeService.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
-// Initialize Qdrant Vector Store Lazily
-let qdrantVectorStore = null;
+// In-memory cache for Qdrant vector stores per collection
+const vectorStoresMap = new Map();
 
-const initVectorStore = async () => {
-  if (qdrantVectorStore) return qdrantVectorStore;
+/**
+ * Connects or returns cached Qdrant Vector Store for the organization's collection
+ */
+export const getVectorStoreForOrg = async (organization) => {
+  const collectionName = getOrgCollectionName(organization);
+
+  if (vectorStoresMap.has(collectionName)) {
+    return vectorStoresMap.get(collectionName);
+  }
 
   try {
     const qdrantUrl = process.env.CLUSTER_ENDPOINT;
     const qdrantApiKey = process.env.QDRANT_API_KEY;
+    const geminiApiKey = process.env.GEMINI_API_KEY;
 
-    if (!qdrantUrl || !qdrantApiKey) {
-      console.warn(
-        "QDRANT_URL or QDRANT_API_KEY not found in .env. RAG context will be empty.",
-      );
+    if (!qdrantUrl || !qdrantApiKey || !geminiApiKey) {
+      console.warn("Qdrant or Gemini API keys missing. RAG context will be empty.");
       return null;
     }
 
@@ -45,209 +53,373 @@ const initVectorStore = async () => {
       apiKey: qdrantApiKey,
     });
 
+    // Check if the collection exists
+    const collectionsRes = await client.getCollections();
+    const exists = collectionsRes.collections?.some((c) => c.name === collectionName);
+
+    if (!exists) {
+      if (collectionName === "kranthi_kb") {
+        console.warn("Collection 'kranthi_kb' not found in Qdrant.");
+      }
+      return null;
+    }
+
     const embeddings = new GoogleGenerativeAIEmbeddings({
-      apiKey: process.env.GEMINI_API_KEY,
+      apiKey: geminiApiKey,
       model: "gemini-embedding-2",
     });
 
-    qdrantVectorStore = new QdrantVectorStore(embeddings, {
+    const store = new QdrantVectorStore(embeddings, {
       client,
-      collectionName: "kranthi_kb",
+      collectionName,
     });
 
-    return qdrantVectorStore;
+    vectorStoresMap.set(collectionName, store);
+    return store;
   } catch (e) {
-    console.warn("Qdrant Vector store initialization failed:", e.message);
+    console.warn(`Qdrant store initialization failed for '${collectionName}':`, e.message);
     return null;
   }
 };
 
-// Define Structured Output Schema
-const qualificationSchema = z.object({
-  reply: z
-    .string()
-    .describe(
-      "Your reply text to the user. Provide comprehensive answers and guide the user naturally without forcing unnecessary questions.",
-    ),
-  qualification: z
-    .object({
-      liftType: z
-        .string()
-        .default("")
-        .describe(
-          "Type of elevator product: 'Passenger Lift', 'MRL Lift', 'Hydraulic Lift', 'Hospital Bed Lift', 'Elevator Maintenance & AMC', 'Elevator Modernization', or empty string.",
-        ),
-      clientType: z
-        .string()
-        .default("General")
-        .describe(
-          "Role/Segment of the lead: 'Building Owner / Villa Owner', 'Builder / Developer', 'Architect / Consultant', 'Hospital / Healthcare Admin', 'Facility / Society Manager (RWA)', or 'General'.",
-        ),
-      propertyType: z
-        .string()
-        .default("")
-        .describe(
-          "Type of building: 'Apartment', 'Villa / Independent House', 'Commercial Office', 'Shopping Mall / Complex', 'Hotel', 'Hospital / Healthcare Center', 'Warehouse / Industrial Unit'. Return empty string if not mentioned.",
-        ),
-      numberOfFloors: z
-        .string()
-        .default("")
-        .describe(
-          "Number of floors or stops (e.g., 'G+2', 'G+3', '4 Floors', '8 Stops'). Return empty string if not mentioned.",
-        ),
-      capacity: z
-        .string()
-        .default("")
-        .describe(
-          "Passenger capacity or weight load (e.g., '4-6 Persons', '8-10 Persons', '13 Persons', '1000 kg', '2-10 Tons', 'Stretcher Bed'). Return empty string if not mentioned.",
-        ),
-      constructionStage: z
-        .string()
-        .default("")
-        .describe(
-          "Project stage: 'Under Construction (Shaft Planned/Ready)', 'Existing Building (Retrofit/New Lift)', 'Modernization (Replacing Old Lift)', or 'Operational (AMC/Service)'. Return empty string if not mentioned.",
-        ),
-      doorType: z
-        .string()
-        .default("")
-        .describe(
-          "Door preference: 'Automatic (Center Opening)', 'Automatic (Telescopic)', 'Manual', or empty string if not mentioned.",
-        ),
-      machineRoomAvailable: z
-        .string()
-        .default("")
-        .describe(
-          "Machine room availability: 'Yes', 'No' (MRL recommended), or 'Unknown'.",
-        ),
-      propertySize: z
-        .string()
-        .default("")
-        .describe("Approximate building or shaft dimensions if mentioned."),
-      issueDescription: z
-        .string()
-        .default("")
-        .describe(
-          "Specific requirement or query (e.g., 'G+3 residential lift installation', 'AMC for hospital bed lift', 'space-saving lift for villa').",
-        ),
-      preferredVisitDate: z
-        .string()
-        .default("")
-        .describe("Preferred date for site visit / shaft inspection."),
-      preferredCallDate: z
-        .string()
-        .default("")
-        .describe(
-          "Preferred callback date when lead requests pricing or consultation.",
-        ),
-      preferredCallTime: z
-        .string()
-        .default("")
-        .describe(
-          "Preferred callback time (e.g., '11:00 AM', 'after 5 PM', 'morning').",
-        ),
-      city: z
-        .string()
-        .default("")
-        .describe(
-          "City or neighborhood (e.g., 'Hyderabad', 'Chinthal', 'Kukatpally', 'Gachibowli', 'Secunderabad').",
-        ),
-      intent: z
-        .string()
-        .default("")
-        .describe(
-          "Primary intent: 'Passenger Lift', 'MRL Lift', 'Hydraulic Lift', 'Hospital Bed Lift', 'Elevator Maintenance & AMC', 'Elevator Modernization', 'Price Enquiry', 'General Enquiry'.",
-        ),
-      urgency: z
-        .string()
-        .default("Medium")
-        .describe("High, Medium, or Low urgency based on context."),
-      interestScore: z
-        .number()
-        .default(5)
-        .describe("1 to 10 interest score based on engagement."),
-    })
-    .default({
-      liftType: "",
-      clientType: "General",
-      propertyType: "",
-      numberOfFloors: "",
-      capacity: "",
-      constructionStage: "",
-      doorType: "",
-      machineRoomAvailable: "",
-      propertySize: "",
-      issueDescription: "",
-      preferredVisitDate: "",
-      preferredCallDate: "",
-      preferredCallTime: "",
-      city: "",
-      intent: "",
-      urgency: "Medium",
-      interestScore: 5,
-    }),
-  tags: z
-    .array(z.string())
-    .default([])
-    .describe("Relevant tags (e.g., 'Hot Lead', 'Interested')."),
-  disableAI: z
-    .boolean()
-    .default(false)
-    .describe(
-      "Set to true if user asks for human/support, confirms 'yes' to support team offer, or if AI cannot answer.",
-    ),
-  summary: z
-    .string()
-    .default("")
-    .describe("One sentence summary of the conversation so far."),
-  sentiment: z
-    .string()
-    .default("Neutral")
-    .describe("Positive, Neutral, or Negative."),
-  probabilityOfConversion: z
-    .number()
-    .default(50)
-    .describe("0 to 100 estimated probability."),
-  nextAction: z.string().default("").describe("Next step for the sales team."),
-  triggerActions: z
-    .object({
-      createFollowUp: z
-        .boolean()
-        .default(false)
-        .describe("Set true if user asked for a callback."),
-      followUpNotes: z.string().default("").describe("Notes for the callback."),
-      followUpDate: z
-        .string()
-        .default("")
-        .describe("Date string for follow up if requested."),
-      addNote: z
-        .string()
-        .default("")
-        .describe("Any specific notes for the CRM lead record."),
-    })
-    .default({
-      createFollowUp: false,
-      followUpNotes: "",
-      followUpDate: "",
-      addNote: "",
-    }),
-});
+/**
+ * Resolves the Organization document from passed context or tenant models
+ */
+export const resolveOrganization = async (organizationContext, tenantModels = null) => {
+  if (organizationContext && typeof organizationContext === "object" && organizationContext.name) {
+    return organizationContext;
+  }
 
-export const generateAIResponse = async (leadId, incomingText, tenantModels = null) => {
+  const { Organization: MasterOrg } = getMasterModels();
+
+  if (typeof organizationContext === "string") {
+    try {
+      const org = await MasterOrg.findById(organizationContext);
+      if (org) return org;
+    } catch (err) {}
+  }
+
+  const dbName = tenantModels?.db?.name;
+  if (dbName) {
+    try {
+      const org = await MasterOrg.findOne({ tenantDbName: dbName });
+      if (org) return org;
+    } catch (err) {}
+  }
+
+  // Fallback to Kranthi Elevators or first registered organization
+  try {
+    let org = await MasterOrg.findOne({ name: /kranthi/i });
+    if (!org) {
+      org = await MasterOrg.findOne();
+    }
+    if (org) return org;
+  } catch (err) {}
+
+  return null;
+};
+
+/**
+ * Dynamically builds a Zod Structured Output schema based on the organization's qualification schema
+ */
+export const buildQualificationSchema = (configuredFields = [], orgName = "") => {
+  const shape = {
+    city: z
+      .string()
+      .default("")
+      .describe("City, neighborhood, or location of the lead if mentioned."),
+    intent: z
+      .string()
+      .default("")
+      .describe("Primary intent or service requested by the user."),
+    urgency: z
+      .enum(["High", "Medium", "Low"])
+      .default("Medium")
+      .describe("High, Medium, or Low urgency based on context."),
+    interestScore: z
+      .number()
+      .default(5)
+      .describe("1 to 10 interest score based on engagement."),
+    preferredCallDate: z
+      .string()
+      .default("")
+      .describe("Preferred callback date when lead requests pricing or consultation."),
+    preferredCallTime: z
+      .string()
+      .default("")
+      .describe("Preferred callback time (e.g., '11:00 AM', 'after 5 PM')."),
+  };
+
+  if (configuredFields && configuredFields.length > 0) {
+    for (const f of configuredFields) {
+      if (!f.key || shape[f.key]) continue;
+
+      const desc =
+        (f.description || f.label || f.key) +
+        (f.options && f.options.length
+          ? `. Allowed options: ${f.options.join(", ")}`
+          : "");
+
+      if (f.type === "number") {
+        shape[f.key] = z.number().default(0).describe(desc);
+      } else if (f.type === "boolean") {
+        shape[f.key] = z.boolean().default(false).describe(desc);
+      } else {
+        shape[f.key] = z.string().default("").describe(desc);
+      }
+    }
+  } else if (/kranthi|elevator/i.test(orgName)) {
+    shape.liftType = z
+      .string()
+      .default("")
+      .describe(
+        "Type of elevator product: 'Passenger Lift', 'MRL Lift', 'Hydraulic Lift', 'Hospital Bed Lift', 'Elevator Maintenance & AMC', 'Elevator Modernization', or empty string.",
+      );
+    shape.clientType = z
+      .string()
+      .default("General")
+      .describe(
+        "Role/Segment of the lead: 'Building Owner / Villa Owner', 'Builder / Developer', 'Architect / Consultant', 'Hospital / Healthcare Admin', 'Facility / Society Manager (RWA)', or 'General'.",
+      );
+    shape.propertyType = z
+      .string()
+      .default("")
+      .describe(
+        "Type of building: 'Apartment', 'Villa / Independent House', 'Commercial Office', 'Shopping Mall / Complex', 'Hotel', 'Hospital / Healthcare Center', 'Warehouse / Industrial Unit'.",
+      );
+    shape.numberOfFloors = z
+      .string()
+      .default("")
+      .describe("Number of floors or stops (e.g., 'G+2', 'G+3', '4 Floors', '8 Stops').");
+    shape.capacity = z
+      .string()
+      .default("")
+      .describe("Passenger capacity or weight load (e.g., '4-6 Persons', '1000 kg', '2-10 Tons').");
+    shape.constructionStage = z
+      .string()
+      .default("")
+      .describe(
+        "Project stage: 'Under Construction (Shaft Planned/Ready)', 'Existing Building (Retrofit/New Lift)', 'Modernization (Replacing Old Lift)', or 'Operational (AMC/Service)'.",
+      );
+    shape.doorType = z
+      .string()
+      .default("")
+      .describe("Door preference: 'Automatic (Center Opening)', 'Automatic (Telescopic)', 'Manual', or empty.");
+    shape.machineRoomAvailable = z
+      .string()
+      .default("")
+      .describe("Machine room availability: 'Yes', 'No' (MRL recommended), or 'Unknown'.");
+    shape.propertySize = z
+      .string()
+      .default("")
+      .describe("Approximate building or shaft dimensions if mentioned.");
+    shape.issueDescription = z
+      .string()
+      .default("")
+      .describe("Specific requirement or problem description.");
+    shape.preferredVisitDate = z
+      .string()
+      .default("")
+      .describe("Preferred date for site visit / shaft inspection.");
+  }
+
+  return z.object({
+    reply: z
+      .string()
+      .describe(
+        "Your reply text to the user. Provide comprehensive answers and guide the user naturally without forcing unnecessary questions.",
+      ),
+    qualification: z.object(shape).default({}),
+    tags: z
+      .array(z.string())
+      .default([])
+      .describe("Relevant tags (e.g., 'Hot Lead', 'Interested')."),
+    disableAI: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Set to true if user asks for human/support, confirms 'yes' to support team offer, or if AI cannot answer.",
+      ),
+    summary: z
+      .string()
+      .default("")
+      .describe("One sentence summary of the conversation so far."),
+    sentiment: z
+      .string()
+      .default("Neutral")
+      .describe("Positive, Neutral, or Negative."),
+    probabilityOfConversion: z
+      .number()
+      .default(50)
+      .describe("0 to 100 estimated probability."),
+    nextAction: z.string().default("").describe("Next step for the sales team."),
+    triggerActions: z
+      .object({
+        createFollowUp: z
+          .boolean()
+          .default(false)
+          .describe("Set true if user asked for a callback."),
+        followUpNotes: z.string().default("").describe("Notes for the callback."),
+        followUpDate: z
+          .string()
+          .default("")
+          .describe("Date string for follow up if requested."),
+        addNote: z
+          .string()
+          .default("")
+          .describe("Any specific notes for the CRM lead record."),
+      })
+      .default({
+        createFollowUp: false,
+        followUpNotes: "",
+        followUpDate: "",
+        addNote: "",
+      }),
+  });
+};
+
+/**
+ * Dynamically constructs the system prompt customized to the organization
+ */
+export const buildSystemPrompt = ({
+  organization,
+  effectiveSettings,
+  lead,
+  assignedRep,
+  totalMessagesCount,
+  chatHistoryLog,
+  lastAgentMessageText,
+  incomingText,
+  ragContext,
+}) => {
+  const companyName =
+    effectiveSettings.companyName || organization?.name || "Our Company";
+  const businessDesc =
+    effectiveSettings.businessDescription ||
+    "We provide high-quality products and professional services tailored to our clients.";
+  const agentPersona =
+    effectiveSettings.agentPersona || "friendly, human sales representative";
+  const services = effectiveSettings.services || [];
+  const qualFields = effectiveSettings.qualificationFields || [];
+
+  let servicesBlock = "";
+  if (services.length > 0) {
+    servicesBlock =
+      "CORE PRODUCTS & SERVICES:\n" +
+      services
+        .map((s, idx) => {
+          const sName = typeof s === "string" ? s : s.name;
+          const sDesc =
+            typeof s === "object" && s.description ? `: ${s.description}` : "";
+          return `${idx + 1}. ${sName}${sDesc}`;
+        })
+        .join("\n");
+  }
+
+  let qualGoalsBlock = "";
+  if (qualFields.length > 0) {
+    qualGoalsBlock =
+      "LEAD QUALIFICATION GOALS (Gather naturally across turns):\n" +
+      qualFields
+        .map((f, idx) => {
+          const opts =
+            f.options && f.options.length
+              ? ` (Allowed Options: ${f.options.join(", ")})`
+              : "";
+          const req = f.required ? " [MANDATORY]" : "";
+          return `${idx + 1}. ${f.label || f.key}: ${f.description || f.label || f.key}${opts}${req}`;
+        })
+        .join("\n");
+  }
+
+  const prevQual = lead.aiQualification || {};
+  let alreadyCollectedBlock = "";
+  if (qualFields.length > 0) {
+    alreadyCollectedBlock = qualFields
+      .map((f) => {
+        const val = prevQual[f.key];
+        return `- ${f.label || f.key}: ${val ? String(val) : "Missing"}`;
+      })
+      .join("\n");
+  } else {
+    alreadyCollectedBlock = Object.entries(prevQual)
+      .filter(([k]) => !["_id", "__v"].includes(k))
+      .map(([k, v]) => `- ${k}: ${v || "Missing"}`)
+      .join("\n");
+  }
+
+  if (prevQual.city && !alreadyCollectedBlock.includes("City")) {
+    alreadyCollectedBlock += `\n- City: ${prevQual.city}`;
+  }
+  if (prevQual.intent && !alreadyCollectedBlock.includes("Intent")) {
+    alreadyCollectedBlock += `\n- Intent: ${prevQual.intent}`;
+  }
+  if (prevQual.preferredCallDate || prevQual.preferredCallTime) {
+    alreadyCollectedBlock += `\n- Callback: ${prevQual.preferredCallDate || ""} ${prevQual.preferredCallTime || ""}`;
+  }
+
+  const customRules =
+    effectiveSettings.customInstructions ||
+    `1. HUMAN TONE: Communicate EXACTLY like a real human. Be warm, polite, and conversational. NEVER mention that you are an AI or bot.
+2. PACING: Ask at most 1-2 friendly questions per message to gather data naturally without overwhelming the user.
+3. PRICING RULE: Do NOT invent, guess, or negotiate pricing. State that pricing depends on individual specifications, and schedule a callback with our team.
+4. HUMAN HANDOFF: If the user asks for human support or says 'yes' to human assistance, politely transfer them and set disableAI=true.
+5. WHATSAPP FORMATTING: Keep messages short (maximum 50-60 words), clean bullet points, bold key terms (*term*), and emojis.`;
+
+  return `You are a ${agentPersona} working at ${companyName}.
+
+COMPANY OVERVIEW & VALUE PROPOSITION:
+${businessDesc}
+
+${servicesBlock}
+
+${qualGoalsBlock ? `${qualGoalsBlock}\n` : ""}KNOWLEDGE BASE CONTEXT:
+${ragContext || "(General Knowledge Base Active)"}
+
+LEAD CONTEXT:
+Name: ${lead.name} | Phone: ${lead.phone} | Rep: ${assignedRep}
+Total Conversation Turns: ${totalMessagesCount}
+Already Collected:
+${alreadyCollectedBlock || "(None)"}
+
+HISTORY:
+${chatHistoryLog || "(None)"}
+
+LAST AGENT MSG: "${lastAgentMessageText}"
+USER MSG: "${incomingText}"
+
+CRITICAL RULES:
+${customRules}
+
+FIRST MESSAGE REQUIREMENT:
+If this is the first interaction (Total Conversation Turns is 1 or 0) and the user has not mentioned a specific product or requirement, you MUST introduce ${companyName}, briefly present our core services as a numbered list, and invite them to pick an option or describe their need!
+
+OUTPUT:
+Respond purely via the structured JSON schema.`;
+};
+
+/**
+ * Main AI response generation entrypoint
+ */
+export const generateAIResponse = async (
+  leadId,
+  incomingText,
+  tenantModels = null,
+  organizationContext = null,
+) => {
   try {
     const LeadModel = tenantModels?.Lead || Lead;
     const UserModel = tenantModels?.User || User;
-    const AssignmentStateModel = tenantModels?.AssignmentState || AssignmentState;
+    const AssignmentStateModel =
+      tenantModels?.AssignmentState || AssignmentState;
     const NotificationModel = tenantModels?.Notification || Notification;
     const MessageModel = tenantModels?.Message || Message;
     const AILogModel = tenantModels?.AILog || AILog;
     const FollowupModel = tenantModels?.Followup || Followup;
 
     const geminiApiKey = process.env.GEMINI_API_KEY;
-
     if (!geminiApiKey) {
-      console.error(
-        "GEMINI_API_KEY is not defined in the environment variables.",
-      );
+      console.error("GEMINI_API_KEY is not defined in environment variables.");
     }
 
     const lead = await LeadModel.findById(leadId);
@@ -255,14 +427,49 @@ export const generateAIResponse = async (leadId, incomingText, tenantModels = nu
       throw new Error(`Lead not found with ID: ${leadId}`);
     }
 
-    // Auto-assign representative if currently Unassigned or not set
+    // Resolve Organization
+    const organization = await resolveOrganization(organizationContext, tenantModels);
+    const defaults = getDefaultAISettings(organization?.name || "");
+
+    const effectiveSettings = {
+      companyName:
+        organization?.aiSettings?.companyName ||
+        defaults.companyName ||
+        organization?.name ||
+        "Our Company",
+      businessDescription:
+        organization?.aiSettings?.businessDescription ||
+        defaults.businessDescription,
+      agentPersona:
+        organization?.aiSettings?.agentPersona || defaults.agentPersona,
+      customInstructions:
+        organization?.aiSettings?.customInstructions ||
+        defaults.customInstructions,
+      services:
+        organization?.aiSettings?.services &&
+        organization.aiSettings.services.length > 0
+          ? organization.aiSettings.services
+          : defaults.services,
+      qualificationFields:
+        organization?.aiSettings?.qualificationFields &&
+        organization.aiSettings.qualificationFields.length > 0
+          ? organization.aiSettings.qualificationFields
+          : defaults.qualificationFields,
+      qdrantCollection:
+        organization?.aiSettings?.qdrantCollection ||
+        defaults.qdrantCollection,
+    };
+
+    // Auto-assign representative if unassigned
     let assignedRep = lead.assignedTo;
     if (!assignedRep || assignedRep === "Unassigned") {
-      const representatives = await UserModel.find({ role: "sales person" }).sort({
-        _id: 1,
-      });
+      const representatives = await UserModel.find({
+        role: "sales person",
+      }).sort({ _id: 1 });
       if (representatives && representatives.length > 0) {
-        let state = await AssignmentStateModel.findOne({ key: "leadAssignment" });
+        let state = await AssignmentStateModel.findOne({
+          key: "leadAssignment",
+        });
         if (!state) {
           state = await AssignmentStateModel.create({
             key: "leadAssignment",
@@ -279,7 +486,6 @@ export const generateAIResponse = async (leadId, incomingText, tenantModels = nu
         lead.assignedTo = assignedRep;
         await lead.save();
 
-        // Create Lead Notification
         const assignedAgent = await UserModel.findOne({ name: assignedRep });
         const targetUsers = assignedAgent ? [assignedAgent._id] : [];
         await NotificationModel.create({
@@ -298,7 +504,7 @@ export const generateAIResponse = async (leadId, incomingText, tenantModels = nu
       model: "gemini-3.1-flash-lite",
       temperature: 0,
       maxOutputTokens: 1500,
-      apiKey: process.env.GEMINI_API_KEY,
+      apiKey: geminiApiKey,
     });
 
     // History
@@ -344,8 +550,8 @@ Latest Message: ${incomingText}`;
       }
     }
 
-    // RAG Context Retrieval from Qdrant
-    const vs = await initVectorStore();
+    // Dynamic RAG Context Retrieval from Organization Qdrant Vector Store
+    const vs = await getVectorStoreForOrg(organization);
     let ragContext = "";
     if (vs) {
       const userIntent = lead.aiQualification?.intent || lead.service || "";
@@ -353,113 +559,62 @@ Latest Message: ${incomingText}`;
         ? `${userIntent} ${optimizedSearchQuery}`
         : optimizedSearchQuery;
 
-      const results = await vs.similaritySearch(finalSearchQuery, 15);
-      const documents = results.map((r) => r.pageContent);
+      try {
+        const results = await vs.similaritySearch(finalSearchQuery, 15);
+        const documents = results.map((r) => r.pageContent);
 
-      if (documents.length > 0 && process.env.VOYAGE_API_KEY) {
-        try {
-          const voyageClient = new VoyageAIClient({
-            apiKey: process.env.VOYAGE_API_KEY,
-          });
-          const rerankRes = await voyageClient.rerank({
-            query: finalSearchQuery,
-            documents: documents,
-            model: "rerank-2.5",
-            topK: 5,
-          });
-          console.log("rerankRes.data", rerankRes.data);
-          if (rerankRes.data) {
-            ragContext = rerankRes.data
-              .map((item) => item.document || documents[item.index])
-              .join("\n\n");
-          } else {
+        if (documents.length > 0 && process.env.VOYAGE_API_KEY) {
+          try {
+            const voyageClient = new VoyageAIClient({
+              apiKey: process.env.VOYAGE_API_KEY,
+            });
+            const rerankRes = await voyageClient.rerank({
+              query: finalSearchQuery,
+              documents: documents,
+              model: "rerank-2.5",
+              topK: 5,
+            });
+            if (rerankRes.data) {
+              ragContext = rerankRes.data
+                .map((item) => item.document || documents[item.index])
+                .join("\n\n");
+            } else {
+              ragContext = documents.slice(0, 5).join("\n\n");
+            }
+          } catch (rerankError) {
+            console.warn("Voyage reranking failed:", rerankError.message);
             ragContext = documents.slice(0, 5).join("\n\n");
           }
-        } catch (rerankError) {
-          console.warn("Voyage reranking failed:", rerankError.message);
+        } else if (documents.length > 0) {
           ragContext = documents.slice(0, 5).join("\n\n");
         }
-      } else if (documents.length > 0) {
-        ragContext = documents.slice(0, 5).join("\n\n");
+      } catch (searchErr) {
+        console.warn("Qdrant similarity search warning:", searchErr.message);
       }
     }
 
-    const systemPrompt = `You are a friendly, human sales representative working at Kranthi Elevators. 
+    // Build Dynamic Qualification Schema & System Prompt
+    const qualificationSchema = buildQualificationSchema(
+      effectiveSettings.qualificationFields,
+      effectiveSettings.companyName,
+    );
 
-COMPANY OVERVIEW & PRODUCTS (KRANTHI ELEVATORS):
-Kranthi Elevators designs, manufactures, installs, and maintains advanced, precision-engineered elevator solutions in and around Hyderabad across residential, commercial, industrial, and healthcare segments.
-4 CORE PRODUCT LINES:
-1. PASSENGER LIFT: Safe, smooth, and quiet vertical transportation for apartments, offices, shopping complexes, and hotels. Capacity: 4–20 Persons. Speed: 0.5 to 2.0 m/s. Doors: Automatic / Manual. Safety: Emergency alarm, Overload protection, Door sensors, Power backup.
-2. MRL LIFTS (Machine Room Less): Modern, space-saving design with all major mechanical components integrated within the lift shaft (no rooftop machine room required). Capacity: 4–16 Persons. Speed: 0.5 to 1.75 m/s. Doors: Automatic. Ideal for modern apartments and space-constrained commercial buildings. Low maintenance, high energy efficiency. Safety: Emergency alarm, Overload protection, Door sensors, Automatic rescue device (ARD).
-3. HYDRAULIC LIFTS: Smooth, powerful lifting with strong load capacity and smooth start/stop. Capacity: 2–10 Tons / 2–15 Persons. Speed: Up to 1.0 m/s. Doors: Manual / Automatic. Cost-effective and easy to install for low-rise buildings: Villas, Warehouses, Industrial units, and small commercial spaces. Safety: Emergency lowering system, Overload protection, Door safety, Power backup.
-4. HOSPITAL BED LIFTS: Specially designed for hospitals, nursing homes, healthcare centers, and medical institutes to transport patients, stretchers, and medical equipment smoothly and without vibration. Capacity: 10–26 Persons / 800–2000 kg. Speed: 0.5 to 1.5 m/s. Doors: Automatic (Center Opening). Built with hygienic stainless steel interiors. Safety: Emergency alarm & intercom, ARD, Overload protection, Door safety sensors, Power backup.
-
-LIFECYCLE & MAINTENANCE SERVICES:
-Kranthi Elevators supports the entire elevator lifecycle: Planning, Custom Engineering, Installation, Preventative Maintenance, AMC Contracts, and 24/7 Breakdown Support handled by our experienced technical team.
-
-KNOWLEDGE BASE CONTEXT:
-${ragContext || "(General Knowledge Base Active)"}
-
-LEAD CONTEXT:
-Name: ${lead.name} | Phone: ${lead.phone} | Rep: ${assignedRep}
-Total Conversation Turns: ${totalMessagesCount}
-Already Collected:
-- Lift / Product Type: ${lead.aiQualification?.liftType || "Missing"}
-- Client Role: ${lead.aiQualification?.clientType || "Missing"}
-- Building Type: ${lead.aiQualification?.propertyType || "Missing"}
-- Number of Floors: ${lead.aiQualification?.numberOfFloors || "Missing"}
-- Capacity / Load: ${lead.aiQualification?.capacity || "Missing"}
-- Construction Stage: ${lead.aiQualification?.constructionStage || "Missing"}
-- Door Type: ${lead.aiQualification?.doorType || "Missing"}
-- Machine Room Provision: ${lead.aiQualification?.machineRoomAvailable || "Missing"}
-- City / Neighborhood: ${lead.aiQualification?.city || "Missing"}
-- Preferred Call Date/Time: ${lead.aiQualification?.preferredCallDate || ""} ${lead.aiQualification?.preferredCallTime || ""}
-- Preferred Visit Date: ${lead.aiQualification?.preferredVisitDate || "Missing"}
-
-HISTORY:
-${chatHistoryLog || "(None)"}
-
-LAST AGENT MSG: "${lastAgentMessageText}"
-USER MSG: "${incomingText}"
-
-CRITICAL RULES:
-1. HUMAN TONE: Communicate EXACTLY like a real human. Be warm, polite, and conversational. NEVER mention that you are an AI or bot.
-2. PACING: Ask at most 1-2 friendly questions per message (e.g. building type, number of floors, and location) to gather data naturally without overwhelming the user.
-3. FIRST MESSAGE REQUIREMENT: If this is the first interaction (Total Conversation Turns is 1 or 0) and the user has not mentioned a specific product, you MUST introduce Kranthi Elevators and list our 4 core product lines as a numbered list:
-1. Passenger Lift (Apartments, Offices, Hotels)
-2. MRL Lifts (Machine Room Less - Space Saving)
-3. Hydraulic Lifts (Villas, Warehouses & Low-Rise)
-4. Hospital Bed Lifts (Hospitals & Healthcare Facilities)
-
-IMPORTANT: Ask the user to reply with the number of the product they need, or describe their building!
-
-4. STRICT PRICING RULE (MANDATORY):
-The chatbot must NOT provide, guess, estimate, negotiate, or invent pricing, since no pricing figures are published on the website and all lifts are customized to building specs.
-When a customer asks about pricing, quotation, cost, charges, rates, or budget:
-• State: "Pricing depends on the lift model, capacity, number of stops/floors, and site requirements. We will arrange for our team to contact you with the pricing details and proposal."
-• Ask: "Please share your preferred date and time for our team to call you."
-• Extract their callback date/time into 'preferredCallDate' and 'preferredCallTime'.
-
-5. ELEVATOR LIFECYCLE & MAINTENANCE (FAQ Q5 & Q9):
-If a user asks about maintenance, servicing, or AMC:
-• Clarify that Kranthi Elevators supports the entire elevator lifecycle — planning, installation, preventative maintenance, and ongoing AMC support with our experienced technical team.
-• Note their requirement and schedule a callback for commercial AMC terms.
-
-6. ELEVATOR MODERNIZATION / REPLACEMENT:
-If a user asks to modernize or replace an old lift:
-• Confirm we can assist in upgrading or replacing old elevators with our modern energy-efficient MRL or Passenger lifts, and arrange an engineering site visit.
-
-7. PASSIVE EXTRACTION: Always extract 'Lift Type', 'Client Type', 'Property Type', 'Number of Floors', 'Capacity', 'Construction Stage', 'Door Type', 'Machine Room Available', 'City', 'Preferred Call/Visit Date & Time', and 'Intent' into the JSON schema whenever mentioned.
-8. CONTEXT AWARENESS: Always use LEAD CONTEXT and HISTORY. Never re-ask for details already collected above.
-9. MEDIA ATTACHMENTS: If user sends an image/video/drawing, respond: "Thank you for sharing the media! I can only read text messages right now. Could you please describe your building requirements or lift query in text?"
-10. HUMAN HANDOFF: If the user asks for human support, says 'yes' to human assistance, or is off-topic, politely transfer them and set disableAI=true.
-11. WHATSAPP FORMATTING: Keep messages short (maximum 50-60 words), clean bullet points, bold key terms (*term*), and emojis.
-12. OUTPUT: Respond purely via the structured JSON schema.`;
+    const systemPrompt = buildSystemPrompt({
+      organization,
+      effectiveSettings,
+      lead,
+      assignedRep,
+      totalMessagesCount,
+      chatHistoryLog,
+      lastAgentMessageText,
+      incomingText,
+      ragContext,
+    });
 
     let parsed = null;
     let lastError = null;
 
-    console.log("Generating AI response with Gemini...");
+    console.log(`Generating AI response with Gemini for ${effectiveSettings.companyName}...`);
 
     try {
       const structuredModel =
@@ -471,14 +626,11 @@ If a user asks to modernize or replace an old lift:
       console.log("Success with model: Gemini");
     } catch (e) {
       lastError = e;
-      console.warn("Model Gemini failed. Error message:", e.message);
+      console.warn("Model Gemini structured output failed. Error:", e.message);
     }
 
     if (!parsed) {
-      console.error(
-        "All AI models failed. Using hard fallback.",
-        lastError?.message,
-      );
+      console.error("All AI attempts failed. Using fallback.", lastError?.message);
       parsed = {
         reply:
           "I'm sorry, but I'm unable to assist with this request right now. I'll connect you with one of our team members, who will continue assisting you shortly.",
@@ -498,11 +650,12 @@ If a user asks to modernize or replace an old lift:
       };
     }
 
+    // Record AI Log
     await AILogModel.create({
       leadId,
       prompt: systemPrompt + "\n\nUser Message: " + incomingText,
       response: JSON.stringify(parsed, null, 2),
-      model: "openrouter/auto (OpenRouter + Qdrant)",
+      model: "gemini-3.1-flash-lite (Dynamic Multi-Tenant RAG)",
       tokensUsed: 0,
     });
 
@@ -514,123 +667,57 @@ If a user asks to modernize or replace an old lift:
 
       updatePayload.lastMessage = incomingText;
       updatePayload.lastActivity = new Date();
-      updatePayload.aiQualification = {
-        liftType: aiData.liftType || prevQual.liftType || "",
-        clientType: aiData.clientType || prevQual.clientType || "General",
-        propertyType: aiData.propertyType || prevQual.propertyType || "",
-        numberOfFloors: aiData.numberOfFloors || prevQual.numberOfFloors || "",
-        capacity: aiData.capacity || prevQual.capacity || "",
-        constructionStage:
-          aiData.constructionStage || prevQual.constructionStage || "",
-        doorType: aiData.doorType || prevQual.doorType || "",
-        machineRoomAvailable:
-          aiData.machineRoomAvailable || prevQual.machineRoomAvailable || "",
-        propertySize: aiData.propertySize || prevQual.propertySize || "",
-        issueDescription:
-          aiData.issueDescription || prevQual.issueDescription || "",
-        preferredVisitDate:
-          aiData.preferredVisitDate || prevQual.preferredVisitDate || "",
-        preferredCallDate:
-          aiData.preferredCallDate || prevQual.preferredCallDate || "",
-        preferredCallTime:
-          aiData.preferredCallTime || prevQual.preferredCallTime || "",
-        city: aiData.city || prevQual.city || "",
-        intent: aiData.intent || prevQual.intent || "",
-        urgency: aiData.urgency || prevQual.urgency || "Medium",
-        interestScore: aiData.interestScore ?? prevQual.interestScore ?? 0,
-      };
 
-      const validServices = [
-        "General Enquiry",
-        "Passenger Lift",
-        "MRL Lift",
-        "Hydraulic Lift",
-        "Hospital Bed Lift",
-        "Elevator Maintenance & AMC",
-        "Elevator Modernization",
-      ];
-      const rawIntent = aiData.intent || aiData.liftType || "";
-
-      let matchedService = validServices.find(
-        (s) => s.toLowerCase() === rawIntent.toLowerCase(),
-      );
-
-      // Only attempt fallback keyword matching if the lead does not already have a specific service identified
-      const currentService = lead.service || "";
-      const isAlreadyIdentified =
-        currentService && currentService !== "General Enquiry";
-
-      if (!matchedService && !isAlreadyIdentified) {
-        const combinedText = `${rawIntent} ${incomingText}`.toLowerCase();
-
-        // Priority 0: Check if user replied with just a number (1-6)
-        const matchNumber =
-          incomingText.trim().match(/^(?:option\s*|#)?([1-6])\.?$/i) ||
-          incomingText.match(/\b([1-6])\b/);
-        if (matchNumber) {
-          const num = matchNumber[1];
-          const CORE_SERVICES_MAP = {
-            1: "Passenger Lift",
-            2: "MRL Lift",
-            3: "Hydraulic Lift",
-            4: "Hospital Bed Lift",
-            5: "Elevator Maintenance & AMC",
-            6: "Elevator Modernization",
-          };
-          matchedService = CORE_SERVICES_MAP[num];
+      // Deep merge dynamic qualification fields
+      const mergedQual = { ...prevQual };
+      for (const [key, val] of Object.entries(aiData)) {
+        if (val !== undefined && val !== null && val !== "") {
+          mergedQual[key] = val;
         }
+      }
+      updatePayload.aiQualification = mergedQual;
 
-        // Priority 1: Keyword matching for elevator product lines
-        if (!matchedService) {
-          if (
-            combinedText.includes("mrl") ||
-            combinedText.includes("machine room less") ||
-            combinedText.includes("no machine room")
-          ) {
-            matchedService = "MRL Lift";
-          } else if (
-            combinedText.includes("hydraulic") ||
-            combinedText.includes("villa lift") ||
-            combinedText.includes("home lift") ||
-            combinedText.includes("warehouse lift") ||
-            combinedText.includes("cargo") ||
-            combinedText.includes("industrial lift")
-          ) {
-            matchedService = "Hydraulic Lift";
-          } else if (
-            combinedText.includes("hospital") ||
-            combinedText.includes("bed lift") ||
-            combinedText.includes("stretcher") ||
-            combinedText.includes("clinic") ||
-            combinedText.includes("medical")
-          ) {
-            matchedService = "Hospital Bed Lift";
-          } else if (
-            combinedText.includes("moderniz") ||
-            combinedText.includes("modernis") ||
-            combinedText.includes("upgrade lift") ||
-            combinedText.includes("upgrade elevator") ||
-            combinedText.includes("replace lift") ||
-            combinedText.includes("replacement")
-          ) {
-            matchedService = "Elevator Modernization";
-          } else if (
-            combinedText.includes("maintenance") ||
-            combinedText.includes("amc") ||
-            combinedText.includes("service") ||
-            combinedText.includes("repair") ||
-            combinedText.includes("breakdown")
-          ) {
-            matchedService = "Elevator Maintenance & AMC";
-          } else if (
-            combinedText.includes("passenger") ||
-            combinedText.includes("apartment lift") ||
-            combinedText.includes("office lift") ||
-            combinedText.includes("residential lift") ||
-            combinedText.includes("elevator") ||
-            combinedText.includes("lift")
-          ) {
-            matchedService = "Passenger Lift";
+      // Dynamic Service Matching against configured services
+      const services = effectiveSettings.services || [];
+      const rawIntent = aiData.intent || aiData.service || aiData.liftType || "";
+      let matchedService = null;
+
+      // 1. Direct name match
+      if (rawIntent) {
+        matchedService = services.find(
+          (s) => s.name.toLowerCase() === rawIntent.toLowerCase(),
+        )?.name;
+      }
+
+      // 2. Numbered option matching (e.g. user typed "1" or "option 2")
+      if (!matchedService) {
+        const matchNumber =
+          incomingText.trim().match(/^(?:option\s*|#)?([1-9][0-9]?)\.?$/i) ||
+          incomingText.match(/\b([1-9][0-9]?)\b/);
+        if (matchNumber) {
+          const num = parseInt(matchNumber[1], 10);
+          if (num >= 1 && num <= services.length) {
+            matchedService = services[num - 1].name;
+          }
+        }
+      }
+
+      // 3. Keyword / partial matching
+      if (!matchedService) {
+        const combinedText = `${rawIntent} ${incomingText}`.toLowerCase();
+        for (const s of services) {
+          if (combinedText.includes(s.name.toLowerCase())) {
+            matchedService = s.name;
+            break;
+          }
+          if (s.keywords && s.keywords.length > 0) {
+            const kwMatch = s.keywords.some((kw) =>
+              combinedText.includes(kw.toLowerCase()),
+            );
+            if (kwMatch) {
+              matchedService = s.name;
+              break;
+            }
           }
         }
       }
@@ -667,6 +754,7 @@ If a user asks to modernize or replace an old lift:
 
     await LeadModel.findByIdAndUpdate(leadId, updatePayload);
 
+    // Trigger actions: follow-up
     if (
       parsed.triggerActions?.createFollowUp &&
       parsed.triggerActions?.followUpDate
@@ -700,6 +788,7 @@ If a user asks to modernize or replace an old lift:
       }
     }
 
+    // Trigger actions: CRM note
     if (parsed.triggerActions?.addNote) {
       await LeadModel.findByIdAndUpdate(leadId, {
         $set: {

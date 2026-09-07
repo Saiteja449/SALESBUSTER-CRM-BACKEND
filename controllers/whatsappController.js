@@ -283,27 +283,22 @@ export const testAI = async (req, res) => {
 
     if (reset) {
       await MessageModel.deleteMany({ leadId: lead._id });
+      const resetQual = {
+        city: "",
+        intent: "",
+        urgency: "Medium",
+        interestScore: 0,
+        preferredCallDate: "",
+        preferredCallTime: "",
+      };
+      const configuredFields = req.organization?.aiSettings?.qualificationFields;
+      if (Array.isArray(configuredFields) && configuredFields.length > 0) {
+        for (const f of configuredFields) {
+          if (f.key) resetQual[f.key] = "";
+        }
+      }
       await LeadModel.findByIdAndUpdate(lead._id, {
-        aiQualification: {
-          liftType: "",
-          clientType: "General",
-          propertyType: "",
-          numberOfFloors: "",
-          capacity: "",
-          constructionStage: "",
-          doorType: "",
-          machineRoomAvailable: "",
-          propertySize: "",
-          issueDescription: "",
-          preferredVisitDate: "",
-          preferredCallDate: "",
-          preferredCallTime: "",
-          city: "",
-          intent: "",
-          budget: "",
-          urgency: "",
-          interestScore: 0,
-        },
+        aiQualification: resetQual,
         aiEnabled: true,
         disableAI: false,
       });
@@ -322,7 +317,12 @@ export const testAI = async (req, res) => {
       timestamp: new Date(),
     });
 
-    const aiResponseText = await generateAIResponse(lead._id, message, req.tenantModels);
+    const aiResponseText = await generateAIResponse(
+      lead._id,
+      message,
+      req.tenantModels,
+      req.organization,
+    );
 
     // Save outgoing
     const outgoing = await MessageModel.create({
@@ -340,6 +340,7 @@ export const testAI = async (req, res) => {
       incoming,
       outgoing,
       aiQualification: updatedLead.aiQualification,
+      qualificationFields: req.organization?.aiSettings?.qualificationFields || [],
       leadId: lead._id,
     });
   } catch (error) {
@@ -367,6 +368,7 @@ export const getTestAIHistory = async (req, res) => {
     res.status(200).json({
       leadId: lead._id,
       aiQualification: lead.aiQualification,
+      qualificationFields: req.organization?.aiSettings?.qualificationFields || [],
       messages: messages.map((m) => ({
         text: m.text,
         role: m.direction === "incoming" ? "user" : "ai",

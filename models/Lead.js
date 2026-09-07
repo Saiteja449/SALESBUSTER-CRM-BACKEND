@@ -28,17 +28,9 @@ const leadSchema = new mongoose.Schema(
     },
     service: {
       type: String,
-      enum: [
-        "General Enquiry",
-        "Passenger Lift",
-        "MRL Lift",
-        "Hydraulic Lift",
-        "Hospital Bed Lift",
-        "Elevator Maintenance & AMC",
-        "Elevator Modernization",
-      ],
       required: true,
       default: "General Enquiry",
+      trim: true,
     },
 
     assignedTo: {
@@ -76,7 +68,6 @@ const leadSchema = new mongoose.Schema(
     },
     notes: {
       type: String,
-      default: "No message provided",
     },
     city: {
       type: String,
@@ -85,6 +76,29 @@ const leadSchema = new mongoose.Schema(
       type: String,
       enum: ["Email", "SMS", "WhatsApp", "Phone", ""],
       default: "",
+    },
+    priority: {
+      type: String,
+      enum: ["High", "Medium", "Low"],
+      default: "Medium",
+    },
+    dealValue: {
+      type: Number,
+    },
+    expectedCloseDate: {
+      type: Date,
+    },
+    tags: {
+      type: [String],
+      default: [],
+    },
+    unreadCount: {
+      type: Number,
+      default: 0,
+    },
+    hasUnread: {
+      type: Boolean,
+      default: false,
     },
     importantLead: {
       type: Boolean,
@@ -107,24 +121,8 @@ const leadSchema = new mongoose.Schema(
       default: true,
     },
     aiQualification: {
-      liftType: { type: String, default: "" },
-      clientType: { type: String, default: "" },
-      propertyType: { type: String, default: "" },
-      numberOfFloors: { type: String, default: "" },
-      capacity: { type: String, default: "" },
-      constructionStage: { type: String, default: "" },
-      doorType: { type: String, default: "" },
-      machineRoomAvailable: { type: String, default: "" },
-      propertySize: { type: String, default: "" },
-      issueDescription: { type: String, default: "" },
-      preferredVisitDate: { type: String, default: "" },
-      preferredCallDate: { type: String, default: "" },
-      preferredCallTime: { type: String, default: "" },
-      city: { type: String, default: "" },
-      intent: { type: String, default: "" },
-      budget: { type: String, default: "" },
-      urgency: { type: String, default: "" },
-      interestScore: { type: Number, default: 0 },
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({}),
     },
     aiTags: {
       type: [String],

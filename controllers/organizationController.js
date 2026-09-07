@@ -1,10 +1,17 @@
 import bcrypt from "bcryptjs";
+import fs from "fs";
 import {
   getMasterModels,
   getTenantModels,
   generateTenantDbName,
   generateSecurePassword,
 } from "../services/tenantManager.js";
+import { getDefaultAISettings } from "../models/Organization.js";
+import {
+  ingestDocumentForOrg,
+  deleteDocumentForOrg,
+  listDocumentsForOrg,
+} from "../services/knowledgeService.js";
 import { sendTenantWelcomeEmail } from "../helpers/emailHelper.js";
 import { getIO } from "../socket/socket.js";
 
@@ -127,6 +134,7 @@ export const provisionOrganization = async (req, res) => {
       status: "active",
       tenantDbName,
       notes: notes || "",
+      aiSettings: getDefaultAISettings(name.trim()),
     });
 
     // 7. Register Owner in Master AuthUser registry
@@ -588,10 +596,27 @@ export const getMyOrganization = async (req, res) => {
         )
       : null;
 
+    const defaults = getDefaultAISettings(org.name);
+    const orgJson = org.toJSON();
+    const effectiveAiSettings = {
+      ...defaults,
+      ...(orgJson.aiSettings || {}),
+      services:
+        orgJson.aiSettings?.services && orgJson.aiSettings.services.length > 0
+          ? orgJson.aiSettings.services
+          : defaults.services,
+      qualificationFields:
+        orgJson.aiSettings?.qualificationFields &&
+        orgJson.aiSettings.qualificationFields.length > 0
+          ? orgJson.aiSettings.qualificationFields
+          : defaults.qualificationFields,
+    };
+    orgJson.aiSettings = effectiveAiSettings;
+
     res.status(200).json({
       success: true,
       data: {
-        ...org.toJSON(),
+        ...orgJson,
         usedSeats,
         remainingSeats: Math.max(0, org.seats - usedSeats),
         totalLeads,
@@ -606,5 +631,403 @@ export const getMyOrganization = async (req, res) => {
       success: false,
       message: error.message || "Server error while fetching organization profile",
     });
+  }
+};
+
+// ==========================================
+// DYNAMIC AI SETTINGS & KNOWLEDGE BASE APIS
+// ==========================================
+
+// @desc    Get current tenant organization's AI settings & effective defaults
+// @route   GET /api/organizations/my-org/ai-settings
+// @access  Protected (Org Owner / Manager)
+export const getMyAISettings = async (req, res) => {
+  try {
+    const orgId = req.user?.organizationId || req.organization?._id;
+    if (!orgId) {
+      return res.status(404).json({
+        success: false,
+        message: "No organization profile associated with this account.",
+      });
+    }
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(orgId);
+    if (!org) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found.",
+      });
+    }
+
+    const defaults = getDefaultAISettings(org.name);
+    const aiSettings = org.aiSettings || {};
+
+    const effective = {
+      companyName: aiSettings.companyName || defaults.companyName || org.name,
+      businessDescription:
+        aiSettings.businessDescription || defaults.businessDescription || "",
+      agentPersona: aiSettings.agentPersona || defaults.agentPersona,
+      customInstructions:
+        aiSettings.customInstructions || defaults.customInstructions,
+      services:
+        aiSettings.services && aiSettings.services.length > 0
+          ? aiSettings.services
+          : defaults.services,
+      qualificationFields:
+        aiSettings.qualificationFields &&
+        aiSettings.qualificationFields.length > 0
+          ? aiSettings.qualificationFields
+          : defaults.qualificationFields,
+      qdrantCollection:
+        aiSettings.qdrantCollection || defaults.qdrantCollection,
+      knowledgeDocs: aiSettings.knowledgeDocs || [],
+    };
+
+    res.status(200).json({
+      success: true,
+      data: effective,
+      isCustomized: !!(
+        org.aiSettings &&
+        (org.aiSettings.services?.length > 0 || org.aiSettings.companyName)
+      ),
+    });
+  } catch (error) {
+    console.error("Error in getMyAISettings:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Update current tenant organization's AI settings
+// @route   PUT /api/organizations/my-org/ai-settings
+// @access  Protected (Org Owner / Manager)
+export const updateMyAISettings = async (req, res) => {
+  try {
+    const orgId = req.user?.organizationId || req.organization?._id;
+    if (!orgId) {
+      return res.status(404).json({
+        success: false,
+        message: "No organization profile associated with this account.",
+      });
+    }
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(orgId);
+    if (!org) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found.",
+      });
+    }
+
+    const {
+      companyName,
+      businessDescription,
+      agentPersona,
+      customInstructions,
+      services,
+      qualificationFields,
+      qdrantCollection,
+    } = req.body;
+
+    if (!org.aiSettings) org.aiSettings = {};
+
+    if (companyName !== undefined) org.aiSettings.companyName = companyName.trim();
+    if (businessDescription !== undefined)
+      org.aiSettings.businessDescription = businessDescription.trim();
+    if (agentPersona !== undefined) org.aiSettings.agentPersona = agentPersona.trim();
+    if (customInstructions !== undefined)
+      org.aiSettings.customInstructions = customInstructions.trim();
+    if (Array.isArray(services)) org.aiSettings.services = services;
+    if (Array.isArray(qualificationFields))
+      org.aiSettings.qualificationFields = qualificationFields;
+    if (qdrantCollection !== undefined)
+      org.aiSettings.qdrantCollection = qdrantCollection.trim();
+
+    await org.save();
+
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit("ai_settings_updated", org.aiSettings);
+      io.to(`org_${org._id}`).emit("organization_updated", org.toJSON());
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Organization AI settings updated successfully.",
+      data: org.aiSettings,
+    });
+  } catch (error) {
+    console.error("Error in updateMyAISettings:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Upload & ingest knowledge document to organization Qdrant collection
+// @route   POST /api/organizations/my-org/knowledge-base/upload
+// @access  Protected (Org Owner / Manager)
+export const uploadKnowledgeDoc = async (req, res) => {
+  try {
+    const orgId = req.user?.organizationId || req.organization?._id;
+    if (!orgId) {
+      if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(404).json({
+        success: false,
+        message: "No organization associated with this account.",
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "Please upload a document file (PDF, DOCX, TXT, MD).",
+      });
+    }
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(orgId);
+    if (!org) {
+      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found.",
+      });
+    }
+
+    const docRecord = await ingestDocumentForOrg({
+      organization: org,
+      filePath: req.file.path,
+      originalName: req.file.originalname,
+      fileSize: req.file.size,
+    });
+
+    if (fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (cleanErr) {}
+    }
+
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit(
+        "ai_knowledge_updated",
+        org.aiSettings?.knowledgeDocs,
+      );
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `Document '${req.file.originalname}' indexed successfully into Qdrant (${docRecord.chunkCount} chunks).`,
+      data: docRecord,
+    });
+  } catch (error) {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (cleanErr) {}
+    }
+    console.error("Error in uploadKnowledgeDoc:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Document indexing failed.",
+    });
+  }
+};
+
+// @desc    Delete a knowledge document from organization Qdrant collection
+// @route   DELETE /api/organizations/my-org/knowledge-base/:docId
+// @access  Protected (Org Owner / Manager)
+export const deleteKnowledgeDoc = async (req, res) => {
+  try {
+    const orgId = req.user?.organizationId || req.organization?._id;
+    const { docId } = req.params;
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(orgId);
+    if (!org) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found.",
+      });
+    }
+
+    await deleteDocumentForOrg({ organization: org, docId });
+
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit(
+        "ai_knowledge_updated",
+        org.aiSettings?.knowledgeDocs,
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Document removed from knowledge base.",
+      docId,
+    });
+  } catch (error) {
+    console.error("Error in deleteKnowledgeDoc:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ==========================================
+// SUPER ADMIN AI SETTINGS ENDPOINTS
+// ==========================================
+
+export const getOrgAISettings = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(id);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found." });
+    }
+
+    const defaults = getDefaultAISettings(org.name);
+    const aiSettings = org.aiSettings || {};
+
+    const effective = {
+      companyName: aiSettings.companyName || defaults.companyName || org.name,
+      businessDescription:
+        aiSettings.businessDescription || defaults.businessDescription || "",
+      agentPersona: aiSettings.agentPersona || defaults.agentPersona,
+      customInstructions:
+        aiSettings.customInstructions || defaults.customInstructions,
+      services:
+        aiSettings.services && aiSettings.services.length > 0
+          ? aiSettings.services
+          : defaults.services,
+      qualificationFields:
+        aiSettings.qualificationFields &&
+        aiSettings.qualificationFields.length > 0
+          ? aiSettings.qualificationFields
+          : defaults.qualificationFields,
+      qdrantCollection:
+        aiSettings.qdrantCollection || defaults.qdrantCollection,
+      knowledgeDocs: aiSettings.knowledgeDocs || [],
+    };
+
+    res.status(200).json({ success: true, data: effective });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const updateOrgAISettings = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(id);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found." });
+    }
+
+    const {
+      companyName,
+      businessDescription,
+      agentPersona,
+      customInstructions,
+      services,
+      qualificationFields,
+      qdrantCollection,
+    } = req.body;
+
+    if (!org.aiSettings) org.aiSettings = {};
+
+    if (companyName !== undefined) org.aiSettings.companyName = companyName.trim();
+    if (businessDescription !== undefined)
+      org.aiSettings.businessDescription = businessDescription.trim();
+    if (agentPersona !== undefined) org.aiSettings.agentPersona = agentPersona.trim();
+    if (customInstructions !== undefined)
+      org.aiSettings.customInstructions = customInstructions.trim();
+    if (Array.isArray(services)) org.aiSettings.services = services;
+    if (Array.isArray(qualificationFields))
+      org.aiSettings.qualificationFields = qualificationFields;
+    if (qdrantCollection !== undefined)
+      org.aiSettings.qdrantCollection = qdrantCollection.trim();
+
+    await org.save();
+
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit("ai_settings_updated", org.aiSettings);
+      io.to(`org_${org._id}`).emit("organization_updated", org.toJSON());
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Organization AI settings updated successfully.",
+      data: org.aiSettings,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const uploadOrgKnowledgeDoc = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "Please upload a document file (PDF, DOCX, TXT, MD).",
+      });
+    }
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(id);
+    if (!org) {
+      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(404).json({ success: false, message: "Organization not found." });
+    }
+
+    const docRecord = await ingestDocumentForOrg({
+      organization: org,
+      filePath: req.file.path,
+      originalName: req.file.originalname,
+      fileSize: req.file.size,
+    });
+
+    if (fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (cleanErr) {}
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `Document '${req.file.originalname}' indexed successfully into Qdrant.`,
+      data: docRecord,
+    });
+  } catch (error) {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (cleanErr) {}
+    }
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const deleteOrgKnowledgeDoc = async (req, res) => {
+  try {
+    const { id, docId } = req.params;
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(id);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found." });
+    }
+
+    await deleteDocumentForOrg({ organization: org, docId });
+
+    res.status(200).json({
+      success: true,
+      message: "Document removed from knowledge base.",
+      docId,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 };

@@ -891,8 +891,8 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
       }
     }
 
-    // Call Gemini Agent with tenant models
-    const replyText = await generateAIResponse(lead._id, incomingText, models);
+    // Call Gemini Agent with tenant models and organization context
+    const replyText = await generateAIResponse(lead._id, incomingText, models, orgId);
 
     // Disable AI mode if fallback message is returned
     const fallbackMessage =

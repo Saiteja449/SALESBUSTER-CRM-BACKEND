@@ -23,10 +23,13 @@ import AuthUser, { authUserSchema } from "../models/AuthUser.js";
  */
 export const getMasterModels = () => {
   const masterDbName = process.env.MASTER_DB_NAME || "salesbuster_master";
-  const masterDb = mongoose.connection.useDb(masterDbName, { useCache: true });
+  const masterDb = mongoose.connection.useDb(masterDbName);
 
-  const MasterOrg = masterDb.models.Organization || masterDb.model("Organization", organizationSchema);
-  const MasterAuthUser = masterDb.models.AuthUser || masterDb.model("AuthUser", authUserSchema);
+  const MasterOrg =
+    masterDb.models.Organization ||
+    masterDb.model("Organization", organizationSchema);
+  const MasterAuthUser =
+    masterDb.models.AuthUser || masterDb.model("AuthUser", authUserSchema);
 
   return {
     Organization: MasterOrg,
@@ -55,16 +58,28 @@ export const getTenantModels = (tenantDbName) => {
     User: db.models.User || db.model("User", User.schema),
     Lead: db.models.Lead || db.model("Lead", Lead.schema),
     Followup: db.models.Followup || db.model("Followup", Followup.schema),
-    Notification: db.models.Notification || db.model("Notification", Notification.schema),
-    Conversation: db.models.Conversation || db.model("Conversation", Conversation.schema),
+    Notification:
+      db.models.Notification || db.model("Notification", Notification.schema),
+    Conversation:
+      db.models.Conversation || db.model("Conversation", Conversation.schema),
     Message: db.models.Message || db.model("Message", Message.schema),
     AILog: db.models.AILog || db.model("AILog", AILog.schema),
     AILimit: db.models.AILimit || db.model("AILimit", AILimit.schema),
-    AssignmentState: db.models.AssignmentState || db.model("AssignmentState", AssignmentState.schema),
-    TelecallerAnalytics: db.models.TelecallerAnalytics || db.model("TelecallerAnalytics", TelecallerAnalytics.schema),
-    SystemSettings: db.models.SystemSettings || db.model("SystemSettings", SystemSettings.schema),
-    WhatsAppAuthState: db.models.WhatsAppAuthState || db.model("WhatsAppAuthState", WhatsAppAuthState.schema),
-    WhatsAppSession: db.models.WhatsAppSession || db.model("WhatsAppSession", WhatsAppSession.schema),
+    AssignmentState:
+      db.models.AssignmentState ||
+      db.model("AssignmentState", AssignmentState.schema),
+    TelecallerAnalytics:
+      db.models.TelecallerAnalytics ||
+      db.model("TelecallerAnalytics", TelecallerAnalytics.schema),
+    SystemSettings:
+      db.models.SystemSettings ||
+      db.model("SystemSettings", SystemSettings.schema),
+    WhatsAppAuthState:
+      db.models.WhatsAppAuthState ||
+      db.model("WhatsAppAuthState", WhatsAppAuthState.schema),
+    WhatsAppSession:
+      db.models.WhatsAppSession ||
+      db.model("WhatsAppSession", WhatsAppSession.schema),
     db,
   };
 };
@@ -89,7 +104,8 @@ export const generateTenantDbName = (orgName) => {
  */
 export const generateSecurePassword = (orgName = "") => {
   const clean = orgName.replace(/[^a-zA-Z]/g, "").slice(0, 4) || "Sales";
-  const capitalized = clean.charAt(0).toUpperCase() + clean.slice(1).toLowerCase();
+  const capitalized =
+    clean.charAt(0).toUpperCase() + clean.slice(1).toLowerCase();
   const randomChars = crypto.randomBytes(4).toString("hex");
   const specialChars = ["!", "@", "#", "$", "*"];
   const special = specialChars[Math.floor(Math.random() * specialChars.length)];
