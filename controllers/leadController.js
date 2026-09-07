@@ -1,7 +1,6 @@
 import Lead from "../models/Lead.js";
 import User from "../models/User.js";
 import AssignmentState from "../models/AssignmentState.js";
-
 import Followup from "../models/Followup.js";
 import Notification from "../models/Notification.js";
 import Conversation from "../models/Conversation.js";
@@ -14,43 +13,72 @@ import { analyzeAudioFile } from "../services/audioAnalysisService.js";
 import { sendWelcomeEnquiryMessage } from "../whatsapp/whatsappService.js";
 
 // Feature toggle to pause AI Call Analysis temporarily
-const ENABLE_AI_AUDIO_ANALYSIS = process.env.ENABLE_AI_AUDIO_ANALYSIS === "true"; // Defaults to false (paused)
+const ENABLE_AI_AUDIO_ANALYSIS =
+  process.env.ENABLE_AI_AUDIO_ANALYSIS === "true"; // Defaults to false (paused)
+
+// Model resolver for multi-tenancy
+const getModels = (req) => ({
+  LeadModel: req?.tenantModels?.Lead || Lead,
+  UserModel: req?.tenantModels?.User || User,
+  AssignmentStateModel: req?.tenantModels?.AssignmentState || AssignmentState,
+  FollowupModel: req?.tenantModels?.Followup || Followup,
+  NotificationModel: req?.tenantModels?.Notification || Notification,
+  ConversationModel: req?.tenantModels?.Conversation || Conversation,
+  MessageModel: req?.tenantModels?.Message || Message,
+  AILogModel: req?.tenantModels?.AILog || AILog,
+});
 
 // Helper for background audio analysis
-const triggerAudioAnalysis = async (leadId, recordingId, filePath, mimeType) => {
+const triggerAudioAnalysis = async (
+  leadId,
+  recordingId,
+  filePath,
+  mimeType,
+  LeadModel = Lead,
+) => {
   if (!ENABLE_AI_AUDIO_ANALYSIS) {
-    console.log(`[AudioAnalysis] AI Audio Analysis is temporarily paused. Skipping analysis for recording ${recordingId}`);
+    console.log(
+      `[AudioAnalysis] AI Audio Analysis is temporarily paused. Skipping analysis for recording ${recordingId}`,
+    );
     return;
   }
   try {
-    console.log(`[AudioAnalysis] Starting background analysis for lead ${leadId}, recording ${recordingId}`);
-    const analysis = await analyzeAudioFile(filePath, mimeType);
-    await Lead.updateOne(
-      { _id: leadId, "recordings._id": recordingId },
-      { 
-        $set: { 
-          "recordings.$.analysis": analysis,
-          "recordings.$.analysisStatus": "completed"
-        } 
-      }
+    console.log(
+      `[AudioAnalysis] Starting background analysis for lead ${leadId}, recording ${recordingId}`,
     );
-    console.log(`[AudioAnalysis] Successfully updated analysis for recording ${recordingId}`);
-  } catch (error) {
-    console.error(`[AudioAnalysis] Failed to analyze recording ${recordingId}:`, error);
-    await Lead.updateOne(
+    const analysis = await analyzeAudioFile(filePath, mimeType);
+    await LeadModel.updateOne(
       { _id: leadId, "recordings._id": recordingId },
-      { 
-        $set: { 
-          "recordings.$.analysisStatus": "failed"
-        } 
-      }
+      {
+        $set: {
+          "recordings.$.analysis": analysis,
+          "recordings.$.analysisStatus": "completed",
+        },
+      },
+    );
+    console.log(
+      `[AudioAnalysis] Successfully updated analysis for recording ${recordingId}`,
+    );
+  } catch (error) {
+    console.error(
+      `[AudioAnalysis] Failed to analyze recording ${recordingId}:`,
+      error,
+    );
+    await LeadModel.updateOne(
+      { _id: leadId, "recordings._id": recordingId },
+      {
+        $set: {
+          "recordings.$.analysisStatus": "failed",
+        },
+      },
     );
   }
 };
 
 export const getLeads = async (req, res) => {
   try {
-    const leads = await Lead.find({});
+    const { LeadModel } = getModels(req);
+    const leads = await LeadModel.find({});
     res.json({ success: true, data: leads });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -70,6 +98,8 @@ export const getPaginatedLeads = async (req, res) => {
       currentUserRole = "",
       currentUserName = "",
     } = req.query;
+
+    const { LeadModel } = getModels(req);
 
     const pageNum = parseInt(page) || 0;
     const isAll = limit === "All" || limit === "all";
@@ -138,8 +168,8 @@ export const getPaginatedLeads = async (req, res) => {
 
     applyTabFilter(query, leadTypeTab);
 
-    const totalCount = await Lead.countDocuments(query);
-    let leadsQuery = Lead.find(query).sort({ createdAt: -1 });
+    const totalCount = await LeadModel.countDocuments(query);
+    let leadsQuery = LeadModel.find(query).sort({ createdAt: -1 });
     if (!isAll) {
       leadsQuery = leadsQuery.skip(pageNum * limitNum).limit(limitNum);
     }
@@ -167,16 +197,26 @@ export const getPaginatedLeads = async (req, res) => {
     if (salesperson !== "All") baseCountQuery.assignedTo = salesperson;
     if (status !== "All") baseCountQuery.status = status;
 
-    const facetCounts = await Lead.aggregate([
+    const facetCounts = await LeadModel.aggregate([
       { $match: baseCountQuery },
       {
         $facet: {
           OldLeads: [
-            { $match: { isOldLead: true, status: { $regex: new RegExp("^new$", "i") } } },
-            { $count: "count" }
+            {
+              $match: {
+                isOldLead: true,
+                status: { $regex: new RegExp("^new$", "i") },
+              },
+            },
+            { $count: "count" },
           ],
           New: [
-            { $match: { isOldLead: { $ne: true }, status: { $regex: new RegExp("^new$", "i") } } },
+            {
+              $match: {
+                isOldLead: { $ne: true },
+                status: { $regex: new RegExp("^new$", "i") },
+              },
+            },
             { $count: "count" },
           ],
           TodayFollowup: [
@@ -201,15 +241,19 @@ export const getPaginatedLeads = async (req, res) => {
             },
             { $count: "count" },
           ],
-          NotAttended: [
+          Converted: [
             {
-              $match: { status: { $regex: new RegExp("^not attended$", "i") } },
+              $match: {
+                status: { $regex: new RegExp("^converted$", "i") },
+              },
             },
             { $count: "count" },
           ],
-          Converted: [
+          NotAttended: [
             {
-              $match: { status: { $regex: new RegExp("^converted$", "i") } },
+              $match: {
+                status: { $regex: new RegExp("^not attended$", "i") },
+              },
             },
             { $count: "count" },
           ],
@@ -235,8 +279,8 @@ export const getPaginatedLeads = async (req, res) => {
       New: facetCounts[0].New[0]?.count || 0,
       TodayFollowup: facetCounts[0].TodayFollowup[0]?.count || 0,
       UpcomingFollowup: facetCounts[0].UpcomingFollowup[0]?.count || 0,
-      NotAttended: facetCounts[0].NotAttended[0]?.count || 0,
       Converted: facetCounts[0].Converted[0]?.count || 0,
+      NotAttended: facetCounts[0].NotAttended[0]?.count || 0,
       Lost: facetCounts[0].Lost[0]?.count || 0,
     };
 
@@ -255,6 +299,28 @@ export const getPaginatedLeads = async (req, res) => {
 
 export const createLead = async (req, res) => {
   try {
+    const {
+      LeadModel,
+      UserModel,
+      AssignmentStateModel,
+      NotificationModel,
+    } = getModels(req);
+
+    // Subscription expiry check
+    if (req.organization?.subscriptionEndDate) {
+      const isExpired =
+        new Date() > new Date(req.organization.subscriptionEndDate);
+      if (isExpired) {
+        return res.status(403).json({
+          success: false,
+          subscriptionExpired: true,
+          message: `Your organization's subscription expired on ${new Date(
+            req.organization.subscriptionEndDate
+          ).toLocaleDateString("en-IN")}. Please renew to create new leads.`,
+        });
+      }
+    }
+
     const leadData = req.body || {};
 
     if (leadData.phone || leadData.email) {
@@ -274,14 +340,18 @@ export const createLead = async (req, res) => {
       if (last10Digits.length >= 7) {
         orConditions.push({ phone: new RegExp(last10Digits + "$") });
       }
-      if (leadData.email && typeof leadData.email === "string" && leadData.email.trim()) {
+      if (
+        leadData.email &&
+        typeof leadData.email === "string" &&
+        leadData.email.trim()
+      ) {
         orConditions.push({
           email: new RegExp("^" + leadData.email.trim() + "$", "i"),
         });
       }
 
       if (orConditions.length > 0) {
-        const existingLead = await Lead.findOne({ $or: orConditions });
+        const existingLead = await LeadModel.findOne({ $or: orConditions });
         if (existingLead) {
           return res.status(400).json({
             success: false,
@@ -292,11 +362,15 @@ export const createLead = async (req, res) => {
     }
 
     if (!leadData.assignedTo || leadData.assignedTo === "Unassigned") {
-      const reps = await User.find({ role: "sales person" }).sort({ _id: 1 });
+      const reps = await UserModel.find({ role: "sales person" }).sort({
+        _id: 1,
+      });
       if (reps && reps.length > 0) {
-        let state = await AssignmentState.findOne({ key: "leadAssignment" });
+        let state = await AssignmentStateModel.findOne({
+          key: "leadAssignment",
+        });
         if (!state) {
-          state = await AssignmentState.create({
+          state = await AssignmentStateModel.create({
             key: "leadAssignment",
             lastAssignedIndex: -1,
           });
@@ -320,14 +394,16 @@ export const createLead = async (req, res) => {
       const host = req.get("host");
       const basePath = "/uploads/";
       const fileUrl = `${req.protocol}://${host}${basePath}${req.file.filename}`;
-      leadData.recordings = [{
-        name: req.body.recordingName || req.file.originalname,
-        url: fileUrl,
-        uploadedAt: new Date(),
-      }];
+      leadData.recordings = [
+        {
+          name: req.body.recordingName || req.file.originalname,
+          url: fileUrl,
+          uploadedAt: new Date(),
+        },
+      ];
     }
 
-    const lead = await Lead.create(leadData);
+    const lead = await LeadModel.create(leadData);
 
     // Send automated WhatsApp welcome enquiry message for non-manual entry sources (Call, Email, etc.)
     if (lead.source && lead.source !== "Manual Entry") {
@@ -336,10 +412,10 @@ export const createLead = async (req, res) => {
       );
     }
 
-    const assignedUser = await User.findOne({ name: lead.assignedTo });
+    const assignedUser = await UserModel.findOne({ name: lead.assignedTo });
     const targetUsers = assignedUser ? [assignedUser._id] : [];
 
-    await Notification.create({
+    await NotificationModel.create({
       title: "New Lead Added",
       message: `Lead ${lead.name} has been added and assigned to ${lead.assignedTo}.`,
       type: "new_lead",
@@ -355,14 +431,11 @@ export const createLead = async (req, res) => {
 
 export const updateLead = async (req, res) => {
   try {
+    const { LeadModel, NotificationModel } = getModels(req);
     const { id } = req.params;
     const updateData = req.body || {};
-    console.log("updateData update Lead");
-    console.log(updateData);
-    console.log("updated");
 
-
-    const lead = await Lead.findById(id);
+    const lead = await LeadModel.findById(id);
 
     if (!lead) {
       return res
@@ -392,12 +465,18 @@ export const updateLead = async (req, res) => {
     if (req.file && ENABLE_AI_AUDIO_ANALYSIS) {
       const newRecording = lead.recordings[lead.recordings.length - 1];
       if (newRecording) {
-        triggerAudioAnalysis(lead._id, newRecording._id, req.file.path, req.file.mimetype);
+        triggerAudioAnalysis(
+          lead._id,
+          newRecording._id,
+          req.file.path,
+          req.file.mimetype,
+          LeadModel,
+        );
       }
     }
 
     if (updateData.status) {
-      await Notification.create({
+      await NotificationModel.create({
         title: "Lead Status Updated",
         message: `Lead ${lead.name} status updated to ${lead.status}.`,
         type: "lead_update",
@@ -413,9 +492,10 @@ export const updateLead = async (req, res) => {
 
 export const deleteLead = async (req, res) => {
   try {
+    const { LeadModel } = getModels(req);
     const { id } = req.params;
 
-    const lead = await Lead.findByIdAndDelete(id);
+    const lead = await LeadModel.findByIdAndDelete(id);
 
     if (!lead) {
       return res
@@ -434,6 +514,7 @@ export const deleteLead = async (req, res) => {
 
 export const updateStatusByWebhook = async (req, res) => {
   try {
+    const { LeadModel, NotificationModel } = getModels(req);
     const { phone, email, event } = req.body;
 
     if (!phone && !email) {
@@ -463,13 +544,16 @@ export const updateStatusByWebhook = async (req, res) => {
     if (phone) {
       const cleanPhone = phone.replace(/\D/g, "");
       const last10Digits = cleanPhone.slice(-10);
-      lead = await Lead.findOne({
-        $or: [{ phone: cleanPhone }, { phone: new RegExp(last10Digits + "$") }],
+      lead = await LeadModel.findOne({
+        $or: [
+          { phone: cleanPhone },
+          { phone: new RegExp(last10Digits + "$") },
+        ],
       });
     }
 
     if (!lead && email) {
-      lead = await Lead.findOne({
+      lead = await LeadModel.findOne({
         email: new RegExp("^" + email.trim() + "$", "i"),
       });
     }
@@ -481,7 +565,6 @@ export const updateStatusByWebhook = async (req, res) => {
       });
     }
 
-    // Prevent reverting status back to previous stages (e.g. from "Converted" back to "New")
     const funnelOrder = ["New", "Converted"];
     const currentRank = funnelOrder.indexOf(lead.status);
     const targetRank = funnelOrder.indexOf(status);
@@ -497,7 +580,7 @@ export const updateStatusByWebhook = async (req, res) => {
     lead.status = status;
     await lead.save();
 
-    await Notification.create({
+    await NotificationModel.create({
       title: "Lead Status Webhook Update",
       message: `Lead ${lead.name} status updated to "${status}" via external booking app webhook event: ${event}.`,
       type: "lead_update",
@@ -525,20 +608,32 @@ export const updateStatusByWebhook = async (req, res) => {
 
 export const analyzeRecording = async (req, res) => {
   if (!ENABLE_AI_AUDIO_ANALYSIS) {
-    return res.json({ success: false, message: "AI Call Analysis is temporarily paused." });
+    return res.json({
+      success: false,
+      message: "AI Call Analysis is temporarily paused.",
+    });
   }
   try {
+    const { LeadModel } = getModels(req);
     const { id, recordingId } = req.params;
-    const lead = await Lead.findById(id);
-    if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
+    const lead = await LeadModel.findById(id);
+    if (!lead)
+      return res
+        .status(404)
+        .json({ success: false, message: "Lead not found" });
 
     const recording = lead.recordings.id(recordingId);
-    if (!recording) return res.status(404).json({ success: false, message: "Recording not found" });
+    if (!recording)
+      return res
+        .status(404)
+        .json({ success: false, message: "Recording not found" });
 
     let filename = recording.url.split("/uploads/")[1];
-    if (!filename) return res.status(400).json({ success: false, message: "Invalid recording URL" });
+    if (!filename)
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid recording URL" });
 
-    // Decode filename for older files that may contain URL-encoded characters (like %20 for spaces)
     try {
       filename = decodeURIComponent(filename);
     } catch (e) {
@@ -548,14 +643,16 @@ export const analyzeRecording = async (req, res) => {
     const filePath = path.join(process.cwd(), "uploads", filename);
 
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ success: false, message: "Audio file not found on disk" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Audio file not found on disk" });
     }
 
     recording.analysisStatus = "pending";
     await lead.save();
 
     // Trigger in background
-    triggerAudioAnalysis(id, recordingId, filePath, "audio/mp4");
+    triggerAudioAnalysis(id, recordingId, filePath, "audio/mp4", LeadModel);
 
     res.json({ success: true, message: "Analysis triggered successfully" });
   } catch (error) {

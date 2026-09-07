@@ -175,10 +175,12 @@ leadSchema.pre("findOneAndDelete", async function () {
   const doc = await this.model.findOne(this.getQuery());
   if (doc) {
     const id = doc._id;
-    await mongoose.model("Followup").deleteMany({ leadId: id });
-    await mongoose.model("Conversation").deleteMany({ leadId: id });
-    await mongoose.model("Message").deleteMany({ leadId: id });
-    await mongoose.model("AILog").deleteMany({ leadId: id });
+    const db = this.model?.db || mongoose.connection;
+    const getModel = (name) => db.models[name] || mongoose.model(name);
+    await getModel("Followup").deleteMany({ leadId: id });
+    await getModel("Conversation").deleteMany({ leadId: id });
+    await getModel("Message").deleteMany({ leadId: id });
+    await getModel("AILog").deleteMany({ leadId: id });
   }
 });
 
@@ -187,10 +189,12 @@ leadSchema.pre("deleteOne", { document: true, query: true }, async function () {
     this._id ||
     (this.getQuery && (await this.model.findOne(this.getQuery()))?._id);
   if (id) {
-    await mongoose.model("Followup").deleteMany({ leadId: id });
-    await mongoose.model("Conversation").deleteMany({ leadId: id });
-    await mongoose.model("Message").deleteMany({ leadId: id });
-    await mongoose.model("AILog").deleteMany({ leadId: id });
+    const db = this.model?.db || this.db || mongoose.connection;
+    const getModel = (name) => db.models[name] || mongoose.model(name);
+    await getModel("Followup").deleteMany({ leadId: id });
+    await getModel("Conversation").deleteMany({ leadId: id });
+    await getModel("Message").deleteMany({ leadId: id });
+    await getModel("AILog").deleteMany({ leadId: id });
   }
 });
 

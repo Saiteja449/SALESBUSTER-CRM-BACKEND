@@ -3,6 +3,12 @@ import User from "../models/User.js";
 import AssignmentState from "../models/AssignmentState.js";
 import { sendWelcomeEnquiryMessage } from "../whatsapp/whatsappService.js";
 
+const getModels = (req) => ({
+  LeadModel: req.tenantModels?.Lead || Lead,
+  UserModel: req.tenantModels?.User || User,
+  AssignmentStateModel: req.tenantModels?.AssignmentState || AssignmentState,
+});
+
 // Meta requires a verification webhook setup.
 export const verifyMetaWebhook = (req, res) => {
   const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
@@ -26,6 +32,7 @@ export const verifyMetaWebhook = (req, res) => {
 export const receiveMetaWebhook = async (req, res) => {
   try {
     const body = req.body;
+    const { LeadModel, UserModel, AssignmentStateModel } = getModels(req);
 
     // Check if it's a page event
     if (body.object === "page") {
@@ -55,7 +62,6 @@ export const receiveMetaWebhook = async (req, res) => {
             }
 
             // Parse field data
-            // Meta returns field_data as an array: [{name: "email", values: ["test@test.com"]}, ...]
             let email = "";
             let phone = "";
             let name = "";
@@ -97,7 +103,7 @@ export const receiveMetaWebhook = async (req, res) => {
               orConditions.push({ email: new RegExp("^" + email.trim() + "$", "i") });
             }
 
-            const existingLead = await Lead.findOne({ $or: orConditions });
+            const existingLead = await LeadModel.findOne({ $or: orConditions });
             if (existingLead) {
               console.log("Lead already exists from Meta Ads:", phone);
               continue;
@@ -108,7 +114,7 @@ export const receiveMetaWebhook = async (req, res) => {
               phone: phone,
               email: email,
               city: city,
-              service: "General Enquiry", // Can be mapped to specific form if needed
+              service: "General Enquiry",
               notes: `Lead from Meta Ads (Form ID: ${formId})`,
               source: "Meta Ads",
               status: "New",
@@ -117,15 +123,15 @@ export const receiveMetaWebhook = async (req, res) => {
             };
 
             // Assignment logic
-            const reps = await User.find({ role: "sales person" }).sort({
+            const reps = await UserModel.find({ role: "sales person" }).sort({
               _id: 1,
             });
             if (reps && reps.length > 0) {
-              let state = await AssignmentState.findOne({
+              let state = await AssignmentStateModel.findOne({
                 key: "leadAssignment",
               });
               if (!state) {
-                state = await AssignmentState.create({
+                state = await AssignmentStateModel.create({
                   key: "leadAssignment",
                   lastAssignedIndex: -1,
                 });
@@ -141,7 +147,7 @@ export const receiveMetaWebhook = async (req, res) => {
               await state.save();
             }
 
-            const newLead = await Lead.create(leadData);
+            const newLead = await LeadModel.create(leadData);
             console.log(
               "Successfully created lead from Meta Ads:",
               leadData.phone

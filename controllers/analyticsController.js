@@ -1,4 +1,10 @@
 import TelecallerAnalytics from "../models/TelecallerAnalytics.js";
+import AILimit from "../models/AILimit.js";
+
+const getModels = (req) => ({
+  AnalyticsModel: req.tenantModels?.TelecallerAnalytics || TelecallerAnalytics,
+  AILimitModel: req.tenantModels?.AILimit || AILimit,
+});
 
 // Logs a single call and increments daily analytics
 export const logCall = async (req, res) => {
@@ -12,6 +18,7 @@ export const logCall = async (req, res) => {
       });
     }
 
+    const { AnalyticsModel } = getModels(req);
     const durationNum = parseInt(duration) || 0;
 
     const update = {
@@ -33,7 +40,7 @@ export const logCall = async (req, res) => {
     if (status === "not-connected") update.$inc.notConnected = 1;
 
     // Use upsert to create the document if it doesn't exist
-    const analytics = await TelecallerAnalytics.findOneAndUpdate(
+    const analytics = await AnalyticsModel.findOneAndUpdate(
       { salesperson, date },
       update,
       { new: true, upsert: true },
@@ -49,9 +56,10 @@ export const logCall = async (req, res) => {
 export const getAnalyticsBySalesperson = async (req, res) => {
   try {
     const { salesperson } = req.params;
+    const { AnalyticsModel } = getModels(req);
 
     // Fetch last 7 days of records sorted by date descending
-    const analytics = await TelecallerAnalytics.find({ salesperson })
+    const analytics = await AnalyticsModel.find({ salesperson })
       .sort({ date: -1 })
       .limit(7);
 
@@ -65,19 +73,19 @@ export const getAnalyticsBySalesperson = async (req, res) => {
 export const getTodayAnalyticsForAll = async (req, res) => {
   try {
     const today = new Date().toISOString().split("T")[0];
-    const analytics = await TelecallerAnalytics.find({ date: today });
+    const { AnalyticsModel } = getModels(req);
+    const analytics = await AnalyticsModel.find({ date: today });
     res.status(200).json({ success: true, data: analytics });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-import AILimit from "../models/AILimit.js";
-
 // Gets current AI (Groq) rate limits from database
 export const getAILimits = async (req, res) => {
   try {
-    const limit = await AILimit.findOne().sort({ lastUpdated: -1 });
+    const { AILimitModel } = getModels(req);
+    const limit = await AILimitModel.findOne().sort({ lastUpdated: -1 });
     if (!limit) {
       return res.status(200).json({
         success: true,
@@ -139,9 +147,10 @@ export const refreshAILimits = async (req, res) => {
     const resetTokens =
       response.headers.get("x-ratelimit-reset-tokens") || "N/A";
 
-    let limit = await AILimit.findOne();
+    const { AILimitModel } = getModels(req);
+    let limit = await AILimitModel.findOne();
     if (!limit) {
-      limit = new AILimit();
+      limit = new AILimitModel();
     }
 
     limit.remainingRequests = remainingRequests;

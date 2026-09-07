@@ -10,6 +10,14 @@ import {
   getSystemSettings,
   updateSystemSettings,
 } from "../whatsapp/whatsappService.js";
+
+const getModels = (req) => ({
+  LeadModel: req.tenantModels?.Lead || Lead,
+  MessageModel: req.tenantModels?.Message || Message,
+  ConversationModel: req.tenantModels?.Conversation || Conversation,
+  WhatsAppSessionModel: req.tenantModels?.WhatsAppSession || WhatsAppSession,
+});
+
 // @desc    Connect WhatsApp (starts Baileys client initialization)
 // @route   POST /api/whatsapp/connect
 // @access  Public
@@ -28,16 +36,17 @@ export const connectClient = async (req, res) => {
 // @access  Public
 export const getStatus = async (req, res) => {
   try {
+    const { WhatsAppSessionModel } = getModels(req);
     const memoryStatuses = getWhatsAppStatus(); // Now returns an array
-    const dbSessions = await WhatsAppSession.find();
+    const dbSessions = await WhatsAppSessionModel.find();
 
     const result = memoryStatuses.map((mem) => {
-      const db = dbSessions.find(s => s.sessionId === mem.sessionId);
+      const db = dbSessions.find((s) => s.sessionId === mem.sessionId);
       const status = mem.status || db?.status || "disconnected";
       return {
         sessionId: mem.sessionId,
         status: status,
-        qrCode: status === "qr" ? (mem.qrCode || db?.qrCode || "") : "",
+        qrCode: status === "qr" ? mem.qrCode || db?.qrCode || "" : "",
         connectedPhone: mem.connectedPhone || db?.connectedPhone || "",
         connectedName: mem.connectedName || db?.connectedName || "",
       };
@@ -82,6 +91,7 @@ export const getQR = async (req, res) => {
 export const getConversations = async (req, res) => {
   try {
     const { role, name } = req.query;
+    const { ConversationModel } = getModels(req);
 
     const populateOptions = { path: "leadId" };
 
@@ -91,7 +101,7 @@ export const getConversations = async (req, res) => {
       };
     }
 
-    let conversations = await Conversation.find()
+    let conversations = await ConversationModel.find()
       .populate(populateOptions)
       .sort({ lastMessageTime: -1 });
 
@@ -116,10 +126,12 @@ export const getMessages = async (req, res) => {
       return res.status(400).json({ message: "leadId is required." });
     }
 
-    // Reset unread count for this conversation since the agent is loading it
-    await Conversation.findOneAndUpdate({ leadId }, { unreadCount: 0 });
+    const { ConversationModel, MessageModel } = getModels(req);
 
-    const messages = await Message.find({ leadId }).sort({ timestamp: 1 });
+    // Reset unread count for this conversation since the agent is loading it
+    await ConversationModel.findOneAndUpdate({ leadId }, { unreadCount: 0 });
+
+    const messages = await MessageModel.find({ leadId }).sort({ timestamp: 1 });
     res.status(200).json(messages);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -157,7 +169,8 @@ export const toggleAI = async (req, res) => {
         .json({ message: "leadId and aiEnabled are required fields." });
     }
 
-    const lead = await Lead.findByIdAndUpdate(
+    const { LeadModel } = getModels(req);
+    const lead = await LeadModel.findByIdAndUpdate(
       leadId,
       { aiEnabled },
       { new: true },
@@ -167,12 +180,10 @@ export const toggleAI = async (req, res) => {
       return res.status(404).json({ message: "Lead not found" });
     }
 
-    res
-      .status(200)
-      .json({
-        message: `AI response state set to ${aiEnabled} for ${lead.name}`,
-        lead,
-      });
+    res.status(200).json({
+      message: `AI response state set to ${aiEnabled} for ${lead.name}`,
+      lead,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -184,19 +195,20 @@ export const toggleAI = async (req, res) => {
 export const testAI = async (req, res) => {
   try {
     const { message, leadId, reset } = req.body;
-    
+    const { LeadModel, MessageModel } = getModels(req);
+
     if (!message && !reset) {
       return res.status(400).json({ message: "message is required." });
     }
 
     let lead;
     if (leadId) {
-      lead = await Lead.findById(leadId);
+      lead = await LeadModel.findById(leadId);
     } else {
       // Find or create dummy lead
-      lead = await Lead.findOne({ phone: "0000000000" });
+      lead = await LeadModel.findOne({ phone: "0000000000" });
       if (!lead) {
-        lead = await Lead.create({
+        lead = await LeadModel.create({
           name: "Test User",
           phone: "0000000000",
           service: "General Enquiry",
@@ -210,8 +222,8 @@ export const testAI = async (req, res) => {
     }
 
     if (reset) {
-      await Message.deleteMany({ leadId: lead._id });
-      await Lead.findByIdAndUpdate(lead._id, {
+      await MessageModel.deleteMany({ leadId: lead._id });
+      await LeadModel.findByIdAndUpdate(lead._id, {
         aiQualification: {
           liftType: "",
           clientType: "General",
@@ -233,7 +245,7 @@ export const testAI = async (req, res) => {
           interestScore: 0,
         },
         aiEnabled: true,
-        disableAI: false
+        disableAI: false,
       });
       return res.status(200).json({ message: "Test lead reset successfully." });
     }
@@ -241,34 +253,34 @@ export const testAI = async (req, res) => {
     const { generateAIResponse } = await import("../ai/aiService.js");
 
     // Save incoming
-    const incoming = await Message.create({
+    const incoming = await MessageModel.create({
       messageId: `test-in-${Date.now()}`,
       sender: lead.phone,
       leadId: lead._id,
       text: message,
       direction: "incoming",
-      timestamp: new Date()
+      timestamp: new Date(),
     });
 
     const aiResponseText = await generateAIResponse(lead._id, message);
 
     // Save outgoing
-    const outgoing = await Message.create({
+    const outgoing = await MessageModel.create({
       messageId: `test-out-${Date.now()}`,
       sender: "AI Agent",
       leadId: lead._id,
       text: aiResponseText,
       direction: "outgoing",
-      timestamp: new Date()
+      timestamp: new Date(),
     });
 
-    const updatedLead = await Lead.findById(lead._id);
+    const updatedLead = await LeadModel.findById(lead._id);
 
     res.status(200).json({
       incoming,
       outgoing,
       aiQualification: updatedLead.aiQualification,
-      leadId: lead._id
+      leadId: lead._id,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -277,9 +289,10 @@ export const testAI = async (req, res) => {
 
 export const getTestAIHistory = async (req, res) => {
   try {
-    let lead = await Lead.findOne({ phone: "0000000000" });
+    const { LeadModel, MessageModel } = getModels(req);
+    let lead = await LeadModel.findOne({ phone: "0000000000" });
     if (!lead) {
-      lead = await Lead.create({
+      lead = await LeadModel.create({
         name: "Test User",
         phone: "0000000000",
         service: "General Enquiry",
@@ -287,15 +300,17 @@ export const getTestAIHistory = async (req, res) => {
       });
     }
 
-    const messages = await Message.find({ leadId: lead._id }).sort({ timestamp: 1 });
-    
+    const messages = await MessageModel.find({ leadId: lead._id }).sort({
+      timestamp: 1,
+    });
+
     res.status(200).json({
       leadId: lead._id,
       aiQualification: lead.aiQualification,
-      messages: messages.map(m => ({
+      messages: messages.map((m) => ({
         text: m.text,
-        role: m.direction === "incoming" ? "user" : "ai"
-      }))
+        role: m.direction === "incoming" ? "user" : "ai",
+      })),
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -321,6 +336,3 @@ export const updateGlobalSettings = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
-
-

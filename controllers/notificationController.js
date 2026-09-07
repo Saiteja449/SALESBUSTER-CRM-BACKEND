@@ -1,10 +1,13 @@
 import Notification from "../models/Notification.js";
 
+const getModel = (req) => req.tenantModels?.Notification || Notification;
+
 // @desc    Get all notifications for the logged in user
 // @route   GET /api/notifications
 // @access  Private
 export const getNotifications = async (req, res) => {
   try {
+    const NotificationModel = getModel(req);
     const userRole = req.user.role;
     const userId = req.user._id;
 
@@ -19,8 +22,8 @@ export const getNotifications = async (req, res) => {
       ],
     };
 
-    const total = await Notification.countDocuments(query);
-    const notifications = await Notification.find(query)
+    const total = await NotificationModel.countDocuments(query);
+    const notifications = await NotificationModel.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -51,7 +54,8 @@ export const getNotifications = async (req, res) => {
 // @access  Private
 export const markAsRead = async (req, res) => {
   try {
-    const notification = await Notification.findById(req.params.id);
+    const NotificationModel = getModel(req);
+    const notification = await NotificationModel.findById(req.params.id);
     if (!notification) {
       return res.status(404).json({ success: false, message: "Notification not found" });
     }
@@ -73,10 +77,8 @@ export const markAsRead = async (req, res) => {
 // @access  Private
 export const deleteNotification = async (req, res) => {
   try {
-    // For simplicity, we actually delete it from DB if they want to hide it,
-    // OR we could just have a 'hiddenBy' array.
-    // Given the simple requirement, we'll just delete it if the user removes it.
-    await Notification.findByIdAndDelete(req.params.id);
+    const NotificationModel = getModel(req);
+    await NotificationModel.findByIdAndDelete(req.params.id);
     res.status(200).json({ success: true, message: "Notification removed" });
   } catch (error) {
     console.error("Error deleting notification:", error);

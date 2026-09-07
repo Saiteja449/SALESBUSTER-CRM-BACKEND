@@ -19,8 +19,25 @@ const userSchema = mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["sales manager", "sales person"],
-      default: "user",
+      enum: ["sales manager", "sales person", "super_admin"],
+      default: "sales person",
+    },
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Organization",
+    },
+    isOrgOwner: {
+      type: Boolean,
+      default: false,
+    },
+    phone: {
+      type: String,
+      default: "",
+    },
+    status: {
+      type: String,
+      enum: ["active", "inactive"],
+      default: "active",
     },
   },
   {

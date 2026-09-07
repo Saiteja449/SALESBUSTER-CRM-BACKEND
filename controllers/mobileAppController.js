@@ -4,6 +4,12 @@ import AssignmentState from "../models/AssignmentState.js";
 import { getIO } from "../socket/socket.js";
 import { sendWelcomeEnquiryMessage } from "../whatsapp/whatsappService.js";
 
+const getModels = (req) => ({
+  LeadModel: req.tenantModels?.Lead || Lead,
+  UserModel: req.tenantModels?.User || User,
+  AssignmentStateModel: req.tenantModels?.AssignmentState || AssignmentState,
+});
+
 export const receiveMobileAppLead = async (req, res) => {
   try {
     const { name, phone, email, service } = req.body;
@@ -37,7 +43,9 @@ export const receiveMobileAppLead = async (req, res) => {
       orConditions.push({ email: new RegExp("^" + email.trim() + "$", "i") });
     }
 
-    const existingLead = await Lead.findOne({ $or: orConditions });
+    const { LeadModel, UserModel, AssignmentStateModel } = getModels(req);
+
+    const existingLead = await LeadModel.findOne({ $or: orConditions });
     if (existingLead) {
       return res.status(200).json({
         success: true,
@@ -74,11 +82,11 @@ export const receiveMobileAppLead = async (req, res) => {
       joinedAt: new Date(),
     };
 
-    const reps = await User.find({ role: "sales person" }).sort({ _id: 1 });
+    const reps = await UserModel.find({ role: "sales person" }).sort({ _id: 1 });
     if (reps && reps.length > 0) {
-      let state = await AssignmentState.findOne({ key: "leadAssignment" });
+      let state = await AssignmentStateModel.findOne({ key: "leadAssignment" });
       if (!state) {
-        state = await AssignmentState.create({
+        state = await AssignmentStateModel.create({
           key: "leadAssignment",
           lastAssignedIndex: -1,
         });
@@ -94,24 +102,37 @@ export const receiveMobileAppLead = async (req, res) => {
       await state.save();
     }
 
-    const lead = await Lead.create(leadData);
+    const lead = await LeadModel.create(leadData);
 
     // Send automated WhatsApp welcome enquiry message asynchronously
     sendWelcomeEnquiryMessage(lead).catch((err) =>
       console.error("Error in sendWelcomeEnquiryMessage (mobile):", err),
     );
 
-    const io = getIO();
-    if (io) {
-      io.emit("new_lead", lead);
+    // Broadcast new lead event via Socket.IO
+    try {
+      const io = getIO();
+      if (io) {
+        io.emit("new_lead", {
+          lead,
+          message: `New mobile app enquiry from ${lead.name}`,
+        });
+      }
+    } catch (socketErr) {
+      console.error("Socket emit failed in mobileAppController:", socketErr);
     }
 
     res.status(201).json({
       success: true,
-      message: "Lead received successfully from Mobile App.",
-      leadId: lead._id,
+      message: "Lead created successfully from Mobile App.",
+      lead,
     });
   } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
+    console.error("Error in receiveMobileAppLead:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while processing mobile app lead.",
+      error: error.message,
+    });
   }
 };

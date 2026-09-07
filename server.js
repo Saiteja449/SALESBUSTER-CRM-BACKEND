@@ -6,6 +6,9 @@ import path from "path";
 import { fileURLToPath } from "url";
 import dns from "dns";
 import connectDB from "./configs/db.js";
+import { tenantMiddleware } from "./middleware/tenantMiddleware.js";
+
+// Route Imports
 import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import leadRoutes from "./routes/leadRoutes.js";
@@ -16,6 +19,7 @@ import metaRoutes from "./routes/metaRoutes.js";
 import followupRoutes from "./routes/followupRoutes.js";
 import analyticsRoutes from "./routes/analyticsRoutes.js";
 import mobileAppRoutes from "./routes/mobileAppRoutes.js";
+import organizationRoutes from "./routes/organizationRoutes.js";
 
 // Socket & WhatsApp Imports
 import { initSocket } from "./socket/socket.js";
@@ -54,10 +58,14 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Attach tenant-scoped database models and organization metadata
+app.use(tenantMiddleware);
+
 // Serve static uploads
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Mount routes
+app.use("/api/organizations", organizationRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/leads", leadRoutes);
@@ -71,7 +79,7 @@ app.use("/api/mobile-app", mobileAppRoutes);
 
 // Base route
 app.get("/", (req, res) => {
-  res.send("Kranthi Elevators CRM API is running...");
+  res.send("SalesBuster CRM Multi-Tenant API is running...");
 });
 
 app.get("/health", (req, res) => {

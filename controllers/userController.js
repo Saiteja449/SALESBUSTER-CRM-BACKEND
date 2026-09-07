@@ -1,97 +1,249 @@
+import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import Notification from "../models/Notification.js";
-import bcrypt from "bcryptjs";
+import { getMasterModels } from "../services/tenantManager.js";
 
-// @desc    Get all users
+// Helper to resolve models
+const getModels = (req) => {
+  return {
+    UserModel: req.tenantModels?.User || User,
+    NotificationModel: req.tenantModels?.Notification || Notification,
+  };
+};
+
+// @desc    Get all sales representatives in tenant organization
 // @route   GET /api/users
-// @access  Public (for now)
+// @access  Protected
 export const getUsers = async (req, res) => {
   try {
-    const users = await User.find({ role: "sales person" }).select(
-      "-password",
+    const { UserModel } = getModels(req);
+    const users = await UserModel.find({ role: "sales person" }).select(
+      "-password"
     );
-    res.status(200).json({ success: true, data: users });
+
+    // If organization is known, return seat usage metadata
+    let seatMeta = null;
+    if (req.organization) {
+      const usedSeats = users.length;
+      const totalSeats = req.organization.seats || 1;
+      seatMeta = {
+        totalSeats,
+        usedSeats,
+        remainingSeats: Math.max(0, totalSeats - usedSeats),
+        isLimitReached: usedSeats >= totalSeats,
+      };
+    }
+
+    res.status(200).json({
+      success: true,
+      data: users,
+      seats: seatMeta,
+    });
   } catch (error) {
     console.error("Error fetching users:", error);
-    res.status(500).json({ success: false, message: "Server error while fetching users" });
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching users",
+    });
   }
 };
 
-// @desc    Add a new Sales Representative
+// @desc    Add a new Sales Representative (Enforces Seat Limit)
 // @route   POST /api/users
-// @access  Public (for now)
+// @access  Protected
 export const addSalesPerson = async (req, res) => {
   const { name, email, password } = req.body;
 
   if (!name || !email || !password) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Please provide name, email, and password" });
+    return res.status(400).json({
+      success: false,
+      message: "Please provide name, email, and password",
+    });
   }
 
-  try {
-    const userExists = await User.findOne({ email });
+  const cleanEmail = email.toLowerCase().trim();
+  const { UserModel, NotificationModel } = getModels(req);
 
-    if (userExists) {
-      return res
-        .status(400)
-        .json({ success: false, message: "A representative with this email already exists!" });
+  try {
+    // 1. Subscription validity check
+    if (req.organization?.subscriptionEndDate) {
+      const isExpired =
+        new Date() > new Date(req.organization.subscriptionEndDate);
+      if (isExpired) {
+        return res.status(403).json({
+          success: false,
+          subscriptionExpired: true,
+          message: `Your organization's subscription expired on ${new Date(
+            req.organization.subscriptionEndDate
+          ).toLocaleDateString("en-IN")}. Please renew to create new users.`,
+        });
+      }
+    }
+
+    // 2. Strict Seat Limit Check
+    if (req.organization?.seats) {
+      const currentRepsCount = await UserModel.countDocuments({
+        role: "sales person",
+      });
+      const maxSeats = req.organization.seats;
+
+      if (currentRepsCount >= maxSeats) {
+        return res.status(403).json({
+          success: false,
+          seatLimitReached: true,
+          message: `Seat limit reached (${currentRepsCount}/${maxSeats} seats allocated). Please contact your administrator to upgrade your plan.`,
+          totalSeats: maxSeats,
+          usedSeats: currentRepsCount,
+        });
+      }
+    }
+
+    // 3. Check if user already exists in this tenant
+    const userExistsInTenant = await UserModel.findOne({ email: cleanEmail });
+    if (userExistsInTenant) {
+      return res.status(400).json({
+        success: false,
+        message: "A representative with this email already exists in your team!",
+      });
+    }
+
+    // 4. Check if user exists in master registry
+    const { AuthUser } = getMasterModels();
+    const existingAuthUser = await AuthUser.findOne({ email: cleanEmail });
+    if (existingAuthUser) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "This email address is already registered in the system. Please use a different email.",
+      });
     }
 
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    const user = await User.create({
-      name,
-      email,
+    // 5. Create in Tenant Database
+    const user = await UserModel.create({
+      name: name.trim(),
+      email: cleanEmail,
       password: hashedPassword,
-      role: "sales person", // Will be mapped to 'Sales Representative' in frontend
+      role: "sales person",
+      organizationId: req.organization?._id || req.user?.organizationId,
+      isOrgOwner: false,
+      status: "active",
     });
 
-    await Notification.create({
-      title: "New Employee Added",
-      message: `${user.name} was added as a Sales Representative.`,
-      type: "system",
-      targetRoles: ["sales manager"],
+    // 6. Register in Master AuthUser database
+    await AuthUser.create({
+      _id: user._id, // Keep IDs identical
+      name: name.trim(),
+      email: cleanEmail,
+      password: hashedPassword,
+      role: "sales person",
+      organizationId: req.organization?._id || req.user?.organizationId,
+      tenantDbName: req.tenantDbName || null,
+      isOrgOwner: false,
+      status: "active",
     });
+
+    // 7. Create notification in tenant
+    try {
+      await NotificationModel.create({
+        title: "New Team Member Added",
+        message: `${user.name} was added as a Sales Representative.`,
+        type: "system",
+        targetRoles: ["sales manager"],
+      });
+    } catch (notifErr) {
+      console.error("Error creating notification:", notifErr);
+    }
+
+    // 8. Calculate updated seat usage
+    const totalRepsAfter = await UserModel.countDocuments({
+      role: "sales person",
+    });
+    const totalCapacity = req.organization?.seats || totalRepsAfter;
 
     res.status(201).json({
       success: true,
+      message: "Sales representative created successfully",
       data: {
         _id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
-      }
+      },
+      seats: {
+        totalSeats: totalCapacity,
+        usedSeats: totalRepsAfter,
+        remainingSeats: Math.max(0, totalCapacity - totalRepsAfter),
+      },
     });
   } catch (error) {
     console.error("Error creating user:", error);
-    res
-      .status(500)
-      .json({ success: false, message: "Server error while creating sales representative" });
+    res.status(500).json({
+      success: false,
+      message: error.message || "Server error while creating sales representative",
+    });
   }
 };
 
-// @desc    Delete a Sales Representative
+// @desc    Delete a Sales Representative (Frees up a seat)
 // @route   DELETE /api/users/:id
-// @access  Public (for now)
+// @access  Protected
 export const deleteSalesPerson = async (req, res) => {
+  const { UserModel } = getModels(req);
+
   try {
-    const user = await User.findById(req.params.id);
+    const user = await UserModel.findById(req.params.id);
 
     if (!user) {
-      return res.status(404).json({ success: false, message: "Representative not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Representative not found",
+      });
     }
 
-    // You can optionally add a check here to ensure the logged in user is not deleting themselves,
-    // although the frontend also checks this.
-    await User.findByIdAndDelete(req.params.id);
+    // Protect Organization Owner from being deleted
+    if (user.isOrgOwner || user.role === "sales manager") {
+      return res.status(403).json({
+        success: false,
+        message: "Cannot delete the Organization Owner account.",
+      });
+    }
 
-    res.status(200).json({ success: true, message: "Representative removed" });
+    // Delete from tenant DB
+    await UserModel.findByIdAndDelete(req.params.id);
+
+    // Delete from Master AuthUser registry
+    try {
+      const { AuthUser } = getMasterModels();
+      await AuthUser.deleteOne({
+        $or: [{ _id: req.params.id }, { email: user.email }],
+      });
+    } catch (authErr) {
+      console.error("Error removing from AuthUser registry:", authErr);
+    }
+
+    // Calculate remaining seats
+    const currentUsed = await UserModel.countDocuments({
+      role: "sales person",
+    });
+    const totalCapacity = req.organization?.seats || currentUsed + 1;
+
+    res.status(200).json({
+      success: true,
+      message: "Representative removed successfully. Seat freed up.",
+      seats: {
+        totalSeats: totalCapacity,
+        usedSeats: currentUsed,
+        remainingSeats: Math.max(0, totalCapacity - currentUsed),
+      },
+    });
   } catch (error) {
     console.error("Error deleting user:", error);
-    res
-      .status(500)
-      .json({ success: false, message: "Server error while deleting representative" });
+    res.status(500).json({
+      success: false,
+      message: "Server error while deleting representative",
+    });
   }
 };

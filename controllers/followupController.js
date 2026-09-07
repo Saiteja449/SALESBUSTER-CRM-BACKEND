@@ -1,12 +1,18 @@
 import Followup from "../models/Followup.js";
 import Notification from "../models/Notification.js";
 
+const getModels = (req) => ({
+  FollowupModel: req.tenantModels?.Followup || Followup,
+  NotificationModel: req.tenantModels?.Notification || Notification,
+});
+
 // @desc    Get all followups
 // @route   GET /api/followups
-// @access  Public
+// @access  Public / Protected
 export const getFollowups = async (req, res) => {
   try {
-    const followups = await Followup.find().sort({ createdAt: -1 });
+    const { FollowupModel } = getModels(req);
+    const followups = await FollowupModel.find().sort({ createdAt: -1 });
     res.json({ success: true, data: followups });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -15,7 +21,7 @@ export const getFollowups = async (req, res) => {
 
 // @desc    Create a followup
 // @route   POST /api/followups
-// @access  Public
+// @access  Public / Protected
 export const createFollowup = async (req, res) => {
   try {
     const {
@@ -29,7 +35,10 @@ export const createFollowup = async (req, res) => {
       author,
       done,
     } = req.body;
-    const followup = new Followup({
+
+    const { FollowupModel, NotificationModel } = getModels(req);
+
+    const followup = new FollowupModel({
       leadId,
       leadName,
       type,
@@ -43,7 +52,7 @@ export const createFollowup = async (req, res) => {
     const createdFollowup = await followup.save();
 
     if (type !== "Lead Edited") {
-      await Notification.create({
+      await NotificationModel.create({
         title: "New Follow-up Scheduled",
         message: `A follow-up was scheduled for lead ${leadName} by ${author}.`,
         type: "system",
@@ -59,15 +68,15 @@ export const createFollowup = async (req, res) => {
 
 // @desc    Update a followup
 // @route   PUT /api/followups/:id
-// @access  Public
+// @access  Public / Protected
 export const updateFollowup = async (req, res) => {
   try {
-    const followup = await Followup.findById(req.params.id);
+    const { FollowupModel } = getModels(req);
+    const followup = await FollowupModel.findById(req.params.id);
 
     if (followup) {
       followup.done =
         req.body.done !== undefined ? req.body.done : followup.done;
-      // Other fields can be updated if needed, but primarily we toggle 'done'
 
       const updatedFollowup = await followup.save();
       res.json({ success: true, data: updatedFollowup });

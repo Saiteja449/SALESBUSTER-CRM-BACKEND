@@ -78,7 +78,11 @@ export const receiveWebsiteLead = async (req, res) => {
       orConditions.push({ email: new RegExp("^" + email + "$", "i") });
     }
 
-    const existingLead = await Lead.findOne({ $or: orConditions });
+    const LeadModel = req.tenantModels?.Lead || Lead;
+    const UserModel = req.tenantModels?.User || User;
+    const AssignmentStateModel = req.tenantModels?.AssignmentState || AssignmentState;
+
+    const existingLead = await LeadModel.findOne({ $or: orConditions });
     if (existingLead) {
       return res.status(200).json({
         success: true,
@@ -171,11 +175,11 @@ export const receiveWebsiteLead = async (req, res) => {
       joinedAt: new Date(),
     };
 
-    const reps = await User.find({ role: "sales person" }).sort({ _id: 1 });
+    const reps = await UserModel.find({ role: "sales person" }).sort({ _id: 1 });
     if (reps && reps.length > 0) {
-      let state = await AssignmentState.findOne({ key: "leadAssignment" });
+      let state = await AssignmentStateModel.findOne({ key: "leadAssignment" });
       if (!state) {
-        state = await AssignmentState.create({
+        state = await AssignmentStateModel.create({
           key: "leadAssignment",
           lastAssignedIndex: -1,
         });
@@ -191,7 +195,7 @@ export const receiveWebsiteLead = async (req, res) => {
       await state.save();
     }
 
-    const lead = await Lead.create(leadData);
+    const lead = await LeadModel.create(leadData);
 
     // Send automated WhatsApp welcome enquiry message asynchronously
     sendWelcomeEnquiryMessage(lead).catch((err) =>
