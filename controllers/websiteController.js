@@ -198,7 +198,17 @@ export const receiveWebsiteLead = async (req, res) => {
     const lead = await LeadModel.create(leadData);
 
     // Send automated WhatsApp welcome enquiry message asynchronously
-    sendWelcomeEnquiryMessage(lead).catch((err) =>
+    const orgId =
+      req.organization?._id ||
+      req.userTokenData?.organizationId ||
+      req.body.organizationId ||
+      req.query.organizationId ||
+      null;
+
+    sendWelcomeEnquiryMessage(lead, {
+      tenantModels: req.tenantModels,
+      organizationId: orgId,
+    }).catch((err) =>
       console.error("Error in sendWelcomeEnquiryMessage (website):", err),
     );
 

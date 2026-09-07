@@ -232,8 +232,16 @@ const qualificationSchema = z.object({
     }),
 });
 
-export const generateAIResponse = async (leadId, incomingText) => {
+export const generateAIResponse = async (leadId, incomingText, tenantModels = null) => {
   try {
+    const LeadModel = tenantModels?.Lead || Lead;
+    const UserModel = tenantModels?.User || User;
+    const AssignmentStateModel = tenantModels?.AssignmentState || AssignmentState;
+    const NotificationModel = tenantModels?.Notification || Notification;
+    const MessageModel = tenantModels?.Message || Message;
+    const AILogModel = tenantModels?.AILog || AILog;
+    const FollowupModel = tenantModels?.Followup || Followup;
+
     const geminiApiKey = process.env.GEMINI_API_KEY;
 
     if (!geminiApiKey) {
@@ -242,7 +250,7 @@ export const generateAIResponse = async (leadId, incomingText) => {
       );
     }
 
-    const lead = await Lead.findById(leadId);
+    const lead = await LeadModel.findById(leadId);
     if (!lead) {
       throw new Error(`Lead not found with ID: ${leadId}`);
     }
@@ -250,13 +258,13 @@ export const generateAIResponse = async (leadId, incomingText) => {
     // Auto-assign representative if currently Unassigned or not set
     let assignedRep = lead.assignedTo;
     if (!assignedRep || assignedRep === "Unassigned") {
-      const representatives = await User.find({ role: "sales person" }).sort({
+      const representatives = await UserModel.find({ role: "sales person" }).sort({
         _id: 1,
       });
       if (representatives && representatives.length > 0) {
-        let state = await AssignmentState.findOne({ key: "leadAssignment" });
+        let state = await AssignmentStateModel.findOne({ key: "leadAssignment" });
         if (!state) {
-          state = await AssignmentState.create({
+          state = await AssignmentStateModel.create({
             key: "leadAssignment",
             lastAssignedIndex: -1,
           });
@@ -272,9 +280,9 @@ export const generateAIResponse = async (leadId, incomingText) => {
         await lead.save();
 
         // Create Lead Notification
-        const assignedAgent = await User.findOne({ name: assignedRep });
+        const assignedAgent = await UserModel.findOne({ name: assignedRep });
         const targetUsers = assignedAgent ? [assignedAgent._id] : [];
-        await Notification.create({
+        await NotificationModel.create({
           title: "Lead Assigned by AI",
           message: `Lead ${lead.name} has been assigned to ${assignedRep}.`,
           type: "lead_update",
@@ -294,8 +302,8 @@ export const generateAIResponse = async (leadId, incomingText) => {
     });
 
     // History
-    const totalMessagesCount = await Message.countDocuments({ leadId });
-    const historyDocs = await Message.find({ leadId })
+    const totalMessagesCount = await MessageModel.countDocuments({ leadId });
+    const historyDocs = await MessageModel.find({ leadId })
       .sort({ timestamp: -1 })
       .limit(8);
     const history = historyDocs.reverse();
@@ -490,7 +498,7 @@ If a user asks to modernize or replace an old lift:
       };
     }
 
-    await AILog.create({
+    await AILogModel.create({
       leadId,
       prompt: systemPrompt + "\n\nUser Message: " + incomingText,
       response: JSON.stringify(parsed, null, 2),
@@ -649,7 +657,7 @@ If a user asks to modernize or replace an old lift:
 
     if (parsed.disableAI) {
       updatePayload.aiEnabled = false;
-      await Notification.create({
+      await NotificationModel.create({
         title: "AI Disabled - Human Takeover Needed",
         message: `AI has been disabled for ${lead.name} (${lead.phone}) because they requested human support or the AI reached its limit.`,
         type: "lead_update",
@@ -657,19 +665,19 @@ If a user asks to modernize or replace an old lift:
       });
     }
 
-    await Lead.findByIdAndUpdate(leadId, updatePayload);
+    await LeadModel.findByIdAndUpdate(leadId, updatePayload);
 
     if (
       parsed.triggerActions?.createFollowUp &&
       parsed.triggerActions?.followUpDate
     ) {
-      const existingFollowUp = await Followup.findOne({
+      const existingFollowUp = await FollowupModel.findOne({
         leadId,
         date: parsed.triggerActions.followUpDate,
       });
 
       if (!existingFollowUp) {
-        await Followup.create({
+        await FollowupModel.create({
           leadId,
           leadName: lead.name,
           type: "WhatsApp",
@@ -683,7 +691,7 @@ If a user asks to modernize or replace an old lift:
           author: "AI Agent",
         });
 
-        await Notification.create({
+        await NotificationModel.create({
           title: "Followup Created by AI",
           message: `AI Agent created a follow-up task for lead ${lead.name} on ${parsed.triggerActions.followUpDate}.`,
           type: "lead_update",
@@ -693,7 +701,7 @@ If a user asks to modernize or replace an old lift:
     }
 
     if (parsed.triggerActions?.addNote) {
-      await Lead.findByIdAndUpdate(leadId, {
+      await LeadModel.findByIdAndUpdate(leadId, {
         $set: {
           notes:
             (lead.notes || "") +

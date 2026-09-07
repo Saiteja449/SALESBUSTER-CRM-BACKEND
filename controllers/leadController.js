@@ -407,7 +407,11 @@ export const createLead = async (req, res) => {
 
     // Send automated WhatsApp welcome enquiry message for non-manual entry sources (Call, Email, etc.)
     if (lead.source && lead.source !== "Manual Entry") {
-      sendWelcomeEnquiryMessage(lead).catch((err) =>
+      const orgId = req.user?.organizationId || req.organization?._id || null;
+      sendWelcomeEnquiryMessage(lead, {
+        tenantModels: req.tenantModels,
+        organizationId: orgId,
+      }).catch((err) =>
         console.error("Error in sendWelcomeEnquiryMessage (createLead):", err),
       );
     }
@@ -589,11 +593,22 @@ export const updateStatusByWebhook = async (req, res) => {
 
     const io = getIO();
     if (io) {
-      io.emit("conversation_updated", {
+      const orgId =
+        req.user?.organizationId ||
+        req.organization?._id ||
+        lead.organizationId ||
+        lead.organization ||
+        null;
+      const payload = {
         leadId: lead._id,
         status,
         lead,
-      });
+      };
+      if (orgId) {
+        io.to(`org_${orgId}`).emit("conversation_updated", payload);
+      } else {
+        io.emit("conversation_updated", payload);
+      }
     }
 
     res.status(200).json({

@@ -152,7 +152,17 @@ export const receiveMetaWebhook = async (req, res) => {
               "Successfully created lead from Meta Ads:",
               leadData.phone
             );
-            sendWelcomeEnquiryMessage(newLead).catch((err) =>
+            const orgId =
+              req.organization?._id ||
+              req.userTokenData?.organizationId ||
+              req.body.organizationId ||
+              req.query.organizationId ||
+              null;
+
+            sendWelcomeEnquiryMessage(newLead, {
+              tenantModels: req.tenantModels,
+              organizationId: orgId,
+            }).catch((err) =>
               console.error("Error in sendWelcomeEnquiryMessage (meta):", err)
             );
           }

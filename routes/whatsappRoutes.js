@@ -10,9 +10,15 @@ import {
   toggleAI,
   getGlobalSettings,
   updateGlobalSettings,
+  testAI,
+  getTestAIHistory,
 } from "../controllers/whatsappController.js";
+import { protect } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
+
+// All WhatsApp routes require authentication
+router.use(protect);
 
 // Settings & Controls
 router.get("/settings", getGlobalSettings);
@@ -33,7 +39,6 @@ router.post("/message/send", sendMessage);
 router.post("/ai/toggle", toggleAI);
 
 // Testing Route
-import { testAI, getTestAIHistory } from "../controllers/whatsappController.js";
 router.post("/test-ai", testAI);
 router.get("/test-ai", getTestAIHistory);
 

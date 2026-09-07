@@ -23,7 +23,7 @@ import organizationRoutes from "./routes/organizationRoutes.js";
 
 // Socket & WhatsApp Imports
 import { initSocket } from "./socket/socket.js";
-import { connectWhatsApp } from "./whatsapp/whatsappService.js";
+import { initAllOrganizationWhatsAppConnections } from "./whatsapp/whatsappService.js";
 
 dotenv.config();
 
@@ -94,6 +94,6 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 
-  // Auto-connect WhatsApp on server start to resume session
-  connectWhatsApp();
+  // Auto-connect WhatsApp on server start for all active tenant organizations
+  initAllOrganizationWhatsAppConnections();
 });

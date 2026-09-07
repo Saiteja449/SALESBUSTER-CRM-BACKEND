@@ -104,8 +104,17 @@ export const receiveMobileAppLead = async (req, res) => {
 
     const lead = await LeadModel.create(leadData);
 
+    const orgId =
+      req.user?.organizationId ||
+      req.organization?._id ||
+      req.body?.organizationId ||
+      null;
+
     // Send automated WhatsApp welcome enquiry message asynchronously
-    sendWelcomeEnquiryMessage(lead).catch((err) =>
+    sendWelcomeEnquiryMessage(lead, {
+      tenantModels: req.tenantModels,
+      organizationId: orgId,
+    }).catch((err) =>
       console.error("Error in sendWelcomeEnquiryMessage (mobile):", err),
     );
 
@@ -113,10 +122,15 @@ export const receiveMobileAppLead = async (req, res) => {
     try {
       const io = getIO();
       if (io) {
-        io.emit("new_lead", {
+        const payload = {
           lead,
           message: `New mobile app enquiry from ${lead.name}`,
-        });
+        };
+        if (orgId) {
+          io.to(`org_${orgId}`).emit("new_lead", payload);
+        } else {
+          io.emit("new_lead", payload);
+        }
       }
     } catch (socketErr) {
       console.error("Socket emit failed in mobileAppController:", socketErr);

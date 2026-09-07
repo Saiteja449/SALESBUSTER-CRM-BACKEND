@@ -28,6 +28,23 @@ export const initSocket = (server) => {
       }
     });
 
+    // Join room for specific organization for multi-tenant isolation
+    socket.on("join_organization", (orgId) => {
+      if (orgId) {
+        const roomName = String(orgId).startsWith("org_") ? String(orgId) : `org_${orgId}`;
+        socket.join(roomName);
+        console.log(`Socket ${socket.id} joined organization room: ${roomName}`);
+      }
+    });
+
+    socket.on("leave_organization", (orgId) => {
+      if (orgId) {
+        const roomName = String(orgId).startsWith("org_") ? String(orgId) : `org_${orgId}`;
+        socket.leave(roomName);
+        console.log(`Socket ${socket.id} left organization room: ${roomName}`);
+      }
+    });
+
     socket.on("disconnect", () => {
       console.log(`Socket.IO client disconnected: ${socket.id}`);
     });

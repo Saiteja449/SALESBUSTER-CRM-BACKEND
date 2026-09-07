@@ -7,11 +7,13 @@ import WhatsAppAuthState from "../models/WhatsAppAuthState.js";
  * 
  * Replaces useMultiFileAuthState to avoid file system corruption and locks.
  */
-export const useMongoDBAuthState = async (sessionId) => {
+export const useMongoDBAuthState = async (sessionId, AuthStateModel = WhatsAppAuthState) => {
+  const Model = AuthStateModel || WhatsAppAuthState;
+
   const writeData = async (data, keyId) => {
     try {
       const jsonStr = JSON.stringify(data, BufferJSON.replacer);
-      await WhatsAppAuthState.findOneAndUpdate(
+      await Model.findOneAndUpdate(
         { sessionId, type: keyId === "creds" ? "creds" : "keys", keyId },
         { data: jsonStr },
         { upsert: true, returnDocument: 'after' }
@@ -23,7 +25,7 @@ export const useMongoDBAuthState = async (sessionId) => {
 
   const readData = async (keyId) => {
     try {
-      const doc = await WhatsAppAuthState.findOne({
+      const doc = await Model.findOne({
         sessionId,
         type: keyId === "creds" ? "creds" : "keys",
         keyId,
@@ -39,7 +41,7 @@ export const useMongoDBAuthState = async (sessionId) => {
 
   const removeData = async (keyId) => {
     try {
-      await WhatsAppAuthState.deleteOne({
+      await Model.deleteOne({
         sessionId,
         type: keyId === "creds" ? "creds" : "keys",
         keyId,

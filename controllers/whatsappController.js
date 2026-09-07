@@ -20,12 +20,23 @@ const getModels = (req) => ({
 
 // @desc    Connect WhatsApp (starts Baileys client initialization)
 // @route   POST /api/whatsapp/connect
-// @access  Public
+// @access  Protected
 export const connectClient = async (req, res) => {
   try {
-    const { sessionId } = req.body;
-    connectWhatsApp(sessionId);
-    res.status(200).json({ message: "WhatsApp connection worker started." });
+    const orgId = req.user?.organizationId
+      ? req.user.organizationId.toString()
+      : req.organization?._id
+        ? req.organization._id.toString()
+        : req.body.organizationId || null;
+    const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
+    const targetSessionId = orgId ? `org_${orgId}` : req.body.sessionId || "device_1";
+
+    connectWhatsApp({
+      sessionId: targetSessionId,
+      organizationId: orgId,
+      tenantDbName,
+    });
+    res.status(200).json({ message: "WhatsApp connection worker started.", sessionId: targetSessionId });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -33,24 +44,46 @@ export const connectClient = async (req, res) => {
 
 // @desc    Get WhatsApp connection status
 // @route   GET /api/whatsapp/status
-// @access  Public
+// @access  Protected
 export const getStatus = async (req, res) => {
   try {
     const { WhatsAppSessionModel } = getModels(req);
-    const memoryStatuses = getWhatsAppStatus(); // Now returns an array
-    const dbSessions = await WhatsAppSessionModel.find();
+    const orgId = req.user?.organizationId
+      ? req.user.organizationId.toString()
+      : req.organization?._id
+        ? req.organization._id.toString()
+        : null;
 
-    const result = memoryStatuses.map((mem) => {
+    const memoryStatuses = getWhatsAppStatus(orgId);
+    const targetSessionId = orgId ? `org_${orgId}` : req.query.sessionId || "device_1";
+    const dbSessions = await WhatsAppSessionModel.find(orgId ? { sessionId: targetSessionId } : {});
+
+    let result = memoryStatuses.map((mem) => {
       const db = dbSessions.find((s) => s.sessionId === mem.sessionId);
       const status = mem.status || db?.status || "disconnected";
       return {
         sessionId: mem.sessionId,
+        organizationId: mem.organizationId || orgId,
         status: status,
         qrCode: status === "qr" ? mem.qrCode || db?.qrCode || "" : "",
         connectedPhone: mem.connectedPhone || db?.connectedPhone || "",
         connectedName: mem.connectedName || db?.connectedName || "",
       };
     });
+
+    if (result.length === 0 && orgId) {
+      const db = dbSessions.find((s) => s.sessionId === targetSessionId);
+      result = [
+        {
+          sessionId: targetSessionId,
+          organizationId: orgId,
+          status: db?.status || "disconnected",
+          qrCode: db?.qrCode || "",
+          connectedPhone: db?.connectedPhone || "",
+          connectedName: db?.connectedName || "",
+        },
+      ];
+    }
 
     res.status(200).json(result);
   } catch (error) {
@@ -60,14 +93,19 @@ export const getStatus = async (req, res) => {
 
 // @desc    Disconnect WhatsApp and delete credentials
 // @route   POST /api/whatsapp/logout
-// @access  Public
+// @access  Protected
 export const logoutClient = async (req, res) => {
   try {
-    const { sessionId } = req.body;
-    await logoutWhatsApp(sessionId);
+    const orgId = req.user?.organizationId
+      ? req.user.organizationId.toString()
+      : req.organization?._id
+        ? req.organization._id.toString()
+        : null;
+    const targetSessionId = orgId ? `org_${orgId}` : req.body.sessionId || "device_1";
+    await logoutWhatsApp(targetSessionId);
     res
       .status(200)
-      .json({ message: "WhatsApp disconnected and logged out successfully." });
+      .json({ message: "WhatsApp disconnected and logged out successfully.", sessionId: targetSessionId });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -75,11 +113,18 @@ export const logoutClient = async (req, res) => {
 
 // @desc    Get current active QR code image string
 // @route   GET /api/whatsapp/qr
-// @access  Public
+// @access  Protected
 export const getQR = async (req, res) => {
   try {
-    const statusData = getWhatsAppStatus();
-    res.status(200).json({ qrCode: statusData.qrCode });
+    const orgId = req.user?.organizationId
+      ? req.user.organizationId.toString()
+      : req.organization?._id
+        ? req.organization._id.toString()
+        : null;
+    const statusDataList = getWhatsAppStatus(orgId);
+    const targetSessionId = orgId ? `org_${orgId}` : "device_1";
+    const statusData = statusDataList.find((s) => s.sessionId === targetSessionId) || statusDataList[0] || {};
+    res.status(200).json({ qrCode: statusData.qrCode || "" });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -140,7 +185,7 @@ export const getMessages = async (req, res) => {
 
 // @desc    Send manual WhatsApp message
 // @route   POST /api/whatsapp/message/send
-// @access  Public
+// @access  Protected
 export const sendMessage = async (req, res) => {
   try {
     const { leadId, text, senderName } = req.body;
@@ -150,7 +195,22 @@ export const sendMessage = async (req, res) => {
         .json({ message: "leadId and text are required fields." });
     }
 
-    const messageRecord = await sendMessageFromCRM(leadId, text, senderName);
+    const orgId = req.user?.organizationId
+      ? req.user.organizationId.toString()
+      : req.organization?._id
+        ? req.organization._id.toString()
+        : null;
+
+    const messageRecord = await sendMessageFromCRM(
+      leadId,
+      text,
+      senderName || req.user?.name || "Agent",
+      {
+        organizationId: orgId,
+        tenantModels: req.tenantModels,
+        sessionId: orgId ? `org_${orgId}` : null,
+      },
+    );
     res.status(200).json(messageRecord);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -262,7 +322,7 @@ export const testAI = async (req, res) => {
       timestamp: new Date(),
     });
 
-    const aiResponseText = await generateAIResponse(lead._id, message);
+    const aiResponseText = await generateAIResponse(lead._id, message, req.tenantModels);
 
     // Save outgoing
     const outgoing = await MessageModel.create({
@@ -319,7 +379,7 @@ export const getTestAIHistory = async (req, res) => {
 
 export const getGlobalSettings = async (req, res) => {
   try {
-    const settings = await getSystemSettings();
+    const settings = await getSystemSettings(req.tenantModels);
     res.status(200).json({ success: true, data: settings });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -330,7 +390,12 @@ export const updateGlobalSettings = async (req, res) => {
   try {
     const updates = req.body || {};
     const updatedBy = req.user?.name || "Dashboard User";
-    const settings = await updateSystemSettings(updates, updatedBy);
+    const orgId = req.user?.organizationId
+      ? req.user.organizationId.toString()
+      : req.organization?._id
+        ? req.organization._id.toString()
+        : null;
+    const settings = await updateSystemSettings(updates, updatedBy, req.tenantModels, orgId);
     res.status(200).json({ success: true, data: settings });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
