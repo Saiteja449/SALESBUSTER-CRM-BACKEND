@@ -16,10 +16,11 @@ import { sendTenantWelcomeEmail } from "../helpers/emailHelper.js";
 import { getIO } from "../socket/socket.js";
 
 /**
- * Calculates exactly 1 calendar month later, ending at 23:59:59.999
- * Handles month rollovers correctly (e.g. Sep 8 -> Oct 8, Jan 31 -> Feb 28/29)
+ * Calculates subscription end date given a start date and duration in months.
+ * Sets time to 23:59:59.999.
+ * Handles month and leap-year rollovers correctly (e.g. Sep 8 + 3 months -> Dec 8, Jan 31 + 1 month -> Feb 28/29, Aug 31 + 3 months -> Nov 30).
  */
-const calculateOneMonthLater = (startDate, months = 1) => {
+const calculateSubscriptionEndDate = (startDate, months = 1) => {
   const start = new Date(startDate);
   const end = new Date(start);
   const targetMonth = end.getMonth() + months;
@@ -33,6 +34,27 @@ const calculateOneMonthLater = (startDate, months = 1) => {
   end.setHours(23, 59, 59, 999);
   return end;
 };
+
+// Backward-compatible alias
+const calculateOneMonthLater = calculateSubscriptionEndDate;
+
+/**
+ * Returns default duration in months for a given subscription plan
+ */
+const getDurationMonthsForPlan = (plan) => {
+  const normalized = (plan || "").toLowerCase().trim();
+  switch (normalized) {
+    case "quarterly":
+      return 3;
+    case "annually":
+    case "annual":
+      return 12;
+    case "monthly":
+    default:
+      return 1;
+  }
+};
+
 
 // @desc    Provision a new client organization tenant
 // @route   POST /api/organizations/provision
@@ -48,6 +70,8 @@ export const provisionOrganization = async (req, res) => {
       amountPaid,
       pricingPerSeat,
       paymentMethod,
+      subscriptionPlan,
+      months,
       subscriptionStartDate,
       notes,
     } = req.body;
@@ -79,6 +103,19 @@ export const provisionOrganization = async (req, res) => {
       });
     }
 
+    // Validate and normalize subscriptionPlan
+    let normalizedPlan = (subscriptionPlan || "monthly").toLowerCase().trim();
+    if (normalizedPlan === "annual") {
+      normalizedPlan = "annually";
+    }
+    const allowedPlans = ["monthly", "quarterly", "annually"];
+    if (!allowedPlans.includes(normalizedPlan)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid subscriptionPlan '${subscriptionPlan}'. Allowed values: ${allowedPlans.join(", ")}.`,
+      });
+    }
+
     const { Organization, AuthUser } = getMasterModels();
 
     // 2. Check if email is already in use
@@ -98,11 +135,15 @@ export const provisionOrganization = async (req, res) => {
       });
     }
 
-    // 3. Compute Monthly Subscription Dates
+    // 3. Compute Subscription Dates based on selected plan or explicit months
+    const durationMonths = months != null && !isNaN(parseInt(months, 10))
+      ? Math.max(1, parseInt(months, 10))
+      : getDurationMonthsForPlan(normalizedPlan);
+
     const startDate = subscriptionStartDate
       ? new Date(subscriptionStartDate)
       : new Date();
-    const endDate = calculateOneMonthLater(startDate, 1);
+    const endDate = calculateSubscriptionEndDate(startDate, durationMonths);
 
     // 4. Generate unique tenant database name
     let tenantDbName = generateTenantDbName(name);
@@ -128,7 +169,7 @@ export const provisionOrganization = async (req, res) => {
       amountPaid: paidAmount,
       pricingPerSeat: pricingPerSeat != null ? Number(pricingPerSeat) : Math.round(paidAmount / seatCount),
       paymentMethod: paymentMethod || "Manual",
-      subscriptionPlan: "monthly",
+      subscriptionPlan: normalizedPlan,
       subscriptionStartDate: startDate,
       subscriptionEndDate: endDate,
       status: "active",
@@ -380,13 +421,12 @@ export const updateOrganizationSeats = async (req, res) => {
   }
 };
 
-// @desc    Renew organization subscription (+1 or more months)
+// @desc    Renew organization subscription (Supports monthly, quarterly, annually, or custom months)
 // @route   PUT /api/organizations/:id/renew
 // @access  Protected (Super Admin)
 export const renewSubscription = async (req, res) => {
   try {
-    const { amountPaid, months = 1, paymentMethod } = req.body;
-    const renewalMonths = Math.max(1, parseInt(months, 10) || 1);
+    const { amountPaid, months, subscriptionPlan, paymentMethod } = req.body;
 
     const { Organization } = getMasterModels();
     const org = await Organization.findById(req.params.id);
@@ -398,6 +438,25 @@ export const renewSubscription = async (req, res) => {
       });
     }
 
+    let targetPlan = org.subscriptionPlan || "monthly";
+    if (subscriptionPlan) {
+      let normalizedPlan = subscriptionPlan.toLowerCase().trim();
+      if (normalizedPlan === "annual") normalizedPlan = "annually";
+      const allowedPlans = ["monthly", "quarterly", "annually"];
+      if (!allowedPlans.includes(normalizedPlan)) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid subscriptionPlan '${subscriptionPlan}'. Allowed values: ${allowedPlans.join(", ")}.`,
+        });
+      }
+      targetPlan = normalizedPlan;
+    }
+
+    const renewalMonths =
+      months != null && !isNaN(parseInt(months, 10))
+        ? Math.max(1, parseInt(months, 10))
+        : getDurationMonthsForPlan(targetPlan);
+
     // If existing subscription is already expired, start from today
     // Otherwise extend from current subscriptionEndDate
     const now = new Date();
@@ -406,8 +465,9 @@ export const renewSubscription = async (req, res) => {
         ? new Date(org.subscriptionEndDate)
         : now;
 
-    const newEndDate = calculateOneMonthLater(baseDate, renewalMonths);
+    const newEndDate = calculateSubscriptionEndDate(baseDate, renewalMonths);
 
+    org.subscriptionPlan = targetPlan;
     org.subscriptionEndDate = newEndDate;
     org.status = "active";
     if (amountPaid != null) {
@@ -424,9 +484,12 @@ export const renewSubscription = async (req, res) => {
       io.to(`org_${org._id}`).emit("organization_updated", org.toJSON());
     }
 
+    const planLabel =
+      targetPlan.charAt(0).toUpperCase() + targetPlan.slice(1);
+
     res.status(200).json({
       success: true,
-      message: `Subscription successfully renewed until ${newEndDate.toLocaleDateString("en-IN")}`,
+      message: `Subscription successfully renewed (${planLabel} plan) until ${newEndDate.toLocaleDateString("en-IN")}`,
       data: org,
     });
   } catch (error) {

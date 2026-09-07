@@ -46,8 +46,10 @@ const organizationSchema = new mongoose.Schema(
     },
     subscriptionPlan: {
       type: String,
-      enum: ["monthly"],
+      enum: ["monthly", "quarterly", "annually", "annual"],
       default: "monthly",
+      lowercase: true,
+      trim: true,
     },
     subscriptionStartDate: {
       type: Date,

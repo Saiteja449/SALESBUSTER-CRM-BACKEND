@@ -53,6 +53,8 @@ export const sendTenantWelcomeEmail = async ({
   const formattedStartDate = formatDate(organization.subscriptionStartDate);
   const formattedEndDate = formatDate(organization.subscriptionEndDate);
   const formattedAmount = organization.amountPaid != null ? `₹${Number(organization.amountPaid).toLocaleString("en-IN")}` : "Paid";
+  const rawPlan = organization.subscriptionPlan || "monthly";
+  const formattedPlan = rawPlan.charAt(0).toUpperCase() + rawPlan.slice(1);
 
   const appLoginUrl = loginUrl || process.env.FRONTEND_URL || "http://localhost:5173/login";
 
@@ -95,7 +97,7 @@ export const sendTenantWelcomeEmail = async ({
           </tr>
           <tr>
             <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Subscription Period:</td>
-            <td style="padding: 6px 0; color: #0f172a; font-weight: 700; text-align: right;">${formattedStartDate} – ${formattedEndDate} (Monthly)</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 700; text-align: right;">${formattedStartDate} – ${formattedEndDate} (${formattedPlan})</td>
           </tr>
           <tr>
             <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Amount Paid:</td>

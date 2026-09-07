@@ -57,10 +57,15 @@ curl -X POST https://api.salesbuster.ai/api/auth/login \
 
 ## 2. Provision New Organization Tenant
 
-Creates an isolated client tenant, initializes their private database (`sb_tenant_<slug>_<id>`), auto-generates a secure password, calculates monthly subscription validity (e.g. Sep 8 → Oct 8), and dispatches the welcome onboarding email.
+Creates an isolated client tenant, initializes their private database (`sb_tenant_<slug>_<id>`), auto-generates a secure password, calculates subscription validity according to the plan (`monthly` &rarr; +1 mo, `quarterly` &rarr; +3 mos, `annually` &rarr; +12 mos), and dispatches the welcome onboarding email.
 
 > [!NOTE]
 > **No Password Required**: Do **not** send a password in the request. The backend auto-generates a complex password and emails it to the owner.
+
+### Supported Subscription Plans:
+- `"monthly"`: 1 calendar month validity (default)
+- `"quarterly"`: 3 calendar months validity
+- `"annually"`: 12 calendar months validity
 
 ### cURL Request:
 ```bash
@@ -76,6 +81,7 @@ curl -X POST https://api.salesbuster.ai/api/organizations/provision \
     "amountPaid": 5990,
     "pricingPerSeat": 599,
     "paymentMethod": "UPI",
+    "subscriptionPlan": "quarterly",
     "subscriptionStartDate": "2026-09-08T00:00:00.000Z",
     "notes": "Enterprise Tier client"
   }'
@@ -96,9 +102,9 @@ curl -X POST https://api.salesbuster.ai/api/organizations/provision \
       "seats": 10,
       "amountPaid": 5990,
       "pricingPerSeat": 599,
-      "subscriptionPlan": "monthly",
+      "subscriptionPlan": "quarterly",
       "subscriptionStartDate": "2026-09-08T00:00:00.000Z",
-      "subscriptionEndDate": "2026-10-08T23:59:59.999Z",
+      "subscriptionEndDate": "2026-12-08T23:59:59.999Z",
       "status": "active",
       "tenantDbName": "sb_tenant_acme_technologies_7cfcaa"
     },
@@ -248,7 +254,7 @@ curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
 
 ## 5. Renew Organization Subscription
 
-Renews or extends the monthly subscription period. Automatically calculates +1 calendar month (or specified `months`) from current expiration date or today.
+Renews or extends the subscription period. Automatically calculates duration based on `subscriptionPlan` (`monthly` &rarr; +1 mo, `quarterly` &rarr; +3 mos, `annually` &rarr; +12 mos) or custom `months` from current expiration date (or today if expired). Also updates the organization's plan if `subscriptionPlan` is provided.
 
 ### cURL Request:
 ```bash
@@ -256,8 +262,8 @@ curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
   -H "Content-Type: application/json" \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026" \
   -d '{
-    "months": 1,
-    "amountPaid": 5990,
+    "subscriptionPlan": "annually",
+    "amountPaid": 59900,
     "paymentMethod": "UPI"
   }'
 ```
@@ -266,13 +272,14 @@ curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
 ```json
 {
   "success": true,
-  "message": "Subscription successfully renewed until 08/11/2026",
+  "message": "Subscription successfully renewed (Annually plan) until 08/09/2027",
   "data": {
     "id": "66dd1f5e8b4e7a2b9c1d0001",
     "name": "Acme Technologies Inc.",
+    "subscriptionPlan": "annually",
     "subscriptionStartDate": "2026-09-08T00:00:00.000Z",
-    "subscriptionEndDate": "2026-11-08T23:59:59.999Z",
-    "amountPaid": 11980,
+    "subscriptionEndDate": "2027-09-08T23:59:59.999Z",
+    "amountPaid": 65890,
     "status": "active",
     "paymentMethod": "UPI"
   }
