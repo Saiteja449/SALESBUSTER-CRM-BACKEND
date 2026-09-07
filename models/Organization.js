@@ -77,6 +77,10 @@ const organizationSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "AuthUser",
     },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AuthUser",
+    },
     notes: {
       type: String,
       default: "",

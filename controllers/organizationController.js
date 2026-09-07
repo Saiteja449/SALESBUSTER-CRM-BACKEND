@@ -176,6 +176,7 @@ export const provisionOrganization = async (req, res) => {
       tenantDbName,
       notes: notes || "",
       aiSettings: getDefaultAISettings(name.trim()),
+      createdBy: req.user?._id || null,
     });
 
     // 7. Register Owner in Master AuthUser registry
@@ -241,6 +242,7 @@ export const provisionOrganization = async (req, res) => {
           subscriptionEndDate: organization.subscriptionEndDate,
           status: organization.status,
           tenantDbName: organization.tenantDbName,
+          createdBy: organization.createdBy || null,
         },
         emailSent,
         credentials: {

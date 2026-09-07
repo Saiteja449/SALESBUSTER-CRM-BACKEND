@@ -67,7 +67,31 @@ Creates an isolated client tenant, initializes their private database (`sb_tenan
 - `"quarterly"`: 3 calendar months validity
 - `"annually"`: 12 calendar months validity
 
-### cURL Request:
+### Endpoints:
+- `POST /api/organizations` (Recommended REST endpoint)
+- `POST /api/organizations/provision` (Legacy / explicit endpoint)
+
+### cURL Request (Using Super Admin Bearer JWT Token - Recommended):
+```bash
+curl -X POST https://api.salesbuster.ai/api/organizations/provision \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>" \
+  -d '{
+    "name": "Acme Technologies Inc.",
+    "email": "billing@acmetech.io",
+    "mobile": "+91 98765 43210",
+    "website": "https://acmetech.io",
+    "seats": 10,
+    "amountPaid": 5990,
+    "pricingPerSeat": 599,
+    "paymentMethod": "UPI",
+    "subscriptionPlan": "quarterly",
+    "subscriptionStartDate": "2026-09-08T00:00:00.000Z",
+    "notes": "Enterprise Tier client"
+  }'
+```
+
+### Alternative cURL Request (Using Admin Secret Key):
 ```bash
 curl -X POST https://api.salesbuster.ai/api/organizations/provision \
   -H "Content-Type: application/json" \

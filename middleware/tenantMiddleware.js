@@ -96,29 +96,5 @@ export const checkSubscriptionActive = (req, res, next) => {
   next();
 };
 
-/**
- * Middleware to restrict access to super admin only
- */
-export const requireSuperAdmin = (req, res, next) => {
-  if (
-    req.user &&
-    req.user.role === "super_admin"
-  ) {
-    return next();
-  }
+export { requireSuperAdmin } from "./authMiddleware.js";
 
-  // Also support super admin API key for the external Admin project
-  const superAdminApiKey = req.headers["x-admin-key"];
-  if (
-    superAdminApiKey &&
-    process.env.ADMIN_API_KEY &&
-    superAdminApiKey === process.env.ADMIN_API_KEY
-  ) {
-    return next();
-  }
-
-  return res.status(403).json({
-    success: false,
-    message: "Access forbidden: Super Administrator privileges required",
-  });
-};

@@ -20,8 +20,7 @@ import {
   uploadOrgKnowledgeDoc,
   deleteOrgKnowledgeDoc,
 } from "../controllers/organizationController.js";
-import { protect } from "../middleware/authMiddleware.js";
-import { requireSuperAdmin } from "../middleware/tenantMiddleware.js";
+import { protect, verifySuperAdmin } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
@@ -46,20 +45,6 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB max
 });
 
-// Helper middleware: allow if valid super_admin token OR valid x-admin-key header
-const superAdminAuth = (req, res, next) => {
-  const adminKey = req.headers["x-admin-key"];
-  const validKey =
-    process.env.ADMIN_API_KEY || "salesbuster_super_admin_secret_key_2026";
-  if (adminKey && adminKey === validKey) {
-    return next();
-  }
-
-  protect(req, res, () => {
-    requireSuperAdmin(req, res, next);
-  });
-};
-
 // Organization Owner Profile (Read-only view for current tenant owner)
 router.get("/my-org", protect, getMyOrganization);
 
@@ -79,26 +64,28 @@ router.delete(
 );
 
 // Super Admin APIs (For Super Admin Portal)
-router.post("/provision", superAdminAuth, provisionOrganization);
-router.get("/", superAdminAuth, getOrganizations);
-router.get("/:id", superAdminAuth, getOrganizationById);
-router.put("/:id/seats", superAdminAuth, updateOrganizationSeats);
-router.put("/:id/renew", superAdminAuth, renewSubscription);
-router.patch("/:id/status", superAdminAuth, toggleStatus);
-router.post("/:id/resend-welcome", superAdminAuth, resendWelcomeEmail);
+// Provisioning an organization with super admin token verification
+router.post("/", verifySuperAdmin, provisionOrganization);
+router.post("/provision", verifySuperAdmin, provisionOrganization);
+router.get("/", verifySuperAdmin, getOrganizations);
+router.get("/:id", verifySuperAdmin, getOrganizationById);
+router.put("/:id/seats", verifySuperAdmin, updateOrganizationSeats);
+router.put("/:id/renew", verifySuperAdmin, renewSubscription);
+router.patch("/:id/status", verifySuperAdmin, toggleStatus);
+router.post("/:id/resend-welcome", verifySuperAdmin, resendWelcomeEmail);
 
 // Super Admin AI Settings & Knowledge Base APIs
-router.get("/:id/ai-settings", superAdminAuth, getOrgAISettings);
-router.put("/:id/ai-settings", superAdminAuth, updateOrgAISettings);
+router.get("/:id/ai-settings", verifySuperAdmin, getOrgAISettings);
+router.put("/:id/ai-settings", verifySuperAdmin, updateOrgAISettings);
 router.post(
   "/:id/knowledge-base/upload",
-  superAdminAuth,
+  verifySuperAdmin,
   upload.single("file"),
   uploadOrgKnowledgeDoc,
 );
 router.delete(
   "/:id/knowledge-base/:docId",
-  superAdminAuth,
+  verifySuperAdmin,
   deleteOrgKnowledgeDoc,
 );
 
