@@ -44,7 +44,9 @@ export const getVectorStoreForOrg = async (organization) => {
     const geminiApiKey = process.env.GEMINI_API_KEY;
 
     if (!qdrantUrl || !qdrantApiKey || !geminiApiKey) {
-      console.warn("Qdrant or Gemini API keys missing. RAG context will be empty.");
+      console.warn(
+        "Qdrant or Gemini API keys missing. RAG context will be empty.",
+      );
       return null;
     }
 
@@ -55,12 +57,11 @@ export const getVectorStoreForOrg = async (organization) => {
 
     // Check if the collection exists
     const collectionsRes = await client.getCollections();
-    const exists = collectionsRes.collections?.some((c) => c.name === collectionName);
+    const exists = collectionsRes.collections?.some(
+      (c) => c.name === collectionName,
+    );
 
     if (!exists) {
-      if (collectionName === "kranthi_kb") {
-        console.warn("Collection 'kranthi_kb' not found in Qdrant.");
-      }
       return null;
     }
 
@@ -77,7 +78,10 @@ export const getVectorStoreForOrg = async (organization) => {
     vectorStoresMap.set(collectionName, store);
     return store;
   } catch (e) {
-    console.warn(`Qdrant store initialization failed for '${collectionName}':`, e.message);
+    console.warn(
+      `Qdrant store initialization failed for '${collectionName}':`,
+      e.message,
+    );
     return null;
   }
 };
@@ -85,8 +89,15 @@ export const getVectorStoreForOrg = async (organization) => {
 /**
  * Resolves the Organization document from passed context or tenant models
  */
-export const resolveOrganization = async (organizationContext, tenantModels = null) => {
-  if (organizationContext && typeof organizationContext === "object" && organizationContext.name) {
+export const resolveOrganization = async (
+  organizationContext,
+  tenantModels = null,
+) => {
+  if (
+    organizationContext &&
+    typeof organizationContext === "object" &&
+    organizationContext.name
+  ) {
     return organizationContext;
   }
 
@@ -107,12 +118,9 @@ export const resolveOrganization = async (organizationContext, tenantModels = nu
     } catch (err) {}
   }
 
-  // Fallback to Kranthi Elevators or first registered organization
+  // Fallback to first registered organization if needed
   try {
-    let org = await MasterOrg.findOne({ name: /kranthi/i });
-    if (!org) {
-      org = await MasterOrg.findOne();
-    }
+    const org = await MasterOrg.findOne();
     if (org) return org;
   } catch (err) {}
 
@@ -122,7 +130,10 @@ export const resolveOrganization = async (organizationContext, tenantModels = nu
 /**
  * Dynamically builds a Zod Structured Output schema based on the organization's qualification schema
  */
-export const buildQualificationSchema = (configuredFields = [], orgName = "") => {
+export const buildQualificationSchema = (
+  configuredFields = [],
+  orgName = "",
+) => {
   const shape = {
     city: z
       .string()
@@ -143,7 +154,9 @@ export const buildQualificationSchema = (configuredFields = [], orgName = "") =>
     preferredCallDate: z
       .string()
       .default("")
-      .describe("Preferred callback date when lead requests pricing or consultation."),
+      .describe(
+        "Preferred callback date when lead requests pricing or consultation.",
+      ),
     preferredCallTime: z
       .string()
       .default("")
@@ -168,59 +181,6 @@ export const buildQualificationSchema = (configuredFields = [], orgName = "") =>
         shape[f.key] = z.string().default("").describe(desc);
       }
     }
-  } else if (/kranthi|elevator/i.test(orgName)) {
-    shape.liftType = z
-      .string()
-      .default("")
-      .describe(
-        "Type of elevator product: 'Passenger Lift', 'MRL Lift', 'Hydraulic Lift', 'Hospital Bed Lift', 'Elevator Maintenance & AMC', 'Elevator Modernization', or empty string.",
-      );
-    shape.clientType = z
-      .string()
-      .default("General")
-      .describe(
-        "Role/Segment of the lead: 'Building Owner / Villa Owner', 'Builder / Developer', 'Architect / Consultant', 'Hospital / Healthcare Admin', 'Facility / Society Manager (RWA)', or 'General'.",
-      );
-    shape.propertyType = z
-      .string()
-      .default("")
-      .describe(
-        "Type of building: 'Apartment', 'Villa / Independent House', 'Commercial Office', 'Shopping Mall / Complex', 'Hotel', 'Hospital / Healthcare Center', 'Warehouse / Industrial Unit'.",
-      );
-    shape.numberOfFloors = z
-      .string()
-      .default("")
-      .describe("Number of floors or stops (e.g., 'G+2', 'G+3', '4 Floors', '8 Stops').");
-    shape.capacity = z
-      .string()
-      .default("")
-      .describe("Passenger capacity or weight load (e.g., '4-6 Persons', '1000 kg', '2-10 Tons').");
-    shape.constructionStage = z
-      .string()
-      .default("")
-      .describe(
-        "Project stage: 'Under Construction (Shaft Planned/Ready)', 'Existing Building (Retrofit/New Lift)', 'Modernization (Replacing Old Lift)', or 'Operational (AMC/Service)'.",
-      );
-    shape.doorType = z
-      .string()
-      .default("")
-      .describe("Door preference: 'Automatic (Center Opening)', 'Automatic (Telescopic)', 'Manual', or empty.");
-    shape.machineRoomAvailable = z
-      .string()
-      .default("")
-      .describe("Machine room availability: 'Yes', 'No' (MRL recommended), or 'Unknown'.");
-    shape.propertySize = z
-      .string()
-      .default("")
-      .describe("Approximate building or shaft dimensions if mentioned.");
-    shape.issueDescription = z
-      .string()
-      .default("")
-      .describe("Specific requirement or problem description.");
-    shape.preferredVisitDate = z
-      .string()
-      .default("")
-      .describe("Preferred date for site visit / shaft inspection.");
   }
 
   return z.object({
@@ -252,14 +212,20 @@ export const buildQualificationSchema = (configuredFields = [], orgName = "") =>
       .number()
       .default(50)
       .describe("0 to 100 estimated probability."),
-    nextAction: z.string().default("").describe("Next step for the sales team."),
+    nextAction: z
+      .string()
+      .default("")
+      .describe("Next step for the sales team."),
     triggerActions: z
       .object({
         createFollowUp: z
           .boolean()
           .default(false)
           .describe("Set true if user asked for a callback."),
-        followUpNotes: z.string().default("").describe("Notes for the callback."),
+        followUpNotes: z
+          .string()
+          .default("")
+          .describe("Notes for the callback."),
         followUpDate: z
           .string()
           .default("")
@@ -428,7 +394,10 @@ export const generateAIResponse = async (
     }
 
     // Resolve Organization
-    const organization = await resolveOrganization(organizationContext, tenantModels);
+    const organization = await resolveOrganization(
+      organizationContext,
+      tenantModels,
+    );
     const defaults = getDefaultAISettings(organization?.name || "");
 
     // Check if AI setup has been completed for this organization
@@ -439,7 +408,7 @@ export const generateAIResponse = async (
 
     if (!isConfigured) {
       console.warn(
-        `[AI Service] AI response paused for ${organization?.name || "organization"}: AI setup is incomplete.`
+        `[AI Service] AI response paused for ${organization?.name || "organization"}: AI setup is incomplete.`,
       );
       return "Thank you for reaching out! Our team is currently finalizing our automated assistant. A sales representative will be with you shortly.";
     }
@@ -469,8 +438,7 @@ export const generateAIResponse = async (
           ? organization.aiSettings.qualificationFields
           : defaults.qualificationFields,
       qdrantCollection:
-        organization?.aiSettings?.qdrantCollection ||
-        defaults.qdrantCollection,
+        organization?.aiSettings?.qdrantCollection || defaults.qdrantCollection,
     };
 
     // Auto-assign representative if unassigned
@@ -627,7 +595,9 @@ Latest Message: ${incomingText}`;
     let parsed = null;
     let lastError = null;
 
-    console.log(`Generating AI response with Gemini for ${effectiveSettings.companyName}...`);
+    console.log(
+      `Generating AI response with Gemini for ${effectiveSettings.companyName}...`,
+    );
 
     try {
       const structuredModel =
@@ -643,7 +613,10 @@ Latest Message: ${incomingText}`;
     }
 
     if (!parsed) {
-      console.error("All AI attempts failed. Using fallback.", lastError?.message);
+      console.error(
+        "All AI attempts failed. Using fallback.",
+        lastError?.message,
+      );
       parsed = {
         reply:
           "I'm sorry, but I'm unable to assist with this request right now. I'll connect you with one of our team members, who will continue assisting you shortly.",
@@ -692,7 +665,8 @@ Latest Message: ${incomingText}`;
 
       // Dynamic Service Matching against configured services
       const services = effectiveSettings.services || [];
-      const rawIntent = aiData.intent || aiData.service || aiData.liftType || "";
+      const rawIntent =
+        aiData.intent || aiData.service || aiData.liftType || "";
       let matchedService = null;
 
       // 1. Direct name match

@@ -41,13 +41,7 @@ export const getOrgCollectionName = (organization) => {
   if (organization?.aiSettings?.qdrantCollection) {
     return organization.aiSettings.qdrantCollection;
   }
-  if (!organization) return "kranthi_kb";
-  const isKranthi =
-    /kranthi|elevator/i.test(organization.name || "") ||
-    (organization.tenantDbName && organization.tenantDbName.includes("kranthi"));
-  if (isKranthi) return "kranthi_kb";
-
-  const orgId = organization._id ? organization._id.toString() : "default";
+  const orgId = organization?._id ? organization._id.toString() : "default";
   return `org_${orgId}_kb`;
 };
 

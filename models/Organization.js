@@ -218,132 +218,6 @@ const organizationSchema = new mongoose.Schema(
  * Returns default AI configuration depending on organization name/type
  */
 export const getDefaultAISettings = (orgName = "") => {
-  const isKranthi =
-    /kranthi|elevator/i.test(orgName) ||
-    orgName.toLowerCase().includes("kranthi");
-
-  if (isKranthi) {
-    return {
-      companyName: "Kranthi Elevators",
-      businessDescription:
-        "Kranthi Elevators designs, manufactures, installs, and maintains advanced, precision-engineered elevator solutions in and around Hyderabad across residential, commercial, industrial, and healthcare segments.",
-      agentPersona:
-        "friendly, human sales representative working at Kranthi Elevators",
-      customInstructions: `1. HUMAN TONE: Communicate EXACTLY like a real human. Be warm, polite, and conversational. NEVER mention that you are an AI or bot.
-2. PACING: Ask at most 1-2 friendly questions per message to gather data naturally without overwhelming the user.
-3. PRICING RULE: Do NOT provide, guess, estimate, negotiate, or invent pricing, since all lifts are customized to building specs. State that pricing depends on the lift model, capacity, floors, and site requirements, and schedule a callback with our engineering team.
-4. LIFECYCLE & AMC: Kranthi Elevators supports planning, custom engineering, installation, preventative maintenance, and 24/7 breakdown support.
-5. HUMAN HANDOFF: If the user asks for human support or says 'yes' to human assistance, politely transfer them and set disableAI=true.
-6. WHATSAPP FORMATTING: Keep messages short (maximum 50-60 words), clean bullet points, bold key terms (*term*), and emojis.`,
-      qdrantCollection: "kranthi_kb",
-      services: [
-        {
-          name: "Passenger Lift",
-          description:
-            "Safe, smooth, and quiet vertical transportation for apartments, offices, shopping complexes, and hotels.",
-          keywords: ["passenger", "apartment", "office", "residential", "complex"],
-        },
-        {
-          name: "MRL Lift",
-          description:
-            "Machine Room Less modern, space-saving design with all components integrated in the shaft.",
-          keywords: ["mrl", "machine room less", "no machine room", "space saving"],
-        },
-        {
-          name: "Hydraulic Lift",
-          description:
-            "Smooth, powerful lifting with strong load capacity for villas, warehouses, and low-rise buildings.",
-          keywords: ["hydraulic", "villa", "home lift", "warehouse", "industrial"],
-        },
-        {
-          name: "Hospital Bed Lift",
-          description:
-            "Specially designed for hospitals to transport patients, stretchers, and medical equipment smoothly.",
-          keywords: ["hospital", "bed lift", "stretcher", "medical", "clinic"],
-        },
-        {
-          name: "Elevator Maintenance & AMC",
-          description:
-            "Lifecycle support, preventative maintenance, and 24/7 breakdown support handled by experienced technicians.",
-          keywords: ["amc", "maintenance", "service", "repair", "breakdown"],
-        },
-        {
-          name: "Elevator Modernization",
-          description:
-            "Upgrading or replacing old elevators with modern, energy-efficient solutions.",
-          keywords: ["moderniz", "modernis", "upgrade", "replacement", "replace"],
-        },
-      ],
-      qualificationFields: [
-        {
-          key: "liftType",
-          label: "Lift / Product Type",
-          type: "string",
-          description:
-            "Type of elevator product: 'Passenger Lift', 'MRL Lift', 'Hydraulic Lift', 'Hospital Bed Lift', 'Elevator Maintenance & AMC', 'Elevator Modernization', or empty string.",
-        },
-        {
-          key: "clientType",
-          label: "Client Role",
-          type: "string",
-          description:
-            "Role/Segment of the lead: 'Building Owner / Villa Owner', 'Builder / Developer', 'Architect / Consultant', 'Hospital / Healthcare Admin', 'Facility / Society Manager (RWA)', or 'General'.",
-        },
-        {
-          key: "propertyType",
-          label: "Building Type",
-          type: "string",
-          description:
-            "Type of building: 'Apartment', 'Villa / Independent House', 'Commercial Office', 'Shopping Mall / Complex', 'Hotel', 'Hospital / Healthcare Center', 'Warehouse / Industrial Unit'.",
-        },
-        {
-          key: "numberOfFloors",
-          label: "Number of Floors",
-          type: "string",
-          description:
-            "Number of floors or stops (e.g., 'G+2', 'G+3', '4 Floors', '8 Stops').",
-        },
-        {
-          key: "capacity",
-          label: "Capacity / Load",
-          type: "string",
-          description:
-            "Passenger capacity or weight load (e.g., '4-6 Persons', '8-10 Persons', '13 Persons', '1000 kg', '2-10 Tons').",
-        },
-        {
-          key: "constructionStage",
-          label: "Construction Stage",
-          type: "string",
-          description:
-            "Project stage: 'Under Construction (Shaft Planned/Ready)', 'Existing Building (Retrofit/New Lift)', 'Modernization (Replacing Old Lift)', or 'Operational (AMC/Service)'.",
-        },
-        {
-          key: "doorType",
-          label: "Door Preference",
-          type: "string",
-          description:
-            "Door preference: 'Automatic (Center Opening)', 'Automatic (Telescopic)', 'Manual', or empty string.",
-        },
-        {
-          key: "machineRoomAvailable",
-          label: "Machine Room Provision",
-          type: "string",
-          description:
-            "Machine room availability: 'Yes', 'No' (MRL recommended), or 'Unknown'.",
-        },
-        {
-          key: "preferredVisitDate",
-          label: "Preferred Visit Date",
-          type: "string",
-          description: "Preferred date for site visit / shaft inspection.",
-        },
-      ],
-      knowledgeDocs: [],
-      isAiConfigured: true,
-      aiSetupCompletedAt: new Date("2024-01-01"),
-    };
-  }
-
   return {
     isAiConfigured: false,
     aiSetupCompletedAt: null,
@@ -358,23 +232,53 @@ export const getDefaultAISettings = (orgName = "") => {
     qdrantCollection: "",
     services: [
       {
-        name: "General Consultation",
-        description: "Initial consultation and enquiry about products and services.",
-        keywords: ["consultation", "enquiry", "information", "help"],
+        name: "General Enquiry",
+        description:
+          "General inquiry or consultation regarding products, services, and customer requirements.",
+        keywords: [
+          "enquiry",
+          "inquiry",
+          "information",
+          "help",
+          "details",
+          "consultation",
+        ],
       },
     ],
     qualificationFields: [
       {
-        key: "requirementDetails",
-        label: "Requirement Details",
+        key: "cityAndArea",
+        label: "City & Area",
         type: "string",
-        description: "Specific details about customer requirements and expectations.",
+        description: "Customer's city, area, or preferred project location.",
       },
       {
-        key: "preferredTime",
-        label: "Preferred Contact Time",
+        key: "primaryIntent",
+        label: "Primary Intent",
         type: "string",
-        description: "Best callback time or date requested by customer.",
+        description:
+          "Customer's primary objective, service requirement, or product needed.",
+      },
+      {
+        key: "urgencyLevel",
+        label: "Urgency Level",
+        type: "select",
+        options: ["Immediate", "Within 1 Month", "Planning / Just Exploring"],
+        description: "Customer's purchasing urgency or required timeframe.",
+      },
+      {
+        key: "interestScore",
+        label: "Interest Score (1-10)",
+        type: "number",
+        description:
+          "Assessed customer interest or buying readiness score from 1 to 10.",
+      },
+      {
+        key: "callbackDateTime",
+        label: "Callback Date/Time",
+        type: "string",
+        description:
+          "Best callback date and time requested by customer for consultation.",
       },
     ],
     knowledgeDocs: [],

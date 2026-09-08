@@ -55,7 +55,6 @@ const getDurationMonthsForPlan = (plan) => {
   }
 };
 
-
 // @desc    Provision a new client organization tenant
 // @route   POST /api/organizations/provision
 // @access  Protected (Super Admin)
@@ -136,9 +135,10 @@ export const provisionOrganization = async (req, res) => {
     }
 
     // 3. Compute Subscription Dates based on selected plan or explicit months
-    const durationMonths = months != null && !isNaN(parseInt(months, 10))
-      ? Math.max(1, parseInt(months, 10))
-      : getDurationMonthsForPlan(normalizedPlan);
+    const durationMonths =
+      months != null && !isNaN(parseInt(months, 10))
+        ? Math.max(1, parseInt(months, 10))
+        : getDurationMonthsForPlan(normalizedPlan);
 
     const startDate = subscriptionStartDate
       ? new Date(subscriptionStartDate)
@@ -167,7 +167,10 @@ export const provisionOrganization = async (req, res) => {
       website: (website || "").trim(),
       seats: seatCount,
       amountPaid: paidAmount,
-      pricingPerSeat: pricingPerSeat != null ? Number(pricingPerSeat) : Math.round(paidAmount / seatCount),
+      pricingPerSeat:
+        pricingPerSeat != null
+          ? Number(pricingPerSeat)
+          : Math.round(paidAmount / seatCount),
       paymentMethod: paymentMethod || "Manual",
       subscriptionPlan: normalizedPlan,
       subscriptionStartDate: startDate,
@@ -216,7 +219,8 @@ export const provisionOrganization = async (req, res) => {
         organization,
         ownerEmail: cleanEmail,
         temporaryPassword,
-        loginUrl: process.env.FRONTEND_URL || "https://crm.salesbuster.com/login",
+        loginUrl:
+          process.env.FRONTEND_URL || "https://crm.salesbuster.com/login",
       });
     } catch (emailErr) {
       console.error("Failed to send welcome email:", emailErr);
@@ -248,7 +252,8 @@ export const provisionOrganization = async (req, res) => {
         credentials: {
           email: cleanEmail,
           temporaryPassword,
-          loginUrl: process.env.FRONTEND_URL || "https://crm.salesbuster.com/login",
+          loginUrl:
+            process.env.FRONTEND_URL || "https://crm.salesbuster.com/login",
         },
       },
     });
@@ -279,7 +284,10 @@ export const getOrganizations = async (req, res) => {
             role: "sales person",
           });
         } catch (e) {
-          console.error(`Error fetching user count for ${org.tenantDbName}:`, e);
+          console.error(
+            `Error fetching user count for ${org.tenantDbName}:`,
+            e,
+          );
         }
 
         const isExpired =
@@ -292,7 +300,7 @@ export const getOrganizations = async (req, res) => {
           remainingSeats: Math.max(0, org.seats - usedSeats),
           isExpired: !!isExpired,
         };
-      })
+      }),
     );
 
     res.status(200).json({
@@ -335,8 +343,7 @@ export const getOrganizationById = async (req, res) => {
     }
 
     const isExpired =
-      org.subscriptionEndDate &&
-      new Date() > new Date(org.subscriptionEndDate);
+      org.subscriptionEndDate && new Date() > new Date(org.subscriptionEndDate);
 
     res.status(200).json({
       success: true,
@@ -486,8 +493,7 @@ export const renewSubscription = async (req, res) => {
       io.to(`org_${org._id}`).emit("organization_updated", org.toJSON());
     }
 
-    const planLabel =
-      targetPlan.charAt(0).toUpperCase() + targetPlan.slice(1);
+    const planLabel = targetPlan.charAt(0).toUpperCase() + targetPlan.slice(1);
 
     res.status(200).json({
       success: true,
@@ -509,7 +515,6 @@ export const renewSubscription = async (req, res) => {
 export const toggleStatus = async (req, res) => {
   try {
     const { status } = req.body;
-    
 
     if (!["active", "inactive", "suspended"].includes(status)) {
       return res.status(400).json({
@@ -534,7 +539,7 @@ export const toggleStatus = async (req, res) => {
     // Sync status to all AuthUsers belonging to this org
     await AuthUser.updateMany(
       { organizationId: org._id },
-      { status: status === "active" ? "active" : "inactive" }
+      { status: status === "active" ? "active" : "inactive" },
     );
 
     // Also sync status to tenant database User collection
@@ -543,7 +548,7 @@ export const toggleStatus = async (req, res) => {
         const tenantModels = getTenantModels(org.tenantDbName);
         await tenantModels.User.updateMany(
           {},
-          { status: status === "active" ? "active" : "inactive" }
+          { status: status === "active" ? "active" : "inactive" },
         );
       }
     } catch (tenantUserErr) {
@@ -591,14 +596,14 @@ export const resendWelcomeEmail = async (req, res) => {
     // Update in Master AuthUser
     await AuthUser.updateOne(
       { _id: org.ownerId },
-      { password: hashedPassword }
+      { password: hashedPassword },
     );
 
     // Update in Tenant DB
     const tenantModels = getTenantModels(org.tenantDbName);
     await tenantModels.User.updateOne(
       { _id: org.ownerId },
-      { password: hashedPassword }
+      { password: hashedPassword },
     );
 
     const emailSent = await sendTenantWelcomeEmail({
@@ -615,7 +620,8 @@ export const resendWelcomeEmail = async (req, res) => {
       credentials: {
         email: org.email,
         temporaryPassword,
-        loginUrl: process.env.FRONTEND_URL || "https://crm.salesbuster.com/login",
+        loginUrl:
+          process.env.FRONTEND_URL || "https://crm.salesbuster.com/login",
       },
     });
   } catch (error) {
@@ -626,6 +632,7 @@ export const resendWelcomeEmail = async (req, res) => {
     });
   }
 };
+
 
 // @desc    Get current organization profile (For Organization Owner)
 // @route   GET /api/organizations/my-org
@@ -663,7 +670,10 @@ export const getMyOrganization = async (req, res) => {
       totalLeads = await tenantModels.Lead.countDocuments();
       totalFollowups = await tenantModels.Followup.countDocuments();
     } catch (metricErr) {
-      console.error("Error fetching live tenant metrics for org profile:", metricErr);
+      console.error(
+        "Error fetching live tenant metrics for org profile:",
+        metricErr,
+      );
     }
 
     const now = new Date();
@@ -671,7 +681,7 @@ export const getMyOrganization = async (req, res) => {
       org.subscriptionEndDate && new Date(org.subscriptionEndDate) < now;
     const remainingDays = org.subscriptionEndDate
       ? Math.ceil(
-          (new Date(org.subscriptionEndDate) - now) / (1000 * 60 * 60 * 24)
+          (new Date(org.subscriptionEndDate) - now) / (1000 * 60 * 60 * 24),
         )
       : null;
 
@@ -680,7 +690,7 @@ export const getMyOrganization = async (req, res) => {
     const isAiConfigured = Boolean(
       org.aiSettings?.isAiConfigured !== undefined
         ? org.aiSettings.isAiConfigured
-        : defaults.isAiConfigured
+        : defaults.isAiConfigured,
     );
     const hasSalesPerson = usedSeats >= 1;
 
@@ -688,16 +698,16 @@ export const getMyOrganization = async (req, res) => {
       ...defaults,
       ...(orgJson.aiSettings || {}),
       isAiConfigured,
-      aiSetupCompletedAt: org.aiSettings?.aiSetupCompletedAt || defaults.aiSetupCompletedAt || null,
-      services:
-        orgJson.aiSettings?.services && orgJson.aiSettings.services.length > 0
-          ? orgJson.aiSettings.services
-          : defaults.services,
-      qualificationFields:
-        orgJson.aiSettings?.qualificationFields &&
-        orgJson.aiSettings.qualificationFields.length > 0
-          ? orgJson.aiSettings.qualificationFields
-          : defaults.qualificationFields,
+      aiSetupCompletedAt:
+        org.aiSettings?.aiSetupCompletedAt ||
+        defaults.aiSetupCompletedAt ||
+        null,
+      services: Array.isArray(orgJson.aiSettings?.services)
+        ? orgJson.aiSettings.services
+        : defaults.services,
+      qualificationFields: Array.isArray(orgJson.aiSettings?.qualificationFields)
+        ? orgJson.aiSettings.qualificationFields
+        : defaults.qualificationFields,
     };
     orgJson.aiSettings = effectiveAiSettings;
     orgJson.isAiConfigured = isAiConfigured;
@@ -721,7 +731,8 @@ export const getMyOrganization = async (req, res) => {
     console.error("Error in getMyOrganization:", error);
     res.status(500).json({
       success: false,
-      message: error.message || "Server error while fetching organization profile",
+      message:
+        error.message || "Server error while fetching organization profile",
     });
   }
 };
@@ -759,25 +770,22 @@ export const getMyAISettings = async (req, res) => {
       isAiConfigured: Boolean(
         aiSettings.isAiConfigured !== undefined
           ? aiSettings.isAiConfigured
-          : defaults.isAiConfigured
+          : defaults.isAiConfigured,
       ),
       aiSetupCompletedAt:
         aiSettings.aiSetupCompletedAt || defaults.aiSetupCompletedAt || null,
-      companyName: aiSettings.companyName || defaults.companyName || org.name,
+      companyName: aiSettings.companyName || org.name || defaults.companyName,
       businessDescription:
         aiSettings.businessDescription || defaults.businessDescription || "",
       agentPersona: aiSettings.agentPersona || defaults.agentPersona,
       customInstructions:
         aiSettings.customInstructions || defaults.customInstructions,
-      services:
-        aiSettings.services && aiSettings.services.length > 0
-          ? aiSettings.services
-          : defaults.services,
-      qualificationFields:
-        aiSettings.qualificationFields &&
-        aiSettings.qualificationFields.length > 0
-          ? aiSettings.qualificationFields
-          : defaults.qualificationFields,
+      services: Array.isArray(aiSettings.services)
+        ? aiSettings.services
+        : defaults.services,
+      qualificationFields: Array.isArray(aiSettings.qualificationFields)
+        ? aiSettings.qualificationFields
+        : defaults.qualificationFields,
       qdrantCollection:
         aiSettings.qdrantCollection || defaults.qdrantCollection,
       knowledgeDocs: aiSettings.knowledgeDocs || [],
@@ -851,7 +859,7 @@ export const updateMyAISettings = async (req, res) => {
       }
 
       const invalidService = targetServices.find(
-        (s) => !s.name || !s.name.trim()
+        (s) => !s.name || !s.name.trim(),
       );
       if (invalidService) {
         return res.status(400).json({
@@ -869,7 +877,7 @@ export const updateMyAISettings = async (req, res) => {
       }
 
       const invalidField = targetFields.find(
-        (f) => !f.key || !f.key.trim() || !f.label || !f.label.trim()
+        (f) => !f.key || !f.key.trim() || !f.label || !f.label.trim(),
       );
       if (invalidField) {
         return res.status(400).json({
@@ -885,10 +893,13 @@ export const updateMyAISettings = async (req, res) => {
       org.aiSettings.isAiConfigured = false;
     }
 
-    if (companyName !== undefined) org.aiSettings.companyName = companyName.trim();
+    if (companyName !== undefined) {
+      org.aiSettings.companyName = companyName.trim() || org.name;
+    }
     if (businessDescription !== undefined)
       org.aiSettings.businessDescription = businessDescription.trim();
-    if (agentPersona !== undefined) org.aiSettings.agentPersona = agentPersona.trim();
+    if (agentPersona !== undefined)
+      org.aiSettings.agentPersona = agentPersona.trim();
     if (customInstructions !== undefined)
       org.aiSettings.customInstructions = customInstructions.trim();
     if (Array.isArray(services)) org.aiSettings.services = services;
@@ -924,7 +935,8 @@ export const uploadKnowledgeDoc = async (req, res) => {
   try {
     const orgId = req.user?.organizationId || req.organization?._id;
     if (!orgId) {
-      if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      if (req.file?.path && fs.existsSync(req.file.path))
+        fs.unlinkSync(req.file.path);
       return res.status(404).json({
         success: false,
         message: "No organization associated with this account.",
@@ -1036,28 +1048,27 @@ export const getOrgAISettings = async (req, res) => {
     const { Organization } = getMasterModels();
     const org = await Organization.findById(id);
     if (!org) {
-      return res.status(404).json({ success: false, message: "Organization not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Organization not found." });
     }
 
     const defaults = getDefaultAISettings(org.name);
     const aiSettings = org.aiSettings || {};
 
     const effective = {
-      companyName: aiSettings.companyName || defaults.companyName || org.name,
+      companyName: aiSettings.companyName || org.name || defaults.companyName,
       businessDescription:
         aiSettings.businessDescription || defaults.businessDescription || "",
       agentPersona: aiSettings.agentPersona || defaults.agentPersona,
       customInstructions:
         aiSettings.customInstructions || defaults.customInstructions,
-      services:
-        aiSettings.services && aiSettings.services.length > 0
-          ? aiSettings.services
-          : defaults.services,
-      qualificationFields:
-        aiSettings.qualificationFields &&
-        aiSettings.qualificationFields.length > 0
-          ? aiSettings.qualificationFields
-          : defaults.qualificationFields,
+      services: Array.isArray(aiSettings.services)
+        ? aiSettings.services
+        : defaults.services,
+      qualificationFields: Array.isArray(aiSettings.qualificationFields)
+        ? aiSettings.qualificationFields
+        : defaults.qualificationFields,
       qdrantCollection:
         aiSettings.qdrantCollection || defaults.qdrantCollection,
       knowledgeDocs: aiSettings.knowledgeDocs || [],
@@ -1075,7 +1086,9 @@ export const updateOrgAISettings = async (req, res) => {
     const { Organization } = getMasterModels();
     const org = await Organization.findById(id);
     if (!org) {
-      return res.status(404).json({ success: false, message: "Organization not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Organization not found." });
     }
 
     const {
@@ -1090,10 +1103,12 @@ export const updateOrgAISettings = async (req, res) => {
 
     if (!org.aiSettings) org.aiSettings = {};
 
-    if (companyName !== undefined) org.aiSettings.companyName = companyName.trim();
+    if (companyName !== undefined)
+      org.aiSettings.companyName = companyName.trim();
     if (businessDescription !== undefined)
       org.aiSettings.businessDescription = businessDescription.trim();
-    if (agentPersona !== undefined) org.aiSettings.agentPersona = agentPersona.trim();
+    if (agentPersona !== undefined)
+      org.aiSettings.agentPersona = agentPersona.trim();
     if (customInstructions !== undefined)
       org.aiSettings.customInstructions = customInstructions.trim();
     if (Array.isArray(services)) org.aiSettings.services = services;
@@ -1134,7 +1149,9 @@ export const uploadOrgKnowledgeDoc = async (req, res) => {
     const org = await Organization.findById(id);
     if (!org) {
       if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-      return res.status(404).json({ success: false, message: "Organization not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Organization not found." });
     }
 
     const docRecord = await ingestDocumentForOrg({
@@ -1171,7 +1188,9 @@ export const deleteOrgKnowledgeDoc = async (req, res) => {
     const { Organization } = getMasterModels();
     const org = await Organization.findById(id);
     if (!org) {
-      return res.status(404).json({ success: false, message: "Organization not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Organization not found." });
     }
 
     await deleteDocumentForOrg({ organization: org, docId });
