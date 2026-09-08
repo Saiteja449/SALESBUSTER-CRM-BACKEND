@@ -155,6 +155,11 @@ const organizationSchema = new mongoose.Schema(
       default: "",
     },
     aiSettings: {
+      geminiApiKey: {
+        type: String,
+        default: "",
+        trim: true,
+      },
       isAiConfigured: {
         type: Boolean,
         default: false,
@@ -219,6 +224,7 @@ const organizationSchema = new mongoose.Schema(
  */
 export const getDefaultAISettings = (orgName = "") => {
   return {
+    geminiApiKey: "",
     isAiConfigured: false,
     aiSetupCompletedAt: null,
     companyName: orgName || "Our Company",

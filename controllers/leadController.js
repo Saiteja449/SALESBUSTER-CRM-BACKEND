@@ -12,6 +12,7 @@ import fs from "fs";
 import path from "path";
 import { analyzeAudioFile } from "../services/audioAnalysisService.js";
 import { sendWelcomeEnquiryMessage } from "../whatsapp/whatsappService.js";
+import { decryptApiKey } from "../utils/encryption.js";
 
 // Feature toggle to pause AI Call Analysis temporarily
 const ENABLE_AI_AUDIO_ANALYSIS =
@@ -36,6 +37,7 @@ const triggerAudioAnalysis = async (
   filePath,
   mimeType,
   LeadModel = Lead,
+  orgApiKey = null,
 ) => {
   if (!ENABLE_AI_AUDIO_ANALYSIS) {
     console.log(
@@ -47,7 +49,7 @@ const triggerAudioAnalysis = async (
     console.log(
       `[AudioAnalysis] Starting background analysis for lead ${leadId}, recording ${recordingId}`,
     );
-    const analysis = await analyzeAudioFile(filePath, mimeType);
+    const analysis = await analyzeAudioFile(filePath, mimeType, orgApiKey);
     await LeadModel.updateOne(
       { _id: leadId, "recordings._id": recordingId },
       {
@@ -553,12 +555,14 @@ export const updateLead = async (req, res) => {
     if (req.file && ENABLE_AI_AUDIO_ANALYSIS) {
       const newRecording = lead.recordings[lead.recordings.length - 1];
       if (newRecording) {
+        const orgApiKey = decryptApiKey(req.organization?.aiSettings?.geminiApiKey);
         triggerAudioAnalysis(
           lead._id,
           newRecording._id,
           req.file.path,
           req.file.mimetype,
           LeadModel,
+          orgApiKey,
         );
       }
     }

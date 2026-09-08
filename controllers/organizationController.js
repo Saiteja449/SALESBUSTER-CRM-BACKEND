@@ -14,6 +14,9 @@ import {
 } from "../services/knowledgeService.js";
 import { sendTenantWelcomeEmail } from "../helpers/emailHelper.js";
 import { getIO } from "../socket/socket.js";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { encryptApiKey, decryptApiKey } from "../utils/encryption.js";
+import { invalidateVectorStoreForOrg } from "../ai/aiService.js";
 
 /**
  * Calculates subscription end date given a start date and duration in months.
@@ -767,6 +770,8 @@ export const getMyAISettings = async (req, res) => {
     const aiSettings = org.aiSettings || {};
 
     const effective = {
+      geminiApiKey: decryptApiKey(aiSettings.geminiApiKey || ""),
+      isGeminiKeyConfigured: Boolean(decryptApiKey(aiSettings.geminiApiKey || "")),
       isAiConfigured: Boolean(
         aiSettings.isAiConfigured !== undefined
           ? aiSettings.isAiConfigured
@@ -837,12 +842,27 @@ export const updateMyAISettings = async (req, res) => {
       qualificationFields,
       qdrantCollection,
       isAiConfigured,
+      geminiApiKey,
     } = req.body;
 
     if (!org.aiSettings) org.aiSettings = {};
 
     // If attempting to mark AI as configured / complete, enforce strict business validations
     if (isAiConfigured === true) {
+      // 1. Mandatory Gemini API Key (STRICT: NO GLOBAL FALLBACK)
+      const existingDecryptedKey = decryptApiKey(org.aiSettings?.geminiApiKey);
+      const targetKey =
+        geminiApiKey !== undefined ? geminiApiKey.trim() : existingDecryptedKey;
+
+      if (!targetKey) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "A valid Google Gemini API Key is mandatory before activating your AI sales assistant.",
+        });
+      }
+
+      // 2. Mandatory Services
       const targetServices = Array.isArray(services)
         ? services
         : org.aiSettings.services || [];
@@ -893,6 +913,12 @@ export const updateMyAISettings = async (req, res) => {
       org.aiSettings.isAiConfigured = false;
     }
 
+    if (geminiApiKey !== undefined) {
+      const trimmed = geminiApiKey.trim();
+      org.aiSettings.geminiApiKey = trimmed ? encryptApiKey(trimmed) : "";
+      invalidateVectorStoreForOrg(org);
+    }
+
     if (companyName !== undefined) {
       org.aiSettings.companyName = companyName.trim() || org.name;
     }
@@ -910,21 +936,72 @@ export const updateMyAISettings = async (req, res) => {
 
     await org.save();
 
+    const responseSettings = org.aiSettings.toObject
+      ? org.aiSettings.toObject()
+      : { ...org.aiSettings };
+    responseSettings.geminiApiKey = decryptApiKey(org.aiSettings.geminiApiKey);
+    responseSettings.isGeminiKeyConfigured = Boolean(responseSettings.geminiApiKey);
+
     const io = getIO();
     if (io) {
-      io.to(`org_${org._id}`).emit("ai_settings_updated", org.aiSettings);
+      io.to(`org_${org._id}`).emit("ai_settings_updated", responseSettings);
       io.to(`org_${org._id}`).emit("organization_updated", org.toJSON());
     }
 
     res.status(200).json({
       success: true,
       message: "Organization AI settings updated successfully.",
-      data: org.aiSettings,
+      data: responseSettings,
       isAiConfigured: org.aiSettings.isAiConfigured,
     });
   } catch (error) {
     console.error("Error in updateMyAISettings:", error);
     res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Validate a Google Gemini API Key live
+// @route   POST /api/organizations/my-org/validate-gemini-key
+// @access  Protected (Org Owner / Manager)
+export const validateGeminiApiKey = async (req, res) => {
+  try {
+    const orgId = req.user?.organizationId || req.organization?._id;
+    let targetKey = req.body?.apiKey ? req.body.apiKey.trim() : null;
+
+    if (!targetKey && orgId) {
+      const { Organization } = getMasterModels();
+      const org = await Organization.findById(orgId);
+      if (org?.aiSettings?.geminiApiKey) {
+        targetKey = decryptApiKey(org.aiSettings.geminiApiKey);
+      }
+    }
+
+    if (!targetKey) {
+      return res.status(400).json({
+        success: false,
+        message: "Please enter a Google Gemini API Key to test.",
+      });
+    }
+
+    const genAI = new GoogleGenerativeAI(targetKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    await model.countTokens("SalesBuster health check");
+
+    res.status(200).json({
+      success: true,
+      message: "Google Gemini API Key is valid and active!",
+    });
+  } catch (error) {
+    console.error("[Validate Gemini Key] Error:", error.message);
+    const msg =
+      error.message?.toLowerCase().includes("api key not valid") ||
+      error.message?.includes("API_KEY_INVALID")
+        ? "Invalid Google Gemini API Key. Please verify your key in Google AI Studio."
+        : error.message || "Failed to validate Gemini API Key.";
+    res.status(400).json({
+      success: false,
+      message: msg,
+    });
   }
 };
 
@@ -1057,6 +1134,8 @@ export const getOrgAISettings = async (req, res) => {
     const aiSettings = org.aiSettings || {};
 
     const effective = {
+      geminiApiKey: decryptApiKey(aiSettings.geminiApiKey || ""),
+      isGeminiKeyConfigured: Boolean(decryptApiKey(aiSettings.geminiApiKey || "")),
       companyName: aiSettings.companyName || org.name || defaults.companyName,
       businessDescription:
         aiSettings.businessDescription || defaults.businessDescription || "",
@@ -1099,9 +1178,16 @@ export const updateOrgAISettings = async (req, res) => {
       services,
       qualificationFields,
       qdrantCollection,
+      geminiApiKey,
     } = req.body;
 
     if (!org.aiSettings) org.aiSettings = {};
+
+    if (geminiApiKey !== undefined) {
+      const trimmed = geminiApiKey.trim();
+      org.aiSettings.geminiApiKey = trimmed ? encryptApiKey(trimmed) : "";
+      invalidateVectorStoreForOrg(org);
+    }
 
     if (companyName !== undefined)
       org.aiSettings.companyName = companyName.trim();

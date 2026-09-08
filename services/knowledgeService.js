@@ -8,17 +8,20 @@ import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 import { Document } from "@langchain/core/documents";
 import mammoth from "mammoth";
+import { decryptApiKey } from "../utils/encryption.js";
 
-const getQdrantConfig = () => {
+const getQdrantConfig = (customApiKey = null) => {
   const qdrantUrl = process.env.CLUSTER_ENDPOINT;
   const qdrantApiKey = process.env.QDRANT_API_KEY;
-  const geminiApiKey = process.env.GEMINI_API_KEY;
+  const geminiApiKey = customApiKey;
 
   if (!qdrantUrl || !qdrantApiKey) {
     throw new Error("Missing CLUSTER_ENDPOINT or QDRANT_API_KEY in environment");
   }
   if (!geminiApiKey) {
-    throw new Error("Missing GEMINI_API_KEY in environment");
+    throw new Error(
+      "Organization Google Gemini API Key is not configured. Please add and save your Gemini API Key in Step 1 before uploading knowledge documents.",
+    );
   }
 
   const client = new QdrantClient({
@@ -70,7 +73,8 @@ const loadFileDocuments = async (filePath, originalName) => {
  * Ingests an uploaded document into the organization's Qdrant vector store
  */
 export const ingestDocumentForOrg = async ({ organization, filePath, originalName, fileSize }) => {
-  const { client, embeddings } = getQdrantConfig();
+  const geminiApiKey = decryptApiKey(organization?.aiSettings?.geminiApiKey);
+  const { client, embeddings } = getQdrantConfig(geminiApiKey);
   const collectionName = getOrgCollectionName(organization);
   const docId = `doc_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
 

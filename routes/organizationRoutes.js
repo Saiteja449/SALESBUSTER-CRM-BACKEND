@@ -13,6 +13,7 @@ import {
   getMyOrganization,
   getMyAISettings,
   updateMyAISettings,
+  validateGeminiApiKey,
   uploadKnowledgeDoc,
   deleteKnowledgeDoc,
   getOrgAISettings,
@@ -51,6 +52,7 @@ router.get("/my-org", protect, getMyOrganization);
 // Tenant AI Settings & Knowledge Base (Tenant Owner / Sales Manager)
 router.get("/my-org/ai-settings", protect, getMyAISettings);
 router.put("/my-org/ai-settings", protect, updateMyAISettings);
+router.post("/my-org/validate-gemini-key", protect, validateGeminiApiKey);
 router.post(
   "/my-org/knowledge-base/upload",
   protect,

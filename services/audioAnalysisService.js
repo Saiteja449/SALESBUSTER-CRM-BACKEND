@@ -15,15 +15,22 @@ const genAI = new GoogleGenerativeAI(apiKey);
 const fileManager = new GoogleAIFileManager(apiKey);
 
 /**
- * Analyzes an audio file using Gemini 1.5 Flash.
+ * Analyzes an audio file using Gemini.
  * @param {string} filePath - The local path to the audio file.
  * @param {string} mimeType - The mime type of the audio file.
+ * @param {string} customApiKey - Organization-specific Gemini API Key.
  * @returns {Promise<string>} - The generated analysis summary in Markdown format.
  */
-export const analyzeAudioFile = async (filePath, mimeType) => {
-  if (!apiKey) {
-    throw new Error("Missing GEMINI_API_KEY");
+export const analyzeAudioFile = async (filePath, mimeType, customApiKey = null) => {
+  const activeKey = customApiKey;
+  if (!activeKey) {
+    throw new Error(
+      "Organization Google Gemini API Key is missing. Please configure your API key in Organization Profile before running audio analysis.",
+    );
   }
+
+  const genAI = new GoogleGenerativeAI(activeKey);
+  const fileManager = new GoogleAIFileManager(activeKey);
 
   if (!fs.existsSync(filePath)) {
     throw new Error(`Audio file not found at path: ${filePath}`);

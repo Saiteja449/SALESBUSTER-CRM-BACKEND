@@ -20,6 +20,7 @@ import AssignmentState from "../models/AssignmentState.js";
 import Organization, { getDefaultAISettings } from "../models/Organization.js";
 import { getMasterModels } from "../services/tenantManager.js";
 import { getOrgCollectionName } from "../services/knowledgeService.js";
+import { decryptApiKey } from "../utils/encryption.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,6 +28,21 @@ dotenv.config({ path: path.join(__dirname, "../.env") });
 
 // In-memory cache for Qdrant vector stores per collection
 const vectorStoresMap = new Map();
+
+/**
+ * Purges the in-memory vector store cache for an organization
+ */
+export const invalidateVectorStoreForOrg = (organization) => {
+  try {
+    const collectionName = getOrgCollectionName(organization);
+    if (collectionName && vectorStoresMap.has(collectionName)) {
+      vectorStoresMap.delete(collectionName);
+      console.log(`[AI Service] Purged vector store cache for collection: ${collectionName}`);
+    }
+  } catch (err) {
+    console.warn("[AI Service] Invalidation warning:", err.message);
+  }
+};
 
 /**
  * Connects or returns cached Qdrant Vector Store for the organization's collection
@@ -41,11 +57,16 @@ export const getVectorStoreForOrg = async (organization) => {
   try {
     const qdrantUrl = process.env.CLUSTER_ENDPOINT;
     const qdrantApiKey = process.env.QDRANT_API_KEY;
-    const geminiApiKey = process.env.GEMINI_API_KEY;
+    const geminiApiKey = decryptApiKey(organization?.aiSettings?.geminiApiKey);
 
-    if (!qdrantUrl || !qdrantApiKey || !geminiApiKey) {
+    if (!qdrantUrl || !qdrantApiKey) {
+      console.warn("Qdrant cluster endpoint or API key missing.");
+      return null;
+    }
+
+    if (!geminiApiKey) {
       console.warn(
-        "Qdrant or Gemini API keys missing. RAG context will be empty.",
+        `[AI Service] Missing Gemini API key for ${organization?.name || "organization"}. RAG vector store disabled.`,
       );
       return null;
     }
@@ -383,11 +404,6 @@ export const generateAIResponse = async (
     const AILogModel = tenantModels?.AILog || AILog;
     const FollowupModel = tenantModels?.Followup || Followup;
 
-    const geminiApiKey = process.env.GEMINI_API_KEY;
-    if (!geminiApiKey) {
-      console.error("GEMINI_API_KEY is not defined in environment variables.");
-    }
-
     const lead = await LeadModel.findById(leadId);
     if (!lead) {
       throw new Error(`Lead not found with ID: ${leadId}`);
@@ -399,6 +415,15 @@ export const generateAIResponse = async (
       tenantModels,
     );
     const defaults = getDefaultAISettings(organization?.name || "");
+
+    // Decrypt organization's dedicated Gemini API Key (STRICT: NO GLOBAL FALLBACK)
+    const geminiApiKey = decryptApiKey(organization?.aiSettings?.geminiApiKey);
+    if (!geminiApiKey) {
+      console.warn(
+        `[AI Service] AI response blocked for ${organization?.name || "organization"}: Gemini API Key is missing. Every organization must configure their own Gemini API key.`,
+      );
+      return "Thank you for reaching out! Our automated assistant is currently paused as the organization's Google Gemini API key has not been configured in the dashboard. A sales representative will be with you shortly.";
+    }
 
     // Check if AI setup has been completed for this organization
     const isConfigured =
