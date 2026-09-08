@@ -20,6 +20,8 @@ import {
   updateOrgAISettings,
   uploadOrgKnowledgeDoc,
   deleteOrgKnowledgeDoc,
+  getOrganizationServices,
+  getOrganizationSettings,
 } from "../controllers/organizationController.js";
 import { protect, verifySuperAdmin } from "../middleware/authMiddleware.js";
 
@@ -64,6 +66,10 @@ router.delete(
   protect,
   deleteKnowledgeDoc,
 );
+
+// Mobile App Friendly Organization Endpoints
+router.get("/services", protect, getOrganizationServices);
+router.get("/settings", protect, getOrganizationSettings);
 
 // Super Admin APIs (For Super Admin Portal)
 // Provisioning an organization with super admin token verification

@@ -822,6 +822,48 @@ export const getMyAISettings = async (req, res) => {
   }
 };
 
+// @desc    Get organization services catalog (Mobile app & client friendly)
+// @route   GET /api/organization/services or /api/organizations/services
+// @access  Protected
+export const getOrganizationServices = async (req, res) => {
+  try {
+    const orgId = req.user?.organizationId || req.organization?._id;
+    let services = [];
+
+    if (orgId) {
+      const { Organization } = getMasterModels();
+      const org = await Organization.findById(orgId);
+      if (org) {
+        const defaults = getDefaultAISettings(org.name);
+        services =
+          Array.isArray(org.aiSettings?.services) && org.aiSettings.services.length > 0
+            ? org.aiSettings.services
+            : defaults.services;
+      }
+    } else if (req.organization) {
+      const defaults = getDefaultAISettings(req.organization.name);
+      services =
+        Array.isArray(req.organization.aiSettings?.services) &&
+        req.organization.aiSettings.services.length > 0
+          ? req.organization.aiSettings.services
+          : defaults.services;
+    }
+
+    res.status(200).json({
+      success: true,
+      data: services,
+    });
+  } catch (error) {
+    console.error("Error in getOrganizationServices:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get organization settings & profile (Mobile app & client friendly)
+// @route   GET /api/organization/settings or /api/organizations/settings
+// @access  Protected
+export const getOrganizationSettings = getMyOrganization;
+
 // @desc    Update current tenant organization's AI settings
 // @route   PUT /api/organizations/my-org/ai-settings
 // @access  Protected (Org Owner / Manager)
