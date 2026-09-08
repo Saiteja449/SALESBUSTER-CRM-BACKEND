@@ -10,24 +10,29 @@ import { Document } from "@langchain/core/documents";
 import mammoth from "mammoth";
 import { decryptApiKey } from "../utils/encryption.js";
 
-const getQdrantConfig = (customApiKey = null) => {
+const getQdrantConfig = (customApiKey = null, requireEmbeddings = true) => {
   const qdrantUrl = process.env.CLUSTER_ENDPOINT;
   const qdrantApiKey = process.env.QDRANT_API_KEY;
-  const geminiApiKey = customApiKey;
 
   if (!qdrantUrl || !qdrantApiKey) {
     throw new Error("Missing CLUSTER_ENDPOINT or QDRANT_API_KEY in environment");
-  }
-  if (!geminiApiKey) {
-    throw new Error(
-      "Organization Google Gemini API Key is not configured. Please add and save your Gemini API Key in Step 1 before uploading knowledge documents.",
-    );
   }
 
   const client = new QdrantClient({
     url: qdrantUrl,
     apiKey: qdrantApiKey,
   });
+
+  if (!requireEmbeddings) {
+    return { client, embeddings: null };
+  }
+
+  const geminiApiKey = customApiKey;
+  if (!geminiApiKey) {
+    throw new Error(
+      "Organization Google Gemini API Key is not configured. Please add and save your Gemini API Key in Step 1 before uploading knowledge documents.",
+    );
+  }
 
   const embeddings = new GoogleGenerativeAIEmbeddings({
     apiKey: geminiApiKey,
@@ -106,18 +111,51 @@ export const ingestDocumentForOrg = async ({ organization, filePath, originalNam
     };
   }
 
-  // 4. Ensure Qdrant collection exists (dimension 768 for gemini-embedding-2)
+  // 4. Ensure Qdrant collection exists (dimension 3072 for gemini-embedding-2)
+  const VECTOR_DIMENSION = 3072;
   try {
     const collectionsRes = await client.getCollections();
     const exists = collectionsRes.collections?.some((c) => c.name === collectionName);
-    if (!exists) {
-      console.log(`[KnowledgeService] Creating Qdrant collection: ${collectionName}`);
+
+    if (exists) {
+      try {
+        const collInfo = await client.getCollection(collectionName);
+        const existingSize = collInfo.config?.params?.vectors?.size;
+        if (existingSize && existingSize !== VECTOR_DIMENSION && (collInfo.points_count === 0 || !collInfo.points_count)) {
+          console.log(
+            `[KnowledgeService] Self-healing mismatched empty collection '${collectionName}' (was ${existingSize}, recreating as ${VECTOR_DIMENSION})...`,
+          );
+          await client.deleteCollection(collectionName);
+          await client.createCollection(collectionName, {
+            vectors: {
+              size: VECTOR_DIMENSION,
+              distance: "Cosine",
+            },
+          });
+          try {
+            await client.createPayloadIndex(collectionName, {
+              field_name: "metadata.docId",
+              field_schema: "keyword",
+            });
+          } catch (idxErr) {}
+        }
+      } catch (inspectErr) {
+        console.warn(`[KnowledgeService] Inspect error:`, inspectErr.message);
+      }
+    } else {
+      console.log(`[KnowledgeService] Creating Qdrant collection: ${collectionName} with size: ${VECTOR_DIMENSION}`);
       await client.createCollection(collectionName, {
         vectors: {
-          size: 768,
+          size: VECTOR_DIMENSION,
           distance: "Cosine",
         },
       });
+      try {
+        await client.createPayloadIndex(collectionName, {
+          field_name: "metadata.docId",
+          field_schema: "keyword",
+        });
+      } catch (idxErr) {}
     }
   } catch (collErr) {
     console.warn(`[KnowledgeService] Error checking collection '${collectionName}':`, collErr.message);
@@ -125,7 +163,7 @@ export const ingestDocumentForOrg = async ({ organization, filePath, originalNam
 
   // 5. Ingest chunks in batches to avoid rate limits
   const BATCH_SIZE = 25;
-  const DELAY_MS = 3000;
+  const DELAY_MS = 2000;
 
   for (let i = 0; i < splitDocs.length; i += BATCH_SIZE) {
     const batch = splitDocs.slice(i, i + BATCH_SIZE);
@@ -166,7 +204,7 @@ export const ingestDocumentForOrg = async ({ organization, filePath, originalNam
  * Deletes a document from the organization's Qdrant vector store and schema
  */
 export const deleteDocumentForOrg = async ({ organization, docId }) => {
-  const { client } = getQdrantConfig();
+  const { client } = getQdrantConfig(null, false);
   const collectionName = getOrgCollectionName(organization);
 
   console.log(`[KnowledgeService] Deleting docId: ${docId} from collection: ${collectionName}`);

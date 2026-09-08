@@ -21,6 +21,7 @@ import Organization, { getDefaultAISettings } from "../models/Organization.js";
 import { getMasterModels } from "../services/tenantManager.js";
 import { getOrgCollectionName } from "../services/knowledgeService.js";
 import { decryptApiKey } from "../utils/encryption.js";
+import { recordAiUsage } from "../services/aiUsageService.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -632,6 +633,13 @@ Latest Message: ${incomingText}`;
         ["user", incomingText],
       ]);
       console.log("Success with model: Gemini");
+
+      // Record Chat AI API call usage
+      if (organization?._id) {
+        recordAiUsage(organization._id, "chat", 1).catch((err) =>
+          console.warn("[AI Service] Failed recording chat usage:", err.message),
+        );
+      }
     } catch (e) {
       lastError = e;
       console.warn("Model Gemini structured output failed. Error:", e.message);

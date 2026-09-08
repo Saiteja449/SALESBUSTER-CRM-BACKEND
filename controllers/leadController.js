@@ -13,6 +13,7 @@ import path from "path";
 import { analyzeAudioFile } from "../services/audioAnalysisService.js";
 import { sendWelcomeEnquiryMessage } from "../whatsapp/whatsappService.js";
 import { decryptApiKey } from "../utils/encryption.js";
+import { recordAiUsage } from "../services/aiUsageService.js";
 
 // Feature toggle to pause AI Call Analysis temporarily
 const ENABLE_AI_AUDIO_ANALYSIS =
@@ -38,6 +39,7 @@ const triggerAudioAnalysis = async (
   mimeType,
   LeadModel = Lead,
   orgApiKey = null,
+  orgId = null,
 ) => {
   if (!ENABLE_AI_AUDIO_ANALYSIS) {
     console.log(
@@ -62,6 +64,11 @@ const triggerAudioAnalysis = async (
     console.log(
       `[AudioAnalysis] Successfully updated analysis for recording ${recordingId}`,
     );
+    if (orgId) {
+      recordAiUsage(orgId, "audio", 1).catch((err) =>
+        console.warn("[AudioAnalysis] Failed recording audio usage:", err.message),
+      );
+    }
   } catch (error) {
     console.error(
       `[AudioAnalysis] Failed to analyze recording ${recordingId}:`,
@@ -563,6 +570,7 @@ export const updateLead = async (req, res) => {
           req.file.mimetype,
           LeadModel,
           orgApiKey,
+          req.organization?._id || req.user?.organizationId,
         );
       }
     }
@@ -755,7 +763,17 @@ export const analyzeRecording = async (req, res) => {
     await lead.save();
 
     // Trigger in background
-    triggerAudioAnalysis(id, recordingId, filePath, "audio/mp4", LeadModel);
+    const orgApiKey = decryptApiKey(req.organization?.aiSettings?.geminiApiKey);
+    const orgId = req.organization?._id || req.user?.organizationId;
+    triggerAudioAnalysis(
+      id,
+      recordingId,
+      filePath,
+      "audio/mp4",
+      LeadModel,
+      orgApiKey,
+      orgId,
+    );
 
     res.json({ success: true, message: "Analysis triggered successfully" });
   } catch (error) {

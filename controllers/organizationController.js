@@ -17,6 +17,7 @@ import { getIO } from "../socket/socket.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { encryptApiKey, decryptApiKey } from "../utils/encryption.js";
 import { invalidateVectorStoreForOrg } from "../ai/aiService.js";
+import { checkAndResetDailyAiUsage } from "../services/aiUsageService.js";
 
 /**
  * Calculates subscription end date given a start date and duration in months.
@@ -689,6 +690,10 @@ export const getMyOrganization = async (req, res) => {
       : null;
 
     const defaults = getDefaultAISettings(org.name);
+    checkAndResetDailyAiUsage(org);
+    if (org.isModified()) {
+      await org.save();
+    }
     const orgJson = org.toJSON();
     const isAiConfigured = Boolean(
       org.aiSettings?.isAiConfigured !== undefined
@@ -700,6 +705,7 @@ export const getMyOrganization = async (req, res) => {
     const effectiveAiSettings = {
       ...defaults,
       ...(orgJson.aiSettings || {}),
+      dailyAiUsage: org.aiSettings?.dailyAiUsage || defaults.dailyAiUsage,
       isAiConfigured,
       aiSetupCompletedAt:
         org.aiSettings?.aiSetupCompletedAt ||
@@ -767,6 +773,10 @@ export const getMyAISettings = async (req, res) => {
     }
 
     const defaults = getDefaultAISettings(org.name);
+    checkAndResetDailyAiUsage(org);
+    if (org.isModified()) {
+      await org.save();
+    }
     const aiSettings = org.aiSettings || {};
 
     const effective = {
@@ -794,6 +804,7 @@ export const getMyAISettings = async (req, res) => {
       qdrantCollection:
         aiSettings.qdrantCollection || defaults.qdrantCollection,
       knowledgeDocs: aiSettings.knowledgeDocs || [],
+      dailyAiUsage: aiSettings.dailyAiUsage || defaults.dailyAiUsage,
     };
 
     res.status(200).json({
@@ -843,6 +854,7 @@ export const updateMyAISettings = async (req, res) => {
       qdrantCollection,
       isAiConfigured,
       geminiApiKey,
+      dailyQuotaLimit,
     } = req.body;
 
     if (!org.aiSettings) org.aiSettings = {};
@@ -933,6 +945,16 @@ export const updateMyAISettings = async (req, res) => {
       org.aiSettings.qualificationFields = qualificationFields;
     if (qdrantCollection !== undefined)
       org.aiSettings.qdrantCollection = qdrantCollection.trim();
+    if (dailyQuotaLimit !== undefined) {
+      const parsedLimit = parseInt(dailyQuotaLimit, 10);
+      if (!isNaN(parsedLimit) && parsedLimit > 0) {
+        if (!org.aiSettings.dailyAiUsage) {
+          org.aiSettings.dailyAiUsage = {};
+        }
+        org.aiSettings.dailyAiUsage.dailyQuotaLimit = parsedLimit;
+        org.markModified("aiSettings");
+      }
+    }
 
     await org.save();
 
@@ -1131,6 +1153,10 @@ export const getOrgAISettings = async (req, res) => {
     }
 
     const defaults = getDefaultAISettings(org.name);
+    checkAndResetDailyAiUsage(org);
+    if (org.isModified()) {
+      await org.save();
+    }
     const aiSettings = org.aiSettings || {};
 
     const effective = {
@@ -1151,6 +1177,7 @@ export const getOrgAISettings = async (req, res) => {
       qdrantCollection:
         aiSettings.qdrantCollection || defaults.qdrantCollection,
       knowledgeDocs: aiSettings.knowledgeDocs || [],
+      dailyAiUsage: aiSettings.dailyAiUsage || defaults.dailyAiUsage,
     };
 
     res.status(200).json({ success: true, data: effective });
@@ -1179,6 +1206,7 @@ export const updateOrgAISettings = async (req, res) => {
       qualificationFields,
       qdrantCollection,
       geminiApiKey,
+      dailyQuotaLimit,
     } = req.body;
 
     if (!org.aiSettings) org.aiSettings = {};
@@ -1202,6 +1230,16 @@ export const updateOrgAISettings = async (req, res) => {
       org.aiSettings.qualificationFields = qualificationFields;
     if (qdrantCollection !== undefined)
       org.aiSettings.qdrantCollection = qdrantCollection.trim();
+    if (dailyQuotaLimit !== undefined) {
+      const parsedLimit = parseInt(dailyQuotaLimit, 10);
+      if (!isNaN(parsedLimit) && parsedLimit > 0) {
+        if (!org.aiSettings.dailyAiUsage) {
+          org.aiSettings.dailyAiUsage = {};
+        }
+        org.aiSettings.dailyAiUsage.dailyQuotaLimit = parsedLimit;
+        org.markModified("aiSettings");
+      }
+    }
 
     await org.save();
 

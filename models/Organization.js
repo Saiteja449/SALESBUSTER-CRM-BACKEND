@@ -212,6 +212,32 @@ const organizationSchema = new mongoose.Schema(
           uploadedAt: { type: Date, default: Date.now },
         },
       ],
+      dailyAiUsage: {
+        date: {
+          type: String,
+          default: () => new Date().toISOString().slice(0, 10),
+        },
+        chatApiCalls: {
+          type: Number,
+          default: 0,
+        },
+        audioApiCalls: {
+          type: Number,
+          default: 0,
+        },
+        totalApiCalls: {
+          type: Number,
+          default: 0,
+        },
+        dailyQuotaLimit: {
+          type: Number,
+          default: 1500,
+        },
+        lastResetAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
     },
   },
   {
@@ -288,6 +314,14 @@ export const getDefaultAISettings = (orgName = "") => {
       },
     ],
     knowledgeDocs: [],
+    dailyAiUsage: {
+      date: new Date().toISOString().slice(0, 10),
+      chatApiCalls: 0,
+      audioApiCalls: 0,
+      totalApiCalls: 0,
+      dailyQuotaLimit: 1500,
+      lastResetAt: new Date(),
+    },
   };
 };
 
