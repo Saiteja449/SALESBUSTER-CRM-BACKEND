@@ -567,6 +567,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
     });
 
     let isNewLead = false;
+    let assignedRepName = "Sales Representative";
 
     if (!lead) {
       // Do NOT create a lead if the identifier is a LID (not a real phone number)
@@ -622,7 +623,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
 
       // Create Lead Notification in tenant DB
       const targetUsers = assignedRep ? [assignedRep._id] : [];
-      const assignedRepName = assignedRep?.name || "sales representative";
+      assignedRepName = assignedRep?.name || "Sales Representative";
       await NotificationModel.create({
         title: fromMe
           ? "New WhatsApp Outgoing Lead Capture"
@@ -734,6 +735,33 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
         io.to(`org_${orgId}`).emit("conversation_updated", convPayload);
       } else {
         io.emit("conversation_updated", convPayload);
+      }
+
+      // Broadcast new lead alert toast event (ONLY for newly discovered WhatsApp leads)
+      if (isNewLead) {
+        const newLeadAlertPayload = {
+          lead: {
+            _id: lead._id.toString(),
+            id: lead._id.toString(),
+            name: lead.name,
+            phone: lead.phone,
+            service: lead.service,
+            source: lead.source || "WhatsApp",
+            status: lead.status,
+            assignedTo: lead.assignedTo,
+            joinedAt: lead.joinedAt,
+          },
+          message: textContent,
+          assignedRepName: assignedRepName || "Sales Representative",
+          timestamp: timestamp || new Date(),
+        };
+
+        if (orgId) {
+          io.to(`org_${orgId}`).emit("whatsapp_new_lead", newLeadAlertPayload);
+        } else {
+          io.emit("whatsapp_new_lead", newLeadAlertPayload);
+        }
+        console.log(`[DEBUG] Emitted whatsapp_new_lead alert for ${lead.phone} (${lead.name})`);
       }
     }
 
