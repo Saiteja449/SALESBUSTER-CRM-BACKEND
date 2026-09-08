@@ -50,7 +50,7 @@ export const analyzeAudioFile = async (filePath, mimeType) => {
 
     // Generate the summary
     const prompt = `
-You are an AI sales call analyzer for Kranthi Elevators.
+You are an AI sales call analyzer for SalesBuster AI.
 
 The conversation is between a sales representative and a customer regarding elevator solutions, including Passenger Lifts, MRL Lifts, Hydraulic Lifts, Hospital Bed Lifts, Elevator Maintenance & AMC, or Elevator Modernization.
 

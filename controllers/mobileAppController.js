@@ -97,7 +97,7 @@ export const receiveMobileAppLead = async (req, res) => {
         nextIndex = 0;
       }
 
-      leadData.assignedTo = reps[nextIndex].name;
+      leadData.assignedTo = reps[nextIndex]._id.toString();
       state.lastAssignedIndex = nextIndex;
       await state.save();
     }

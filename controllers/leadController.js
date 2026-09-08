@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Lead from "../models/Lead.js";
 import User from "../models/User.js";
 import AssignmentState from "../models/AssignmentState.js";
@@ -93,13 +94,15 @@ export const getPaginatedLeads = async (req, res) => {
       search = "",
       service = "All",
       salesperson = "All",
+      salespersonId = "",
       status = "All",
       leadTypeTab = "New",
       currentUserRole = "",
       currentUserName = "",
+      currentUserId = "",
     } = req.query;
 
-    const { LeadModel } = getModels(req);
+    const { LeadModel, UserModel } = getModels(req);
 
     const pageNum = parseInt(page) || 0;
     const isAll = limit === "All" || limit === "all";
@@ -107,10 +110,46 @@ export const getPaginatedLeads = async (req, res) => {
 
     let query = {};
 
-    if (currentUserRole === "Sales Representative" && currentUserName) {
-      query.assignedTo = {
-        $regex: new RegExp("^" + currentUserName + "$", "i"),
-      };
+    // Determine effective sales rep filter condition (supports ID with fallback to legacy name)
+    const activeSalesRepFilter = salespersonId || (salesperson !== "All" ? salesperson : null);
+    let assigneeMatchConditions = null;
+
+    const isSalesRepUser =
+      currentUserRole === "Sales Representative" ||
+      currentUserRole === "sales person" ||
+      req.user?.role === "sales person";
+    const effectiveUserId = currentUserId || req.userTokenData?.id || req.user?._id;
+
+    if (isSalesRepUser && (effectiveUserId || currentUserName)) {
+      const matchArray = [];
+      if (effectiveUserId) {
+        matchArray.push(String(effectiveUserId));
+        if (mongoose.Types.ObjectId.isValid(effectiveUserId)) {
+          matchArray.push(new mongoose.Types.ObjectId(effectiveUserId));
+        }
+      }
+      if (currentUserName) {
+        matchArray.push(new RegExp("^" + currentUserName + "$", "i"));
+      }
+      assigneeMatchConditions = matchArray.length === 1 ? matchArray[0] : { $in: matchArray };
+    } else if (activeSalesRepFilter && activeSalesRepFilter !== "All") {
+      const matchArray = [String(activeSalesRepFilter)];
+      if (mongoose.Types.ObjectId.isValid(activeSalesRepFilter)) {
+        matchArray.push(new mongoose.Types.ObjectId(activeSalesRepFilter));
+        try {
+          const matchedUser = await UserModel.findById(activeSalesRepFilter).select("name");
+          if (matchedUser?.name) {
+            matchArray.push(new RegExp("^" + matchedUser.name + "$", "i"));
+          }
+        } catch (uErr) {}
+      } else {
+        matchArray.push(new RegExp("^" + activeSalesRepFilter + "$", "i"));
+      }
+      assigneeMatchConditions = matchArray.length === 1 ? matchArray[0] : { $in: matchArray };
+    }
+
+    if (assigneeMatchConditions) {
+      query.assignedTo = assigneeMatchConditions;
     }
 
     if (search) {
@@ -144,7 +183,6 @@ export const getPaginatedLeads = async (req, res) => {
     }
 
     if (service !== "All") query.service = service;
-    if (salesperson !== "All") query.assignedTo = salesperson;
     if (status !== "All") query.status = status;
 
     const todayStr = new Date().toISOString().split("T")[0];
@@ -193,10 +231,8 @@ export const getPaginatedLeads = async (req, res) => {
     const leads = await leadsQuery;
 
     const baseCountQuery = {};
-    if (currentUserRole === "Sales Representative" && currentUserName) {
-      baseCountQuery.assignedTo = {
-        $regex: new RegExp("^" + currentUserName + "$", "i"),
-      };
+    if (assigneeMatchConditions) {
+      baseCountQuery.assignedTo = assigneeMatchConditions;
     }
     if (search) {
       const searchRegex = new RegExp(search, "i");
@@ -228,7 +264,6 @@ export const getPaginatedLeads = async (req, res) => {
       baseCountQuery.$or = searchConditions;
     }
     if (service !== "All") baseCountQuery.service = service;
-    if (salesperson !== "All") baseCountQuery.assignedTo = salesperson;
     if (status !== "All") baseCountQuery.status = status;
 
     const facetCounts = await LeadModel.aggregate([
@@ -415,7 +450,7 @@ export const createLead = async (req, res) => {
           nextIndex = 0;
         }
 
-        leadData.assignedTo = reps[nextIndex].name;
+        leadData.assignedTo = reps[nextIndex]._id.toString();
         state.lastAssignedIndex = nextIndex;
         await state.save();
       }
@@ -450,12 +485,27 @@ export const createLead = async (req, res) => {
       );
     }
 
-    const assignedUser = await UserModel.findOne({ name: lead.assignedTo });
-    const targetUsers = assignedUser ? [assignedUser._id] : [];
+    let assignedUserName = "sales representative";
+    let targetUsers = [];
+    if (lead.assignedTo && lead.assignedTo !== "Unassigned") {
+      if (mongoose.Types.ObjectId.isValid(lead.assignedTo)) {
+        targetUsers = [lead.assignedTo];
+        const assignedUser = await UserModel.findById(lead.assignedTo).select("name");
+        if (assignedUser) assignedUserName = assignedUser.name;
+      } else {
+        const assignedUser = await UserModel.findOne({ name: lead.assignedTo });
+        if (assignedUser) {
+          targetUsers = [assignedUser._id];
+          assignedUserName = assignedUser.name;
+        } else {
+          assignedUserName = lead.assignedTo;
+        }
+      }
+    }
 
     await NotificationModel.create({
       title: "New Lead Added",
-      message: `Lead ${lead.name} has been added and assigned to ${lead.assignedTo}.`,
+      message: `Lead ${lead.name} has been added and assigned to ${assignedUserName}.`,
       type: "new_lead",
       targetRoles: ["sales manager"],
       targetUsers: targetUsers,

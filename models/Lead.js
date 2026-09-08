@@ -34,8 +34,10 @@ const leadSchema = new mongoose.Schema(
     },
 
     assignedTo: {
-      type: String,
+      type: mongoose.Schema.Types.Mixed,
+      ref: "User",
       default: "Unassigned",
+      index: true,
     },
     joinedAt: {
       type: Date,

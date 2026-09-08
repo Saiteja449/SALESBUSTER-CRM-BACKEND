@@ -492,15 +492,15 @@ export const generateAIResponse = async (
         let nextIndex = state.lastAssignedIndex + 1;
         if (nextIndex >= representatives.length) nextIndex = 0;
 
-        assignedRep = representatives[nextIndex].name;
+        const assignedUser = representatives[nextIndex];
+        assignedRep = assignedUser.name;
         state.lastAssignedIndex = nextIndex;
         await state.save();
 
-        lead.assignedTo = assignedRep;
+        lead.assignedTo = assignedUser._id.toString();
         await lead.save();
 
-        const assignedAgent = await UserModel.findOne({ name: assignedRep });
-        const targetUsers = assignedAgent ? [assignedAgent._id] : [];
+        const targetUsers = [assignedUser._id];
         await NotificationModel.create({
           title: "Lead Assigned by AI",
           message: `Lead ${lead.name} has been assigned to ${assignedRep}.`,

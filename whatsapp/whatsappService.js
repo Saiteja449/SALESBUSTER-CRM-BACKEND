@@ -611,7 +611,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
           nextIndex = 0;
         }
 
-        lead.assignedTo = representatives[nextIndex].name;
+        lead.assignedTo = representatives[nextIndex]._id.toString();
         state.lastAssignedIndex = nextIndex;
         await state.save();
       }
@@ -619,15 +619,16 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       await lead.save();
 
       // Create Lead Notification in tenant DB
-      const assignedAgent = await UserModel.findOne({ name: lead.assignedTo });
-      const targetUsers = assignedAgent ? [assignedAgent._id] : [];
+      const assignedRep = representatives[nextIndex];
+      const targetUsers = assignedRep ? [assignedRep._id] : [];
+      const assignedRepName = assignedRep?.name || "sales representative";
       await NotificationModel.create({
         title: fromMe
           ? "New WhatsApp Outgoing Lead Capture"
           : "New WhatsApp Lead Capture",
         message: fromMe
-          ? `New WhatsApp lead captured from outgoing message to ${lead.phone} and assigned to ${lead.assignedTo}.`
-          : `New WhatsApp lead captured from ${lead.name} (${lead.phone}) and assigned to ${lead.assignedTo}.`,
+          ? `New WhatsApp lead captured from outgoing message to ${lead.phone} and assigned to ${assignedRepName}.`
+          : `New WhatsApp lead captured from ${lead.name} (${lead.phone}) and assigned to ${assignedRepName}.`,
         type: "new_lead",
         targetRoles: ["sales manager"],
         targetUsers: targetUsers,

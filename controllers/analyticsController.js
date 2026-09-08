@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import TelecallerAnalytics from "../models/TelecallerAnalytics.js";
 import AILimit from "../models/AILimit.js";
 
@@ -9,12 +10,13 @@ const getModels = (req) => ({
 // Logs a single call and increments daily analytics
 export const logCall = async (req, res) => {
   try {
-    const { salesperson, date, duration, callType, status } = req.body;
+    const { salesperson, salespersonId, date, duration, callType, status } = req.body;
+    const repIdentifier = salespersonId || salesperson;
 
-    if (!salesperson || !date) {
+    if (!repIdentifier || !date) {
       return res.status(400).json({
         success: false,
-        message: "Salesperson and date are required.",
+        message: "Salesperson ID/Name and date are required.",
       });
     }
 
@@ -39,9 +41,17 @@ export const logCall = async (req, res) => {
     if (status === "rejected") update.$inc.rejected = 1;
     if (status === "not-connected") update.$inc.notConnected = 1;
 
+    let queryFilter = {};
+    if (mongoose.Types.ObjectId.isValid(repIdentifier)) {
+      queryFilter = { salespersonId: repIdentifier, date };
+      update.$setOnInsert = { salesperson: salesperson || "" };
+    } else {
+      queryFilter = { salesperson: repIdentifier, date };
+    }
+
     // Use upsert to create the document if it doesn't exist
     const analytics = await AnalyticsModel.findOneAndUpdate(
-      { salesperson, date },
+      queryFilter,
       update,
       { new: true, upsert: true },
     );
@@ -55,11 +65,18 @@ export const logCall = async (req, res) => {
 // Gets daily analytics for a salesperson
 export const getAnalyticsBySalesperson = async (req, res) => {
   try {
-    const { salesperson } = req.params;
+    const { salesperson, id, salespersonId } = req.params;
+    const target = id || salespersonId || salesperson;
     const { AnalyticsModel } = getModels(req);
 
+    const orConditions = [{ salesperson: target }];
+    if (mongoose.Types.ObjectId.isValid(target)) {
+      orConditions.push({ salespersonId: target });
+      orConditions.push({ salespersonId: new mongoose.Types.ObjectId(target) });
+    }
+
     // Fetch last 7 days of records sorted by date descending
-    const analytics = await AnalyticsModel.find({ salesperson })
+    const analytics = await AnalyticsModel.find({ $or: orConditions })
       .sort({ date: -1 })
       .limit(7);
 

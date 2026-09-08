@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Lead from "../models/Lead.js";
 import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
@@ -135,14 +136,30 @@ export const getQR = async (req, res) => {
 // @access  Public
 export const getConversations = async (req, res) => {
   try {
-    const { role, name } = req.query;
+    const { role, name, userId } = req.query;
     const { ConversationModel } = getModels(req);
+
+    const isSalesRep =
+      role === "Sales Representative" ||
+      role === "sales person" ||
+      req.user?.role === "sales person";
+    const effectiveUserId = userId || req.user?._id || req.userTokenData?.id;
 
     const populateOptions = { path: "leadId" };
 
-    if (role === "Sales Representative" && name) {
+    if (isSalesRep && (effectiveUserId || name)) {
+      const matchArray = [];
+      if (effectiveUserId) {
+        matchArray.push(String(effectiveUserId));
+        if (mongoose.Types.ObjectId.isValid(effectiveUserId)) {
+          matchArray.push(new mongoose.Types.ObjectId(effectiveUserId));
+        }
+      }
+      if (name) {
+        matchArray.push(new RegExp("^" + name + "$", "i"));
+      }
       populateOptions.match = {
-        assignedTo: { $regex: new RegExp("^" + name + "$", "i") },
+        assignedTo: matchArray.length === 1 ? matchArray[0] : { $in: matchArray },
       };
     }
 
@@ -151,7 +168,7 @@ export const getConversations = async (req, res) => {
       .sort({ lastMessageTime: -1 });
 
     // Filter out conversations where leadId is null (due to population match failure)
-    if (role === "Sales Representative" && name) {
+    if (isSalesRep && (effectiveUserId || name)) {
       conversations = conversations.filter((c) => c.leadId != null);
     }
 

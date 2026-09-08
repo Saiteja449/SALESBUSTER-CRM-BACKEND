@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import User from "../models/User.js";
+import Lead from "../models/Lead.js";
 import Notification from "../models/Notification.js";
 import { getMasterModels } from "../services/tenantManager.js";
 
@@ -7,6 +8,7 @@ import { getMasterModels } from "../services/tenantManager.js";
 const getModels = (req) => {
   return {
     UserModel: req.tenantModels?.User || User,
+    LeadModel: req.tenantModels?.Lead || Lead,
     NotificationModel: req.tenantModels?.Notification || Notification,
   };
 };
@@ -236,6 +238,17 @@ export const deleteSalesPerson = async (req, res) => {
 
     // Delete from tenant DB
     await UserModel.findByIdAndDelete(req.params.id);
+
+    // Unassign leads previously assigned to this user
+    try {
+      const { LeadModel } = getModels(req);
+      await LeadModel.updateMany(
+        { $or: [{ assignedTo: req.params.id }, { assignedTo: user.name }] },
+        { $set: { assignedTo: "Unassigned" } }
+      );
+    } catch (leadErr) {
+      console.error("Error unassigning leads on user delete:", leadErr);
+    }
 
     // Delete from Master AuthUser registry
     try {

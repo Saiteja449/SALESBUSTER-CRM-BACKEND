@@ -4,7 +4,13 @@ const telecallerAnalyticsSchema = new mongoose.Schema(
   {
     salesperson: {
       type: String,
-      required: true,
+      required: false,
+      index: true,
+    },
+    salespersonId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: false,
       index: true,
     },
     date: {
@@ -26,7 +32,8 @@ const telecallerAnalyticsSchema = new mongoose.Schema(
 );
 
 // Create compound index for querying salesperson by date efficiently
-telecallerAnalyticsSchema.index({ salesperson: 1, date: 1 }, { unique: true });
+telecallerAnalyticsSchema.index({ salespersonId: 1, date: 1 });
+telecallerAnalyticsSchema.index({ salesperson: 1, date: 1 });
 
 const TelecallerAnalytics = mongoose.model('TelecallerAnalytics', telecallerAnalyticsSchema);
 export default TelecallerAnalytics;
