@@ -88,12 +88,15 @@ export const ingestDocumentForOrg = async ({ organization, filePath, originalNam
   // 1. Load document content
   const rawDocs = await loadFileDocuments(filePath, originalName);
 
-  // 2. Split into chunks
+  // 2. Split into chunks and filter out empty/whitespace-only chunks
   const textSplitter = new RecursiveCharacterTextSplitter({
     chunkSize: 1000,
     chunkOverlap: 200,
   });
-  const splitDocs = await textSplitter.splitDocuments(rawDocs);
+  const allSplitDocs = await textSplitter.splitDocuments(rawDocs);
+  const splitDocs = allSplitDocs.filter(
+    (doc) => doc.pageContent && doc.pageContent.trim().length > 0,
+  );
 
   if (splitDocs.length === 0) {
     throw new Error("No readable text content found in document.");
@@ -161,16 +164,37 @@ export const ingestDocumentForOrg = async ({ organization, filePath, originalNam
     console.warn(`[KnowledgeService] Error checking collection '${collectionName}':`, collErr.message);
   }
 
-  // 5. Ingest chunks in batches to avoid rate limits
-  const BATCH_SIZE = 25;
-  const DELAY_MS = 2000;
+  // 5. Ingest chunks in batches with rate-limit retries
+  const BATCH_SIZE = 20;
+  const DELAY_MS = 2500;
 
   for (let i = 0; i < splitDocs.length; i += BATCH_SIZE) {
     const batch = splitDocs.slice(i, i + BATCH_SIZE);
-    await QdrantVectorStore.fromDocuments(batch, embeddings, {
-      client,
-      collectionName,
-    });
+    let success = false;
+    let attempts = 0;
+
+    while (!success && attempts < 3) {
+      try {
+        attempts++;
+        await QdrantVectorStore.fromDocuments(batch, embeddings, {
+          client,
+          collectionName,
+        });
+        success = true;
+      } catch (batchErr) {
+        console.warn(
+          `[KnowledgeService] Batch ${Math.floor(i / BATCH_SIZE) + 1} attempt ${attempts} failed:`,
+          batchErr.message,
+        );
+        if (attempts >= 3) {
+          throw new Error(
+            `Indexing failed at chunk batch ${Math.floor(i / BATCH_SIZE) + 1}: ${batchErr.message}. If this was a rate limit, please wait a moment and try again.`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 4000 * attempts));
+      }
+    }
+
     if (i + BATCH_SIZE < splitDocs.length) {
       await new Promise((r) => setTimeout(r, DELAY_MS));
     }

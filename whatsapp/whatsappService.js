@@ -597,6 +597,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       const representatives = await UserModel.find({ role: "sales person" }).sort({
         _id: 1,
       });
+      let assignedRep = null;
       if (representatives && representatives.length > 0) {
         let state = await AssignmentStateModel.findOne({ key: "leadAssignment" });
         if (!state) {
@@ -611,7 +612,8 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
           nextIndex = 0;
         }
 
-        lead.assignedTo = representatives[nextIndex]._id.toString();
+        assignedRep = representatives[nextIndex];
+        lead.assignedTo = assignedRep._id.toString();
         state.lastAssignedIndex = nextIndex;
         await state.save();
       }
@@ -619,7 +621,6 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       await lead.save();
 
       // Create Lead Notification in tenant DB
-      const assignedRep = representatives[nextIndex];
       const targetUsers = assignedRep ? [assignedRep._id] : [];
       const assignedRepName = assignedRep?.name || "sales representative";
       await NotificationModel.create({

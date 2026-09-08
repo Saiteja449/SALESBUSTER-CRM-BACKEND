@@ -150,6 +150,31 @@ export const resolveOrganization = async (
 };
 
 /**
+ * Ensures services, numbered lists, and bullet points are formatted one after the other on separate lines
+ */
+export const formatReplyText = (text) => {
+  if (!text || typeof text !== "string") return text;
+  let formatted = text;
+
+  // If there's an intro followed directly by "1. ", add a newline before 1.
+  formatted = formatted.replace(/([:?!])\s*(\b1\.\s+)/g, "$1\n$2");
+
+  // If numbered items like " 2. ", " 3. " are inline on the same line, put each on its own line
+  formatted = formatted.replace(/([^\n])\s+(\b\d+\.\s+)/g, "$1\n$2");
+
+  // If bullet points like " • ", " - " are inline without a newline, put each on its own line
+  formatted = formatted.replace(/([^\n])\s+([•\-\*]\s+)/g, "$1\n$2");
+
+  // If closing sentence/question follows the last list item on the same line, separate it with a blank line
+  formatted = formatted.replace(
+    /((\b\d+\.|[•\-\*])\s+[^\n.?!]+[.?!])\s+([A-Z\p{Extended_Pictographic}])/gu,
+    "$1\n\n$3"
+  );
+
+  return formatted;
+};
+
+/**
  * Dynamically builds a Zod Structured Output schema based on the organization's qualification schema
  */
 export const buildQualificationSchema = (
@@ -209,7 +234,7 @@ export const buildQualificationSchema = (
     reply: z
       .string()
       .describe(
-        "Your reply text to the user. Provide comprehensive answers and guide the user naturally without forcing unnecessary questions.",
+        "Your reply text to the user. When listing services, options, or numbered items, ALWAYS place each item on its own separate line (one after the other using line breaks). Never write them inline in a single paragraph.",
       ),
     qualification: z.object(shape).default({}),
     tags: z
@@ -378,9 +403,13 @@ USER MSG: "${incomingText}"
 
 CRITICAL RULES:
 ${customRules}
+6. LIST FORMATTING (STRICT): When presenting services, products, or numbered options, ALWAYS place each item on its OWN line using line breaks (\n) (one below the other). NEVER write numbered items or bullet points inline in a single continuous paragraph or sentence (e.g. NEVER write '1. A 2. B 3. C'. ALWAYS write:
+1. A
+2. B
+3. C).
 
 FIRST MESSAGE REQUIREMENT:
-If this is the first interaction (Total Conversation Turns is 1 or 0) and the user has not mentioned a specific product or requirement, you MUST introduce ${companyName}, briefly present our core services as a numbered list, and invite them to pick an option or describe their need!
+If this is the first interaction (Total Conversation Turns is 1 or 0) and the user has not mentioned a specific product or requirement, you MUST introduce ${companyName}, briefly present our core services as a vertical numbered list with each item on its own separate line (one below the other, never inline in a single paragraph), and invite them to pick an option or describe their need!
 
 OUTPUT:
 Respond purely via the structured JSON schema.`;
@@ -667,6 +696,10 @@ Latest Message: ${incomingText}`;
           addNote: "",
         },
       };
+    }
+
+    if (parsed.reply) {
+      parsed.reply = formatReplyText(parsed.reply);
     }
 
     // Record AI Log
