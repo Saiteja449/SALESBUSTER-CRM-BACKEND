@@ -39,6 +39,10 @@ const authUserSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    phone: {
+      type: String,
+      default: "",
+    },
     status: {
       type: String,
       enum: ["active", "inactive"],

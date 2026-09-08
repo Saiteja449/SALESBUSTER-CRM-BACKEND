@@ -2,7 +2,8 @@ import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import Lead from "../models/Lead.js";
 import Notification from "../models/Notification.js";
-import { getMasterModels } from "../services/tenantManager.js";
+import { getMasterModels, generateSecurePassword } from "../services/tenantManager.js";
+import { sendSalesPersonWelcomeEmail } from "../helpers/emailHelper.js";
 
 // Helper to resolve models
 const getModels = (req) => {
@@ -61,20 +62,33 @@ export const getUsers = async (req, res) => {
   }
 };
 
-// @desc    Add a new Sales Representative (Enforces Seat Limit)
+// @desc    Add a new Sales Representative (Enforces Seat Limit, generates password, and sends credentials via email)
 // @route   POST /api/users
 // @access  Protected
 export const addSalesPerson = async (req, res) => {
-  const { name, email, password } = req.body;
+  const { name, email, phone, mobile, password } = req.body;
+  const rawMobile = phone || mobile || "";
 
-  if (!name || !email || !password) {
+  if (!name || !email || !rawMobile.trim()) {
     return res.status(400).json({
       success: false,
-      message: "Please provide name, email, and password",
+      message: "Please provide full name, email address, and mobile number.",
     });
   }
 
   const cleanEmail = email.toLowerCase().trim();
+  const cleanMobile = rawMobile.trim();
+  const cleanName = name.trim();
+
+  // Validate mobile number digits
+  const cleanDigits = cleanMobile.replace(/\D/g, "");
+  if (cleanDigits.length < 7 || cleanDigits.length > 15) {
+    return res.status(400).json({
+      success: false,
+      message: "Please provide a valid mobile number (7 to 15 digits).",
+    });
+  }
+
   const { UserModel, NotificationModel } = getModels(req);
 
   try {
@@ -131,13 +145,19 @@ export const addSalesPerson = async (req, res) => {
       });
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    // 5. Generate secure random temporary password (or use provided fallback)
+    const temporaryPassword = password && password.trim().length >= 6
+      ? password.trim()
+      : generateSecurePassword(cleanName);
 
-    // 5. Create in Tenant Database
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(temporaryPassword, salt);
+
+    // 6. Create in Tenant Database
     const user = await UserModel.create({
-      name: name.trim(),
+      name: cleanName,
       email: cleanEmail,
+      phone: cleanMobile,
       password: hashedPassword,
       role: "sales person",
       organizationId: req.organization?._id || req.user?.organizationId,
@@ -145,11 +165,12 @@ export const addSalesPerson = async (req, res) => {
       status: "active",
     });
 
-    // 6. Register in Master AuthUser database
+    // 7. Register in Master AuthUser database
     await AuthUser.create({
       _id: user._id, // Keep IDs identical
-      name: name.trim(),
+      name: cleanName,
       email: cleanEmail,
+      phone: cleanMobile,
       password: hashedPassword,
       role: "sales person",
       organizationId: req.organization?._id || req.user?.organizationId,
@@ -158,7 +179,7 @@ export const addSalesPerson = async (req, res) => {
       status: "active",
     });
 
-    // 7. Create notification in tenant
+    // 8. Create notification in tenant
     try {
       await NotificationModel.create({
         title: "New Team Member Added",
@@ -170,7 +191,24 @@ export const addSalesPerson = async (req, res) => {
       console.error("Error creating notification:", notifErr);
     }
 
-    // 8. Calculate updated seat usage
+    // 9. Send welcome credentials email directly to representative
+    const orgName = req.organization?.name || "SalesBuster";
+    const loginUrl = process.env.FRONTEND_URL || "https://holyminicow.com/kranthi-crm";
+    let emailSent = false;
+    try {
+      emailSent = await sendSalesPersonWelcomeEmail({
+        salesPersonName: cleanName,
+        salesPersonEmail: cleanEmail,
+        salesPersonMobile: cleanMobile,
+        temporaryPassword,
+        organizationName: orgName,
+        loginUrl,
+      });
+    } catch (emailErr) {
+      console.error("Error sending welcome email to sales representative:", emailErr);
+    }
+
+    // 10. Calculate updated seat usage
     const totalRepsAfter = await UserModel.countDocuments({
       role: "sales person",
     });
@@ -178,11 +216,15 @@ export const addSalesPerson = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: "Sales representative created successfully",
+      message: emailSent
+        ? "Sales representative created successfully and login credentials sent via email."
+        : "Sales representative created successfully.",
+      emailSent,
       data: {
         _id: user._id,
         name: user.name,
         email: user.email,
+        phone: user.phone,
         role: user.role,
       },
       seats: {
