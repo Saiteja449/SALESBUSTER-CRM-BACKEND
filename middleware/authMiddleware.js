@@ -94,6 +94,15 @@ export const protect = async (req, res, next) => {
           }
         }
 
+        // If organization was deleted from DB for this user, reject with 401
+        if (!req.organization && req.user.organizationId) {
+          return res.status(401).json({
+            success: false,
+            organizationDeleted: true,
+            message: "Your organization workspace no longer exists or was deleted. Please log in again.",
+          });
+        }
+
         if (req.organization) {
           if (req.organization.status === "inactive" || req.organization.status === "suspended") {
             return res.status(403).json({

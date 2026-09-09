@@ -268,7 +268,7 @@ export const buildQualificationSchema = (
         createFollowUp: z
           .boolean()
           .default(false)
-          .describe("Set true if user asked for a callback."),
+          .describe("Set true if user asked for a callback or if you scheduled a callback/consultation with our team."),
         followUpNotes: z
           .string()
           .default("")
@@ -276,7 +276,7 @@ export const buildQualificationSchema = (
         followUpDate: z
           .string()
           .default("")
-          .describe("Date string for follow up if requested."),
+          .describe("Date string (YYYY-MM-DD) for follow up if requested or scheduled."),
         addNote: z
           .string()
           .default("")
@@ -808,36 +808,112 @@ Latest Message: ${incomingText}`;
     await LeadModel.findByIdAndUpdate(leadId, updatePayload);
 
     // Trigger actions: follow-up
-    if (
-      parsed.triggerActions?.createFollowUp &&
-      parsed.triggerActions?.followUpDate
-    ) {
+    const hasTriggerFollowUp = Boolean(parsed.triggerActions?.createFollowUp);
+    const prefDate = parsed.qualification?.preferredCallDate || parsed.triggerActions?.followUpDate;
+    const prefTime = parsed.qualification?.preferredCallTime || "10:00 AM";
+
+    if (hasTriggerFollowUp || prefDate) {
+      let followUpDate = prefDate;
+      if (!followUpDate || typeof followUpDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(followUpDate.trim())) {
+        const nextDay = new Date();
+        nextDay.setDate(nextDay.getDate() + 1);
+        followUpDate = nextDay.toISOString().split("T")[0];
+      } else {
+        followUpDate = followUpDate.trim();
+      }
+
       const existingFollowUp = await FollowupModel.findOne({
         leadId,
-        date: parsed.triggerActions.followUpDate,
+        date: followUpDate,
       });
 
       if (!existingFollowUp) {
-        await FollowupModel.create({
+        const priorityVal =
+          parsed.qualification?.urgency === "High"
+            ? "High"
+            : parsed.qualification?.urgency === "Low"
+              ? "Low"
+              : "Medium";
+
+        const notesVal =
+          parsed.triggerActions?.followUpNotes ||
+          (parsed.triggerActions?.addNote ? `Follow-up: ${parsed.triggerActions.addNote}` : "") ||
+          (parsed.summary ? `Follow-up: ${parsed.summary}` : "") ||
+          "Follow-up scheduled by AI Agent";
+
+        const followUpType =
+          parsed.qualification?.intent?.toLowerCase().includes("call") ||
+          parsed.triggerActions?.followUpNotes?.toLowerCase().includes("call")
+            ? "Call"
+            : "WhatsApp";
+
+        const createdFollowup = await FollowupModel.create({
           leadId,
           leadName: lead.name,
-          type: "WhatsApp",
-          date: parsed.triggerActions.followUpDate,
-          time: "10:00 AM",
-          priority:
-            parsed.qualification?.urgency === "High" ? "High" : "Medium",
-          notes:
-            parsed.triggerActions.followUpNotes ||
-            "Follow-up scheduled by AI Agent",
+          type: followUpType,
+          date: followUpDate,
+          time: prefTime,
+          priority: priorityVal,
+          notes: notesVal,
           author: "AI Agent",
         });
 
+        // Sync lead next follow-up and status in CRM
+        await LeadModel.findByIdAndUpdate(leadId, {
+          nextFollowUp: followUpDate,
+          followupTime: prefTime,
+          followupType: followUpType,
+          status: "Follow Up",
+        });
+
+        const targetUsers = lead.assignedTo && lead.assignedTo !== "Unassigned" ? [lead.assignedTo] : [];
         await NotificationModel.create({
           title: "Followup Created by AI",
-          message: `AI Agent created a follow-up task for lead ${lead.name} on ${parsed.triggerActions.followUpDate}.`,
+          message: `AI Agent scheduled a follow-up for lead ${lead.name} on ${followUpDate} at ${prefTime}.`,
           type: "lead_update",
           targetRoles: ["sales manager", "sales person"],
+          targetUsers: targetUsers,
         });
+
+        // Broadcast real-time socket alert to active dashboard clients
+        try {
+          const { getIO } = await import("../socket/socket.js");
+          const io = getIO();
+          if (io) {
+            const orgId = organization?._id?.toString();
+            const alertPayload = {
+              followup: {
+                id: createdFollowup._id.toString(),
+                leadId: lead._id.toString(),
+                leadName: lead.name,
+                type: createdFollowup.type,
+                date: createdFollowup.date,
+                time: createdFollowup.time,
+                priority: createdFollowup.priority,
+                notes: createdFollowup.notes,
+                author: "AI Agent",
+              },
+              lead: {
+                id: lead._id.toString(),
+                name: lead.name,
+                phone: lead.phone,
+                service: lead.service,
+                assignedTo: lead.assignedTo,
+              },
+              message: createdFollowup.notes,
+              assignedRepName: assignedRep || "Sales Representative",
+              timestamp: new Date(),
+            };
+
+            if (orgId) {
+              io.to(`org_${orgId}`).emit("ai_new_followup", alertPayload);
+            }
+            io.emit("ai_new_followup", alertPayload);
+            console.log(`[DEBUG] Emitted ai_new_followup alert for lead ${lead.name} (${lead.phone})`);
+          }
+        } catch (socketErr) {
+          console.warn("[AI Service] Failed to emit ai_new_followup event:", socketErr.message);
+        }
       }
     }
 

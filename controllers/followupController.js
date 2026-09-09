@@ -60,6 +60,68 @@ export const createFollowup = async (req, res) => {
       });
     }
 
+    // If followup was created by AI, emit real-time socket alert
+    const isAiAuthor =
+      req.body.isAI ||
+      (author &&
+        (author.toLowerCase().includes("ai") ||
+          author.toLowerCase().includes("bot") ||
+          author.toLowerCase().includes("agent")));
+
+    if (isAiAuthor) {
+      try {
+        const { getIO } = await import("../socket/socket.js");
+        const io = getIO();
+        if (io) {
+          let leadDoc = null;
+          if (leadId) {
+            try {
+              const LeadModel = req.tenantModels?.Lead || (await import("../models/Lead.js")).default;
+              leadDoc = await LeadModel.findById(leadId);
+            } catch (err) {}
+          }
+
+          const alertPayload = {
+            followup: {
+              id: createdFollowup._id ? createdFollowup._id.toString() : createdFollowup.id,
+              leadId: leadId ? leadId.toString() : "",
+              leadName: leadName || leadDoc?.name || "Customer",
+              type: type || "Call",
+              date,
+              time: time || "10:00 AM",
+              priority: priority || "Medium",
+              notes,
+              author: author || "AI Agent",
+            },
+            lead: leadDoc
+              ? {
+                  id: leadDoc._id.toString(),
+                  name: leadDoc.name,
+                  phone: leadDoc.phone,
+                  service: leadDoc.service,
+                  assignedTo: leadDoc.assignedTo,
+                }
+              : {
+                  id: leadId ? leadId.toString() : "",
+                  name: leadName,
+                },
+            message: notes || `AI scheduled a ${type || "follow-up"} for ${leadName || "lead"}`,
+            assignedRepName: "Sales Representative",
+            timestamp: new Date(),
+          };
+
+          const orgId = req.user?.organizationId || req.organizationId;
+          if (orgId) {
+            io.to(`org_${orgId}`).emit("ai_new_followup", alertPayload);
+          }
+          io.emit("ai_new_followup", alertPayload);
+          console.log(`[DEBUG] Emitted ai_new_followup from createFollowup for ${leadName}`);
+        }
+      } catch (socketErr) {
+        console.warn("[Followup Controller] Socket emit error:", socketErr.message);
+      }
+    }
+
     res.status(201).json({ success: true, data: createdFollowup });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
