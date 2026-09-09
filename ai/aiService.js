@@ -208,12 +208,12 @@ export const buildQualificationSchema = (
       .string()
       .default("")
       .describe(
-        `Preferred callback date string in YYYY-MM-DD format (Today is ${currentDateStr}, Tomorrow is ${tomorrowDateStr}). If lead asks for a call today, output '${currentDateStr}'. NEVER output a past date or year.`,
+        `Preferred callback date string in YYYY-MM-DD format (Today is ${currentDateStr}, Tomorrow is ${tomorrowDateStr}). IMPORTANT: Leave as empty string "" if the user did NOT request or agree to a callback/call. NEVER output a past date or year.`,
       ),
     preferredCallTime: z
       .string()
       .default("")
-      .describe("Preferred callback time (e.g., '7:00 PM', '11:00 AM', 'after 5 PM') ONLY when lead explicitly requested a call time. Leave empty if user did not ask for a call."),
+      .describe("Preferred callback time (e.g., '7:00 PM', '11:00 AM', 'after 5 PM') ONLY when lead explicitly requested a call time. Leave empty string \"\" if user did not ask for a call."),
   };
 
   if (configuredFields && configuredFields.length > 0) {
@@ -274,15 +274,15 @@ export const buildQualificationSchema = (
         createFollowUp: z
           .boolean()
           .default(false)
-          .describe("Set true ONLY if user explicitly asked for a callback/phone call or if a consultation call was specifically requested/agreed upon. Keep false for normal chat inquiries, browsing, or questions."),
+          .describe("Set true ONLY if the user explicitly asked for a callback/phone call or explicitly agreed to a scheduled call. Must be FALSE for normal inquiries, greetings, property info, or questions."),
         followUpNotes: z
           .string()
           .default("")
-          .describe("Notes for the callback."),
+          .describe("Notes for the callback. Leave empty string \"\" if no callback was requested."),
         followUpDate: z
           .string()
           .default("")
-          .describe(`Date string (YYYY-MM-DD) for follow up. Today is ${currentDateStr}, Tomorrow is ${tomorrowDateStr}. Use '${currentDateStr}' for today. NEVER use a past date or year.`),
+          .describe(`Date string (YYYY-MM-DD) for follow up. Today is ${currentDateStr}, Tomorrow is ${tomorrowDateStr}. Leave empty string "" unless createFollowUp is true.`),
         addNote: z
           .string()
           .default("")
@@ -399,11 +399,12 @@ CURRENT REAL-WORLD SYSTEM DATE & TIME:
 - Tomorrow's Date: ${tomorrowDateStr}
 - Current Time: ${currentTimeStr} IST
 
-DATE RESOLUTION RULES:
+DATE & FOLLOW-UP RESOLUTION RULES:
 - When the user asks for a call "today" or says "today at [time]" or "this evening": preferredCallDate and followUpDate MUST be set to "${currentDateStr}".
 - When the user says "tomorrow": preferredCallDate and followUpDate MUST be set to "${tomorrowDateStr}".
 - For specific days of the week, calculate the exact date based on today being ${currentDateStr} (${currentDayOfWeek}).
 - CRITICAL: NEVER output a date in the past (such as 2024 or 2025). All scheduled dates MUST be on or after ${currentDateStr}.
+- STRICT FOLLOW-UP TRIGGER RULE: Do NOT set triggerActions.createFollowUp=true or populate preferredCallDate / preferredCallTime unless the lead has EXPLICITLY requested a callback/phone call or agreed to a scheduled call. For general greetings, browsing, answering property type/size, or asking questions, keep createFollowUp=false, preferredCallDate="", and preferredCallTime="".
 
 COMPANY OVERVIEW & VALUE PROPOSITION:
 ${businessDesc}
@@ -856,19 +857,32 @@ Latest Message: ${incomingText}`;
     const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     const tomorrowStr = tomorrow.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
-    // Relative date detection from user text and AI fields
-    const fullContextText = `${incomingText} ${parsed.qualification?.callbackDateTime || ""} ${parsed.triggerActions?.followUpNotes || ""} ${parsed.summary || ""}`.toLowerCase();
-    const mentionsToday = /\btoday\b|\btonight\b|\bthis evening\b|\basap\b|\bimmediate\b|\bright now\b/.test(fullContextText);
-    const mentionsTomorrow = /\btomorrow\b/.test(fullContextText);
+    // Detect if user or conversation specifically requested a phone call / callback
+    const userMessageLower = (incomingText || "").toLowerCase();
+    const hasCallIntent =
+      /\b(call\s*me|call\s*back|callback|call\s*us|ring\s*me|phone\s*me|schedule\s*a?\s*call|book\s*a?\s*call|arrange\s*a?\s*call|reach\s*me\s*at|talk\s*on\s*call|voice\s*call|speak\s*to\s*someone|speak\s*with\s*someone|contact\s*me)\b/i.test(
+        userMessageLower
+      );
 
-    // Trigger actions: follow-up
+    const rawPrefTime = cleanText(parsed.qualification?.preferredCallTime);
+    const hasExplicitTime = Boolean(rawPrefTime);
     const hasTriggerFollowUp = Boolean(parsed.triggerActions?.createFollowUp);
     const rawPrefDate = cleanText(parsed.qualification?.preferredCallDate) || cleanText(parsed.triggerActions?.followUpDate);
-    const rawPrefTime = cleanText(parsed.qualification?.preferredCallTime);
-    const prefTime = rawPrefTime || "10:00 AM";
+    const hasCallbackDateTime = Boolean(cleanText(parsed.qualification?.callbackDateTime));
 
-    // ONLY schedule follow-up if explicitly requested by user (createFollowUp = true) or callback/call time mentioned
-    if (hasTriggerFollowUp || Boolean(rawPrefDate) || mentionsToday || mentionsTomorrow) {
+    // ONLY schedule follow-up if there is genuine call/callback intent:
+    // 1. User explicitly requested a call in their message (e.g. "call me at 7pm", "can someone call me?")
+    // 2. User provided a specific call time (e.g. "7:00 PM")
+    // 3. AI explicitly set createFollowUp=true AND (hasCallIntent || hasExplicitTime || hasCallbackDateTime)
+    const shouldScheduleFollowUp =
+      hasCallIntent ||
+      hasExplicitTime ||
+      (hasTriggerFollowUp && (hasCallIntent || hasExplicitTime || hasCallbackDateTime));
+
+    if (shouldScheduleFollowUp) {
+      const mentionsToday = /\btoday\b|\btonight\b|\bthis evening\b|\basap\b|\bimmediate\b|\bright now\b/i.test(userMessageLower);
+      const mentionsTomorrow = /\btomorrow\b/i.test(userMessageLower);
+      const prefTime = rawPrefTime || (mentionsToday ? "7:00 PM" : "10:00 AM");
       let followUpDate = "";
       if (mentionsToday) {
         followUpDate = todayStr;
