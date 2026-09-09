@@ -314,6 +314,14 @@ export const connectWhatsApp = async (param1, param2, param3) => {
           console.log("Message type:", Object.keys(msg.message || {}));
           console.log("Push name:", msg.pushName);
 
+          // Skip WhatsApp stub / system events (e.g. disappearing messages setting toggled, group changes, etc.)
+          if (msg.messageStubType) {
+            console.log(
+              `Skipping system stub message (${msg.messageStubType}) on session ${sessionId}`,
+            );
+            continue;
+          }
+
           if (eventType === "notify" || eventType === "append") {
             console.log(
               `Processing message from: ${msg.key.remoteJid} (fromMe: ${msg.key.fromMe}) on session ${sessionId}`,
@@ -441,12 +449,17 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       `Processing message - Session: ${sessionId}, Phone: ${phone}, Name: ${pushName}, JID: ${remoteJid}, AltJID: ${remoteJidAlt || "none"}, isLid: ${isLid}`,
     );
 
+    if (msg.messageStubType) {
+      console.log(`[DEBUG] Skipping stub message (${msg.messageStubType}) for ${sessionId}`);
+      return;
+    }
+
     let messageType = "text";
     let textContent = "";
     let mediaUrl = "";
 
     let msgContent = msg.message;
-    if (!msgContent) return;
+    if (!msgContent || Object.keys(msgContent).length === 0) return;
 
     // Unwrap nested/wrapped messages (e.g. deviceSentMessage, ephemeralMessage, etc.)
     while (msgContent) {
@@ -463,6 +476,24 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       } else {
         break;
       }
+    }
+
+    if (!msgContent || Object.keys(msgContent).length === 0) return;
+
+    // Ignore reactions, disappearing message setting protocols, and non-conversational system events
+    if (
+      msgContent.reactionMessage ||
+      msgContent.protocolMessage ||
+      msgContent.pollUpdateMessage ||
+      msgContent.keepInChatMessage ||
+      msgContent.senderKeyDistributionMessage ||
+      msgContent.peerDataOperationRequestMessage ||
+      msgContent.ephemeralSettingMessage
+    ) {
+      console.log(
+        `[DEBUG] Ignoring non-conversational message event (${Object.keys(msgContent).join(", ")}) for ${sessionId}`,
+      );
+      return;
     }
 
     if (msgContent.conversation) {
@@ -496,8 +527,10 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       const contact = msgContent.contactMessage;
       textContent = `Contact Shared - Name: ${contact?.displayName || "Unknown"}`;
     } else {
-      messageType = "text";
-      textContent = "Unsupported message type";
+      console.log(
+        `[DEBUG] Skipping unsupported message structure (${Object.keys(msgContent).join(", ")}) for ${sessionId}`,
+      );
+      return;
     }
 
     textContent = textContent || "";
@@ -771,7 +804,13 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
 
     // 6. Asynchronously trigger AI agent response with 4-second debounce
     const settings = await getSystemSettings(models);
-    if (!isFromMe && lead.aiEnabled && settings.globalAIEnabled) {
+    if (
+      !isFromMe &&
+      lead.aiEnabled &&
+      settings.globalAIEnabled &&
+      textContent &&
+      textContent.trim()
+    ) {
       console.log(`[DEBUG] Queueing AI auto-reply for lead ID: ${lead._id} on session ${sessionId}`);
       triggerAIDebounced(lead, remoteJid, textContent, sessionId, models);
     } else if (!isFromMe && lead.aiEnabled && !settings.globalAIEnabled) {
