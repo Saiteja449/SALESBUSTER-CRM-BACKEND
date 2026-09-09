@@ -23,6 +23,7 @@ import followupRoutes from "./routes/followupRoutes.js";
 import analyticsRoutes from "./routes/analyticsRoutes.js";
 import mobileAppRoutes from "./routes/mobileAppRoutes.js";
 import organizationRoutes from "./routes/organizationRoutes.js";
+import staticChatRoutes from "./routes/staticChatRoutes.js";
 
 // Socket & WhatsApp Imports
 import { initSocket } from "./socket/socket.js";
@@ -81,6 +82,7 @@ app.use("/api/meta", metaRoutes);
 app.use("/api/followups", followupRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/mobile-app", mobileAppRoutes);
+app.use("/api/static-chat", staticChatRoutes);
 
 // Base route
 app.get("/", (req, res) => {

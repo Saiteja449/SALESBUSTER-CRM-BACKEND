@@ -89,12 +89,13 @@ export const checkSubscriptionActive = (req, res, next) => {
     return next();
   }
 
-  // 2. Bypass public authentication routes and health checks
+  // 2. Bypass public authentication routes, static chat, and health checks
   const path = req.path || req.originalUrl || "";
   if (
     path.startsWith("/api/auth/login") ||
     path.startsWith("/api/auth/forgot-password") ||
     path.startsWith("/api/auth/reset-password") ||
+    path.startsWith("/api/static-chat") ||
     path === "/" ||
     path === "/health"
   ) {

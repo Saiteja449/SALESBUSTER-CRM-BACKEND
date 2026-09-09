@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SalesBuster AI - Chatbot Widget Preview</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+      color: #f8fafc;
+      min-height: 100vh;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(16px);
+      padding: 40px 32px;
+      border-radius: 24px;
+      max-width: 580px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }
+    h1 {
+      font-size: 32px;
+      margin: 0 0 12px 0;
+      background: linear-gradient(135deg, #818cf8 0%, #c084fc 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    p {
+      color: #94a3b8;
+      font-size: 16px;
+      line-height: 1.6;
+      margin: 0 0 24px 0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 6px 14px;
+      background: rgba(99, 102, 241, 0.2);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      color: #a5b4fc;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 20px;
+    }
+    code {
+      display: block;
+      background: rgba(0, 0, 0, 0.4);
+      padding: 14px 18px;
+      border-radius: 12px;
+      font-family: monospace;
+      font-size: 13px;
+      color: #38bdf8;
+      text-align: left;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      overflow-x: auto;
+    }
+    .hint {
+      font-size: 13px;
+      color: #64748b;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">🚀 SalesBuster.ai Website Chatbot</div>
+    <h1>AI Sales Assistant Preview</h1>
+    <p>
+      This page demonstrates the floating AI chatbot widget for <strong>salesbuster.ai</strong>. 
+      It is strictly grounded on the <strong>SalesBuster Knowledge Base</strong> (Qdrant RAG + Gemini), answers platform questions with 100% accuracy, and collects zero visitor contact info.
+    </p>
+
+    <p style="font-size: 14px; color: #cbd5e1; margin-bottom: 10px; text-align: left;">
+      <strong>Embed on any website by adding before &lt;/body&gt;:</strong>
+    </p>
+    <code>&lt;script src="https://api.salesbuster.ai/api/static-chat/widget.js"&gt;&lt;/script&gt;</code>
+
+    <div class="hint">👉 Click the chat bubble in the bottom-right corner to test!</div>
+  </div>
+
+  <!-- Embed SalesBuster Chatbot Widget -->
+  <script src="/api/static-chat/widget.js"></script>
+</body>
+</html>
