@@ -1,5 +1,6 @@
 import Followup from "../models/Followup.js";
 import Notification from "../models/Notification.js";
+import { getIO } from "../socket/socket.js";
 
 const getModels = (req) => ({
   FollowupModel: req.tenantModels?.Followup || Followup,
@@ -36,25 +37,36 @@ export const createFollowup = async (req, res) => {
       done,
     } = req.body;
 
-    const { FollowupModel, NotificationModel } = getModels(req);
+    const cleanText = (val, fallback = "") => {
+      if (val === null || val === undefined) return fallback;
+      const str = String(val).trim();
+      if (!str || str.toLowerCase() === "null" || str.toLowerCase() === "undefined" || str.toLowerCase() === "none" || str.toLowerCase() === "n/a") return fallback;
+      return str;
+    };
+
+    const sanitizedNotes = cleanText(notes, "Follow-up scheduled by AI Agent");
+    const sanitizedTime = cleanText(time, "10:00 AM");
+    const sanitizedPriority = cleanText(priority, "Medium");
+    const sanitizedAuthor = cleanText(author, "AI Agent");
+    const sanitizedType = cleanText(type, "Call");
 
     const followup = new FollowupModel({
       leadId,
       leadName,
-      type,
+      type: sanitizedType,
       date,
-      time,
-      priority,
-      notes,
-      author,
+      time: sanitizedTime,
+      priority: sanitizedPriority,
+      notes: sanitizedNotes,
+      author: sanitizedAuthor,
       done,
     });
     const createdFollowup = await followup.save();
 
-    if (type !== "Lead Edited") {
+    if (sanitizedType !== "Lead Edited") {
       await NotificationModel.create({
         title: "New Follow-up Scheduled",
-        message: `A follow-up was scheduled for lead ${leadName} by ${author}.`,
+        message: `A follow-up was scheduled for lead ${leadName} by ${sanitizedAuthor}.`,
         type: "system",
         targetRoles: ["sales manager"],
       });
@@ -63,14 +75,13 @@ export const createFollowup = async (req, res) => {
     // If followup was created by AI, emit real-time socket alert
     const isAiAuthor =
       req.body.isAI ||
-      (author &&
-        (author.toLowerCase().includes("ai") ||
-          author.toLowerCase().includes("bot") ||
-          author.toLowerCase().includes("agent")));
+      (sanitizedAuthor &&
+        (sanitizedAuthor.toLowerCase().includes("ai") ||
+          sanitizedAuthor.toLowerCase().includes("bot") ||
+          sanitizedAuthor.toLowerCase().includes("agent")));
 
     if (isAiAuthor) {
       try {
-        const { getIO } = await import("../socket/socket.js");
         const io = getIO();
         if (io) {
           let leadDoc = null;
@@ -86,12 +97,12 @@ export const createFollowup = async (req, res) => {
               id: createdFollowup._id ? createdFollowup._id.toString() : createdFollowup.id,
               leadId: leadId ? leadId.toString() : "",
               leadName: leadName || leadDoc?.name || "Customer",
-              type: type || "Call",
+              type: sanitizedType,
               date,
-              time: time || "10:00 AM",
-              priority: priority || "Medium",
-              notes,
-              author: author || "AI Agent",
+              time: sanitizedTime,
+              priority: sanitizedPriority,
+              notes: sanitizedNotes,
+              author: sanitizedAuthor,
             },
             lead: leadDoc
               ? {
@@ -105,14 +116,16 @@ export const createFollowup = async (req, res) => {
                   id: leadId ? leadId.toString() : "",
                   name: leadName,
                 },
-            message: notes || `AI scheduled a ${type || "follow-up"} for ${leadName || "lead"}`,
+            message: sanitizedNotes,
             assignedRepName: "Sales Representative",
             timestamp: new Date(),
           };
 
           const orgId = req.user?.organizationId || req.organizationId;
           if (orgId) {
-            io.to(`org_${orgId}`).emit("ai_new_followup", alertPayload);
+            const cleanOrgId = String(orgId).replace(/^org_/, "");
+            io.to(`org_${cleanOrgId}`).emit("ai_new_followup", alertPayload);
+            io.to(cleanOrgId).emit("ai_new_followup", alertPayload);
           }
           io.emit("ai_new_followup", alertPayload);
           console.log(`[DEBUG] Emitted ai_new_followup from createFollowup for ${leadName}`);

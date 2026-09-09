@@ -22,6 +22,7 @@ import { getMasterModels } from "../services/tenantManager.js";
 import { getOrgCollectionName } from "../services/knowledgeService.js";
 import { decryptApiKey } from "../utils/encryption.js";
 import { recordAiUsage } from "../services/aiUsageService.js";
+import { getIO } from "../socket/socket.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -202,12 +203,12 @@ export const buildQualificationSchema = (
       .string()
       .default("")
       .describe(
-        "Preferred callback date when lead requests pricing or consultation.",
+        "Preferred callback date string (YYYY-MM-DD) ONLY when lead explicitly requests a callback date or consultation call. Leave empty if user did not ask for a call.",
       ),
     preferredCallTime: z
       .string()
       .default("")
-      .describe("Preferred callback time (e.g., '11:00 AM', 'after 5 PM')."),
+      .describe("Preferred callback time (e.g., '11:00 AM', 'after 5 PM') ONLY when lead explicitly requested a call time. Leave empty if user did not ask for a call."),
   };
 
   if (configuredFields && configuredFields.length > 0) {
@@ -268,7 +269,7 @@ export const buildQualificationSchema = (
         createFollowUp: z
           .boolean()
           .default(false)
-          .describe("Set true if user asked for a callback or if you scheduled a callback/consultation with our team."),
+          .describe("Set true ONLY if user explicitly asked for a callback/phone call or if a consultation call was specifically requested/agreed upon. Keep false for normal chat inquiries, browsing, or questions."),
         followUpNotes: z
           .string()
           .default("")
@@ -720,11 +721,14 @@ Latest Message: ${incomingText}`;
       updatePayload.lastMessage = incomingText;
       updatePayload.lastActivity = new Date();
 
-      // Deep merge dynamic qualification fields
+      // Deep merge dynamic qualification fields (prevent storing string 'null' or 'undefined')
       const mergedQual = { ...prevQual };
       for (const [key, val] of Object.entries(aiData)) {
         if (val !== undefined && val !== null && val !== "") {
-          mergedQual[key] = val;
+          const strVal = String(val).trim().toLowerCase();
+          if (strVal !== "null" && strVal !== "undefined" && strVal !== "none" && strVal !== "n/a") {
+            mergedQual[key] = val;
+          }
         }
       }
       updatePayload.aiQualification = mergedQual;
@@ -807,47 +811,78 @@ Latest Message: ${incomingText}`;
 
     await LeadModel.findByIdAndUpdate(leadId, updatePayload);
 
+    // Helper to sanitize text fields from AI response so "null" is never treated as a valid string
+    const cleanText = (val, fallback = "") => {
+      if (val === null || val === undefined) return fallback;
+      const str = String(val).trim();
+      if (
+        !str ||
+        str.toLowerCase() === "null" ||
+        str.toLowerCase() === "undefined" ||
+        str.toLowerCase() === "none" ||
+        str.toLowerCase() === "n/a"
+      ) {
+        return fallback;
+      }
+      return str;
+    };
+
     // Trigger actions: follow-up
     const hasTriggerFollowUp = Boolean(parsed.triggerActions?.createFollowUp);
-    const prefDate = parsed.qualification?.preferredCallDate || parsed.triggerActions?.followUpDate;
-    const prefTime = parsed.qualification?.preferredCallTime || "10:00 AM";
+    const rawPrefDate = cleanText(parsed.qualification?.preferredCallDate) || cleanText(parsed.triggerActions?.followUpDate);
+    const hasValidDate = Boolean(rawPrefDate && /^\d{4}-\d{2}-\d{2}$/.test(rawPrefDate));
+    const rawPrefTime = cleanText(parsed.qualification?.preferredCallTime);
+    const prefTime = rawPrefTime || "10:00 AM";
 
-    if (hasTriggerFollowUp || prefDate) {
-      let followUpDate = prefDate;
-      if (!followUpDate || typeof followUpDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(followUpDate.trim())) {
+    // ONLY schedule follow-up if explicitly requested by user (createFollowUp = true) or an explicit valid date was given
+    if (hasTriggerFollowUp || hasValidDate) {
+      let followUpDate = hasValidDate ? rawPrefDate : "";
+      if (!followUpDate) {
         const nextDay = new Date();
         nextDay.setDate(nextDay.getDate() + 1);
         followUpDate = nextDay.toISOString().split("T")[0];
-      } else {
-        followUpDate = followUpDate.trim();
       }
 
-      const existingFollowUp = await FollowupModel.findOne({
+      const priorityVal =
+        parsed.qualification?.urgency === "High"
+          ? "High"
+          : parsed.qualification?.urgency === "Low"
+            ? "Low"
+            : "Medium";
+
+      const rawFollowUpNotes = cleanText(parsed.triggerActions?.followUpNotes);
+      const rawAddNote = cleanText(parsed.triggerActions?.addNote);
+      const rawSummary = cleanText(parsed.summary);
+      const leadService = cleanText(lead.service);
+
+      const notesVal =
+        rawFollowUpNotes ||
+        (rawAddNote ? `Follow-up: ${rawAddNote}` : "") ||
+        (rawSummary ? `Follow-up: ${rawSummary}` : "") ||
+        (leadService ? `Follow-up scheduled by AI Agent for ${leadService}` : "Follow-up scheduled by AI Agent");
+
+      const followUpType =
+        cleanText(parsed.qualification?.intent).toLowerCase().includes("call") ||
+        rawFollowUpNotes.toLowerCase().includes("call")
+          ? "Call"
+          : "WhatsApp";
+
+      let existingFollowUp = await FollowupModel.findOne({
         leadId,
         date: followUpDate,
       });
 
-      if (!existingFollowUp) {
-        const priorityVal =
-          parsed.qualification?.urgency === "High"
-            ? "High"
-            : parsed.qualification?.urgency === "Low"
-              ? "Low"
-              : "Medium";
-
-        const notesVal =
-          parsed.triggerActions?.followUpNotes ||
-          (parsed.triggerActions?.addNote ? `Follow-up: ${parsed.triggerActions.addNote}` : "") ||
-          (parsed.summary ? `Follow-up: ${parsed.summary}` : "") ||
-          "Follow-up scheduled by AI Agent";
-
-        const followUpType =
-          parsed.qualification?.intent?.toLowerCase().includes("call") ||
-          parsed.triggerActions?.followUpNotes?.toLowerCase().includes("call")
-            ? "Call"
-            : "WhatsApp";
-
-        const createdFollowup = await FollowupModel.create({
+      let targetFollowup;
+      if (existingFollowUp) {
+        // Update existing follow-up with latest AI findings
+        existingFollowUp.time = prefTime;
+        existingFollowUp.priority = priorityVal;
+        existingFollowUp.notes = notesVal;
+        existingFollowUp.type = followUpType;
+        existingFollowUp.author = "AI Agent";
+        targetFollowup = await existingFollowUp.save();
+      } else {
+        targetFollowup = await FollowupModel.create({
           leadId,
           leadName: lead.name,
           type: followUpType,
@@ -857,63 +892,64 @@ Latest Message: ${incomingText}`;
           notes: notesVal,
           author: "AI Agent",
         });
+      }
 
-        // Sync lead next follow-up and status in CRM
-        await LeadModel.findByIdAndUpdate(leadId, {
-          nextFollowUp: followUpDate,
-          followupTime: prefTime,
-          followupType: followUpType,
-          status: "Follow Up",
-        });
+      // Sync lead next follow-up and status in CRM
+      await LeadModel.findByIdAndUpdate(leadId, {
+        nextFollowUp: followUpDate,
+        followupTime: prefTime,
+        followupType: followUpType,
+        status: "Follow Up",
+      });
 
-        const targetUsers = lead.assignedTo && lead.assignedTo !== "Unassigned" ? [lead.assignedTo] : [];
-        await NotificationModel.create({
-          title: "Followup Created by AI",
-          message: `AI Agent scheduled a follow-up for lead ${lead.name} on ${followUpDate} at ${prefTime}.`,
-          type: "lead_update",
-          targetRoles: ["sales manager", "sales person"],
-          targetUsers: targetUsers,
-        });
+      const targetUsers = lead.assignedTo && lead.assignedTo !== "Unassigned" ? [lead.assignedTo] : [];
+      await NotificationModel.create({
+        title: "Followup Created by AI",
+        message: `AI Agent scheduled a follow-up for lead ${lead.name} on ${followUpDate} at ${prefTime}.`,
+        type: "lead_update",
+        targetRoles: ["sales manager", "sales person"],
+        targetUsers: targetUsers,
+      });
 
-        // Broadcast real-time socket alert to active dashboard clients
-        try {
-          const { getIO } = await import("../socket/socket.js");
-          const io = getIO();
-          if (io) {
-            const orgId = organization?._id?.toString();
-            const alertPayload = {
-              followup: {
-                id: createdFollowup._id.toString(),
-                leadId: lead._id.toString(),
-                leadName: lead.name,
-                type: createdFollowup.type,
-                date: createdFollowup.date,
-                time: createdFollowup.time,
-                priority: createdFollowup.priority,
-                notes: createdFollowup.notes,
-                author: "AI Agent",
-              },
-              lead: {
-                id: lead._id.toString(),
-                name: lead.name,
-                phone: lead.phone,
-                service: lead.service,
-                assignedTo: lead.assignedTo,
-              },
-              message: createdFollowup.notes,
-              assignedRepName: assignedRep || "Sales Representative",
-              timestamp: new Date(),
-            };
+      // Broadcast real-time socket alert to active dashboard clients
+      try {
+        const io = getIO();
+        if (io) {
+          const orgId = organization?._id?.toString() || lead?.organizationId?.toString();
+          const alertPayload = {
+            followup: {
+              id: targetFollowup._id ? targetFollowup._id.toString() : targetFollowup.id,
+              leadId: lead._id.toString(),
+              leadName: lead.name,
+              type: targetFollowup.type,
+              date: targetFollowup.date,
+              time: targetFollowup.time,
+              priority: targetFollowup.priority,
+              notes: targetFollowup.notes,
+              author: "AI Agent",
+            },
+            lead: {
+              id: lead._id.toString(),
+              name: lead.name,
+              phone: lead.phone,
+              service: lead.service,
+              assignedTo: lead.assignedTo,
+            },
+            message: targetFollowup.notes,
+            assignedRepName: assignedRep || "Sales Representative",
+            timestamp: new Date(),
+          };
 
-            if (orgId) {
-              io.to(`org_${orgId}`).emit("ai_new_followup", alertPayload);
-            }
-            io.emit("ai_new_followup", alertPayload);
-            console.log(`[DEBUG] Emitted ai_new_followup alert for lead ${lead.name} (${lead.phone})`);
+          if (orgId) {
+            const cleanOrgId = orgId.replace(/^org_/, "");
+            io.to(`org_${cleanOrgId}`).emit("ai_new_followup", alertPayload);
+            io.to(cleanOrgId).emit("ai_new_followup", alertPayload);
           }
-        } catch (socketErr) {
-          console.warn("[AI Service] Failed to emit ai_new_followup event:", socketErr.message);
+          io.emit("ai_new_followup", alertPayload);
+          console.log(`[DEBUG] Emitted ai_new_followup alert for lead ${lead.name} (${lead.phone})`);
         }
+      } catch (socketErr) {
+        console.warn("[AI Service] Failed to emit ai_new_followup event:", socketErr.message);
       }
     }
 
