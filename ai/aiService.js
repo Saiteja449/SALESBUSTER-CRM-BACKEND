@@ -182,6 +182,11 @@ export const buildQualificationSchema = (
   configuredFields = [],
   orgName = "",
 ) => {
+  const now = new Date();
+  const currentDateStr = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const tomorrowDateStr = tomorrow.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
   const shape = {
     city: z
       .string()
@@ -203,12 +208,12 @@ export const buildQualificationSchema = (
       .string()
       .default("")
       .describe(
-        "Preferred callback date string (YYYY-MM-DD) ONLY when lead explicitly requests a callback date or consultation call. Leave empty if user did not ask for a call.",
+        `Preferred callback date string in YYYY-MM-DD format (Today is ${currentDateStr}, Tomorrow is ${tomorrowDateStr}). If lead asks for a call today, output '${currentDateStr}'. NEVER output a past date or year.`,
       ),
     preferredCallTime: z
       .string()
       .default("")
-      .describe("Preferred callback time (e.g., '11:00 AM', 'after 5 PM') ONLY when lead explicitly requested a call time. Leave empty if user did not ask for a call."),
+      .describe("Preferred callback time (e.g., '7:00 PM', '11:00 AM', 'after 5 PM') ONLY when lead explicitly requested a call time. Leave empty if user did not ask for a call."),
   };
 
   if (configuredFields && configuredFields.length > 0) {
@@ -277,7 +282,7 @@ export const buildQualificationSchema = (
         followUpDate: z
           .string()
           .default("")
-          .describe("Date string (YYYY-MM-DD) for follow up if requested or scheduled."),
+          .describe(`Date string (YYYY-MM-DD) for follow up. Today is ${currentDateStr}, Tomorrow is ${tomorrowDateStr}. Use '${currentDateStr}' for today. NEVER use a past date or year.`),
         addNote: z
           .string()
           .default("")
@@ -315,6 +320,13 @@ export const buildSystemPrompt = ({
     effectiveSettings.agentPersona || "friendly, human sales representative";
   const services = effectiveSettings.services || [];
   const qualFields = effectiveSettings.qualificationFields || [];
+
+  const now = new Date();
+  const currentDateStr = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
+  const currentDayOfWeek = now.toLocaleDateString("en-US", { weekday: "long", timeZone: "Asia/Kolkata" });
+  const currentTimeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "Asia/Kolkata" });
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const tomorrowDateStr = tomorrow.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
   let servicesBlock = "";
   if (services.length > 0) {
@@ -381,6 +393,17 @@ export const buildSystemPrompt = ({
 5. WHATSAPP FORMATTING: Keep messages short (maximum 50-60 words), clean bullet points, bold key terms (*term*), and emojis.`;
 
   return `You are a ${agentPersona} working at ${companyName}.
+
+CURRENT REAL-WORLD SYSTEM DATE & TIME:
+- Today's Date: ${currentDateStr} (${currentDayOfWeek})
+- Tomorrow's Date: ${tomorrowDateStr}
+- Current Time: ${currentTimeStr} IST
+
+DATE RESOLUTION RULES:
+- When the user asks for a call "today" or says "today at [time]" or "this evening": preferredCallDate and followUpDate MUST be set to "${currentDateStr}".
+- When the user says "tomorrow": preferredCallDate and followUpDate MUST be set to "${tomorrowDateStr}".
+- For specific days of the week, calculate the exact date based on today being ${currentDateStr} (${currentDayOfWeek}).
+- CRITICAL: NEVER output a date in the past (such as 2024 or 2025). All scheduled dates MUST be on or after ${currentDateStr}.
 
 COMPANY OVERVIEW & VALUE PROPOSITION:
 ${businessDesc}
@@ -827,20 +850,42 @@ Latest Message: ${incomingText}`;
       return str;
     };
 
+    // Current real-world date in IST / local time
+    const now = new Date();
+    const todayStr = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const tomorrowStr = tomorrow.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
+    // Relative date detection from user text and AI fields
+    const fullContextText = `${incomingText} ${parsed.qualification?.callbackDateTime || ""} ${parsed.triggerActions?.followUpNotes || ""} ${parsed.summary || ""}`.toLowerCase();
+    const mentionsToday = /\btoday\b|\btonight\b|\bthis evening\b|\basap\b|\bimmediate\b|\bright now\b/.test(fullContextText);
+    const mentionsTomorrow = /\btomorrow\b/.test(fullContextText);
+
     // Trigger actions: follow-up
     const hasTriggerFollowUp = Boolean(parsed.triggerActions?.createFollowUp);
     const rawPrefDate = cleanText(parsed.qualification?.preferredCallDate) || cleanText(parsed.triggerActions?.followUpDate);
-    const hasValidDate = Boolean(rawPrefDate && /^\d{4}-\d{2}-\d{2}$/.test(rawPrefDate));
     const rawPrefTime = cleanText(parsed.qualification?.preferredCallTime);
     const prefTime = rawPrefTime || "10:00 AM";
 
-    // ONLY schedule follow-up if explicitly requested by user (createFollowUp = true) or an explicit valid date was given
-    if (hasTriggerFollowUp || hasValidDate) {
-      let followUpDate = hasValidDate ? rawPrefDate : "";
+    // ONLY schedule follow-up if explicitly requested by user (createFollowUp = true) or callback/call time mentioned
+    if (hasTriggerFollowUp || Boolean(rawPrefDate) || mentionsToday || mentionsTomorrow) {
+      let followUpDate = "";
+      if (mentionsToday) {
+        followUpDate = todayStr;
+      } else if (mentionsTomorrow) {
+        followUpDate = tomorrowStr;
+      } else if (rawPrefDate && /^\d{4}-\d{2}-\d{2}$/.test(rawPrefDate)) {
+        // Guard against hallucinated past dates (e.g., 2025)
+        if (rawPrefDate < todayStr) {
+          console.warn(`[AI Service] Corrected hallucinated past date '${rawPrefDate}' to today '${todayStr}'`);
+          followUpDate = todayStr;
+        } else {
+          followUpDate = rawPrefDate;
+        }
+      }
+
       if (!followUpDate) {
-        const nextDay = new Date();
-        nextDay.setDate(nextDay.getDate() + 1);
-        followUpDate = nextDay.toISOString().split("T")[0];
+        followUpDate = mentionsToday ? todayStr : tomorrowStr;
       }
 
       const priorityVal =
