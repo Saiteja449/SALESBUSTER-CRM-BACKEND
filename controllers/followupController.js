@@ -50,18 +50,63 @@ export const createFollowup = async (req, res) => {
     const sanitizedAuthor = cleanText(author, "AI Agent");
     const sanitizedType = cleanText(type, "Call");
 
-    const followup = new FollowupModel({
-      leadId,
-      leadName,
-      type: sanitizedType,
-      date,
-      time: sanitizedTime,
-      priority: sanitizedPriority,
-      notes: sanitizedNotes,
-      author: sanitizedAuthor,
-      done,
-    });
-    const createdFollowup = await followup.save();
+    // If followup was created by AI, check if one already exists for this lead to prevent duplicates
+    const isAiAuthor =
+      req.body.isAI ||
+      (sanitizedAuthor &&
+        (sanitizedAuthor.toLowerCase().includes("ai") ||
+          sanitizedAuthor.toLowerCase().includes("bot") ||
+          sanitizedAuthor.toLowerCase().includes("agent")));
+
+    let createdFollowup = null;
+    if (isAiAuthor && leadId) {
+      let existingAi = await FollowupModel.findOne({
+        leadId,
+        author: "AI Agent",
+        done: false,
+      });
+      if (!existingAi) {
+        existingAi = await FollowupModel.findOne({
+          leadId,
+          done: false,
+        });
+      }
+      if (existingAi) {
+        existingAi.type = sanitizedType;
+        existingAi.date = date;
+        existingAi.time = sanitizedTime;
+        existingAi.priority = sanitizedPriority;
+        existingAi.notes = sanitizedNotes;
+        existingAi.author = sanitizedAuthor;
+        existingAi.done = false;
+        createdFollowup = await existingAi.save();
+
+        try {
+          await FollowupModel.deleteMany({
+            _id: { $ne: createdFollowup._id },
+            leadId,
+            author: "AI Agent",
+          });
+        } catch (delErr) {
+          console.warn("[Followup Controller] Duplicate cleanup warning:", delErr.message);
+        }
+      }
+    }
+
+    if (!createdFollowup) {
+      const followup = new FollowupModel({
+        leadId,
+        leadName,
+        type: sanitizedType,
+        date,
+        time: sanitizedTime,
+        priority: sanitizedPriority,
+        notes: sanitizedNotes,
+        author: sanitizedAuthor,
+        done: done !== undefined ? done : false,
+      });
+      createdFollowup = await followup.save();
+    }
 
     if (sanitizedType !== "Lead Edited") {
       await NotificationModel.create({
@@ -71,14 +116,6 @@ export const createFollowup = async (req, res) => {
         targetRoles: ["sales manager"],
       });
     }
-
-    // If followup was created by AI, emit real-time socket alert
-    const isAiAuthor =
-      req.body.isAI ||
-      (sanitizedAuthor &&
-        (sanitizedAuthor.toLowerCase().includes("ai") ||
-          sanitizedAuthor.toLowerCase().includes("bot") ||
-          sanitizedAuthor.toLowerCase().includes("agent")));
 
     if (isAiAuthor) {
       try {

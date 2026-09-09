@@ -121,7 +121,7 @@ export const sendTenantWelcomeEmail = async ({
             <div style="font-size: 15px; font-weight: 700; color: #0f172a; font-family: monospace;">${ownerEmail}</div>
           </div>
           <div>
-            <span style="font-size: 12px; color: #64748b; font-weight: 600; text-transform: uppercase;">Temporary Password:</span>
+            <span style="font-size: 12px; color: #64748b; font-weight: 600; text-transform: uppercase;">Password:</span>
             <div style="font-size: 16px; font-weight: 800; color: #0284c7; font-family: monospace; letter-spacing: 0.5px;">${temporaryPassword}</div>
           </div>
         </div>
@@ -155,7 +155,7 @@ export const sendTenantWelcomeEmail = async ({
   return await sendEmail({
     email: ownerEmail,
     subject: `Welcome to SalesBuster! Your ${organization.name} Workspace is Ready`,
-    message: `Welcome to SalesBuster!\n\nYour organization ${organization.name} has been provisioned.\nSeats: ${organization.seats}\nValidity: ${formattedStartDate} to ${formattedEndDate}\nAmount Paid: ${formattedAmount}\n\nLogin URL: ${appLoginUrl}\nEmail: ${ownerEmail}\nTemporary Password: ${temporaryPassword}\n\nPlease change your password upon first login.`,
+    message: `Welcome to SalesBuster!\n\nYour organization ${organization.name} has been provisioned.\nSeats: ${organization.seats}\nValidity: ${formattedStartDate} to ${formattedEndDate}\nAmount Paid: ${formattedAmount}\n\nLogin URL: ${appLoginUrl}\nEmail: ${ownerEmail}\n Password: ${temporaryPassword}\n\nPlease change your password upon first login.`,
     htmlMessage,
   });
 };
@@ -172,7 +172,9 @@ export const sendSalesPersonWelcomeEmail = async ({
   loginUrl,
 }) => {
   const appLoginUrl =
-    loginUrl || process.env.FRONTEND_URL || "https://holyminicow.com/kranthi-crm";
+    loginUrl ||
+    process.env.FRONTEND_URL ||
+    "https://holyminicow.com/kranthi-crm";
   const orgDisplayName = organizationName || "Your Organization";
 
   const htmlMessage = `
@@ -209,21 +211,21 @@ export const sendSalesPersonWelcomeEmail = async ({
             <span style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">Login Email:</span>
             <div style="font-size: 15px; font-weight: 700; color: #0f172a; font-family: monospace;">${salesPersonEmail}</div>
           </div>
-          ${salesPersonMobile ? `
+          ${
+            salesPersonMobile
+              ? `
           <div style="margin-bottom: 10px;">
             <span style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">Registered Mobile:</span>
             <div style="font-size: 14px; font-weight: 600; color: #334155;">${salesPersonMobile}</div>
           </div>
-          ` : ''}
+          `
+              : ""
+          }
           <div>
-            <span style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">Temporary Password:</span>
+            <span style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">Password:</span>
             <div style="font-size: 16px; font-weight: 800; color: #0284c7; font-family: monospace; letter-spacing: 0.5px;">${temporaryPassword}</div>
           </div>
         </div>
-
-        <p style="margin: 0; color: #166534; font-size: 12px; line-height: 1.4;">
-          ⚠️ For security purposes, please change this temporary password after logging in for the first time.
-        </p>
       </div>
 
       <!-- Action Button -->
@@ -252,8 +254,7 @@ export const sendSalesPersonWelcomeEmail = async ({
   return await sendEmail({
     email: salesPersonEmail,
     subject: `Welcome to ${orgDisplayName}! Your SalesBuster Login Credentials`,
-    message: `Hello ${salesPersonName},\n\nYou have been added as a Sales Representative for ${orgDisplayName} on SalesBuster CRM.\n\nYour Login Credentials:\nLogin URL: ${appLoginUrl}\nEmail: ${salesPersonEmail}\nTemporary Password: ${temporaryPassword}${salesPersonMobile ? `\nMobile: ${salesPersonMobile}` : ""}\n\nPlease change your temporary password after logging in.\n\nSalesBuster CRM`,
+    message: `Hello ${salesPersonName},\n\nYou have been added as a Sales Representative for ${orgDisplayName} on SalesBuster CRM.\n\nYour Login Credentials:\nLogin URL: ${appLoginUrl}\nEmail: ${salesPersonEmail}\n Password: ${temporaryPassword}${salesPersonMobile ? `\nMobile: ${salesPersonMobile}` : ""}\n\nPlease change your password after logging in.\n\nSalesBuster CRM`,
     htmlMessage,
   });
 };
-

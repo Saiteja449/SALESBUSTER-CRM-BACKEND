@@ -321,6 +321,15 @@ export const testAI = async (req, res) => {
         aiEnabled: true,
         disableAI: false,
       });
+
+      try {
+        const FollowupModel =
+          req.tenantModels?.Followup || (await import("../models/Followup.js")).default;
+        await FollowupModel.deleteMany({ leadId: lead._id });
+      } catch (err) {
+        console.warn("Error cleaning up test lead followups:", err.message);
+      }
+
       return res.status(200).json({ message: "Test lead reset successfully." });
     }
 

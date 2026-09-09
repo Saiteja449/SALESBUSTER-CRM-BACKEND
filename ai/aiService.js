@@ -867,20 +867,71 @@ Latest Message: ${incomingText}`;
           ? "Call"
           : "WhatsApp";
 
+      // Gather all related lead IDs for this lead and phone to prevent duplicate follow-ups
+      const relatedLeadIds = [leadId];
+      if (lead.phone) {
+        try {
+          const matchingLeads = await LeadModel.find({
+            $or: [
+              { phone: lead.phone },
+              { phone: new RegExp(String(lead.phone).replace(/\D/g, "").slice(-10) + "$") },
+            ],
+          }).select("_id");
+          matchingLeads.forEach((ml) => {
+            if (!relatedLeadIds.some((id) => id.toString() === ml._id.toString())) {
+              relatedLeadIds.push(ml._id);
+            }
+          });
+        } catch (err) {
+          console.warn("[AI Service] Error finding related leads by phone:", err.message);
+        }
+      }
+
+      // Check if ANY active follow-up exists for this lead or phone number
       let existingFollowUp = await FollowupModel.findOne({
-        leadId,
-        date: followUpDate,
-      });
+        leadId: { $in: relatedLeadIds },
+        author: "AI Agent",
+        done: false,
+      }).sort({ createdAt: -1 });
+
+      if (!existingFollowUp) {
+        existingFollowUp = await FollowupModel.findOne({
+          leadId: { $in: relatedLeadIds },
+          done: false,
+        }).sort({ createdAt: -1 });
+      }
+
+      if (!existingFollowUp) {
+        existingFollowUp = await FollowupModel.findOne({
+          leadId: { $in: relatedLeadIds },
+          author: "AI Agent",
+        }).sort({ createdAt: -1 });
+      }
 
       let targetFollowup;
       if (existingFollowUp) {
         // Update existing follow-up with latest AI findings
+        existingFollowUp.leadId = leadId;
+        existingFollowUp.leadName = lead.name;
+        existingFollowUp.date = followUpDate;
         existingFollowUp.time = prefTime;
         existingFollowUp.priority = priorityVal;
         existingFollowUp.notes = notesVal;
         existingFollowUp.type = followUpType;
         existingFollowUp.author = "AI Agent";
+        existingFollowUp.done = false;
         targetFollowup = await existingFollowUp.save();
+
+        // Remove any other lingering duplicate AI follow-ups for this lead / phone
+        try {
+          await FollowupModel.deleteMany({
+            _id: { $ne: targetFollowup._id },
+            leadId: { $in: relatedLeadIds },
+            author: "AI Agent",
+          });
+        } catch (cleanupErr) {
+          console.warn("[AI Service] Error cleaning up duplicate followups:", cleanupErr.message);
+        }
       } else {
         targetFollowup = await FollowupModel.create({
           leadId,
@@ -891,6 +942,7 @@ Latest Message: ${incomingText}`;
           priority: priorityVal,
           notes: notesVal,
           author: "AI Agent",
+          done: false,
         });
       }
 

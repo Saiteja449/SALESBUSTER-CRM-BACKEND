@@ -584,6 +584,17 @@ export const updateLead = async (req, res) => {
       });
     }
 
+    // When a human user updates this lead, mark any pending AI follow-ups as handled/done
+    try {
+      const { FollowupModel } = getModels(req);
+      await FollowupModel.updateMany(
+        { leadId: id, author: "AI Agent", done: false },
+        { $set: { done: true } }
+      );
+    } catch (fuErr) {
+      console.warn("[leadController] Error marking pending AI follow-up as done:", fuErr.message);
+    }
+
     res.json({ success: true, data: lead });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
