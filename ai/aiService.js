@@ -943,9 +943,9 @@ Latest Message: ${incomingText}`;
           if (orgId) {
             const cleanOrgId = orgId.replace(/^org_/, "");
             io.to(`org_${cleanOrgId}`).emit("ai_new_followup", alertPayload);
-            io.to(cleanOrgId).emit("ai_new_followup", alertPayload);
+          } else {
+            io.emit("ai_new_followup", alertPayload);
           }
-          io.emit("ai_new_followup", alertPayload);
           console.log(`[DEBUG] Emitted ai_new_followup alert for lead ${lead.name} (${lead.phone})`);
         }
       } catch (socketErr) {

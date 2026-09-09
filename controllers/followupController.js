@@ -125,9 +125,9 @@ export const createFollowup = async (req, res) => {
           if (orgId) {
             const cleanOrgId = String(orgId).replace(/^org_/, "");
             io.to(`org_${cleanOrgId}`).emit("ai_new_followup", alertPayload);
-            io.to(cleanOrgId).emit("ai_new_followup", alertPayload);
+          } else {
+            io.emit("ai_new_followup", alertPayload);
           }
-          io.emit("ai_new_followup", alertPayload);
           console.log(`[DEBUG] Emitted ai_new_followup from createFollowup for ${leadName}`);
         }
       } catch (socketErr) {
