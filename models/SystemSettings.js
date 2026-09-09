@@ -10,6 +10,14 @@ const systemSettingsSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    welcomeMessageTemplate: {
+      type: String,
+      default: "",
+    },
+    welcomeMessageFallbackService: {
+      type: String,
+      default: "",
+    },
     updatedBy: {
       type: String,
       default: "System",

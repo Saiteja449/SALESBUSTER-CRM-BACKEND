@@ -22,6 +22,13 @@ const fileManager = new GoogleAIFileManager(apiKey);
  * @returns {Promise<string>} - The generated analysis summary in Markdown format.
  */
 export const analyzeAudioFile = async (filePath, mimeType, customApiKey = null) => {
+  // Temporarily paused / hidden as requested. Keeping original logic commented out below.
+  console.log(
+    `[AudioAnalysis] analyzeAudioFile is temporarily disabled/hidden for ${filePath}.`,
+  );
+  return null;
+
+  /*
   const activeKey = customApiKey;
   if (!activeKey) {
     throw new Error(
@@ -116,4 +123,5 @@ Rules:
     console.error("[AudioAnalysis] Error analyzing audio file:", error);
     throw error;
   }
+  */
 };

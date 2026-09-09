@@ -10,7 +10,9 @@ import {
   sendMessageFromCRM,
   getSystemSettings,
   updateSystemSettings,
+  DEFAULT_WELCOME_MESSAGE_TEMPLATE,
 } from "../whatsapp/whatsappService.js";
+import { getMasterModels } from "../services/tenantManager.js";
 
 const getModels = (req) => ({
   LeadModel: req.tenantModels?.Lead || Lead,
@@ -399,7 +401,30 @@ export const getTestAIHistory = async (req, res) => {
 export const getGlobalSettings = async (req, res) => {
   try {
     const settings = await getSystemSettings(req.tenantModels);
-    res.status(200).json({ success: true, data: settings });
+    const orgId = req.user?.organizationId || req.organization?._id;
+    let orgData = null;
+    if (orgId) {
+      const { Organization } = getMasterModels();
+      orgData = await Organization.findById(orgId).select("name aiSettings").lean();
+    }
+    const companyName = orgData?.aiSettings?.companyName || orgData?.name || "";
+    const primaryService = orgData?.aiSettings?.services?.[0]?.name || "";
+    const effectiveTemplate =
+      settings.welcomeMessageTemplate || orgData?.aiSettings?.welcomeMessageTemplate || "";
+    const effectiveFallbackService =
+      settings.welcomeMessageFallbackService || orgData?.aiSettings?.welcomeMessageFallbackService || "";
+
+    res.status(200).json({
+      success: true,
+      data: {
+        ...settings,
+        welcomeMessageTemplate: effectiveTemplate,
+        welcomeMessageFallbackService: effectiveFallbackService,
+        companyName,
+        primaryService,
+        defaultTemplate: DEFAULT_WELCOME_MESSAGE_TEMPLATE,
+      },
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

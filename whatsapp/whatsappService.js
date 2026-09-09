@@ -1283,6 +1283,74 @@ export const sendAutomatedFollowup = async (lead, imageUrl, text, context = {}) 
   return messageRecord;
 };
 
+export const DEFAULT_WELCOME_MESSAGE_TEMPLATE = `Hello {{name}}! 👋\n\nThank you for reaching out to {{company}} regarding *{{service}}*.\n\nWe have received your enquiry and our specialist will connect with you shortly.\n\nFeel free to reply with any specific requirements or questions you may have!`;
+
+/**
+ * Compiles a welcome message template by substituting dynamic variables.
+ * Supported variables: {{name}}, {{firstName}}, {{service}}, {{company}}, {{city}}, {{phone}}, {{email}}, {{source}}
+ * Supports both {{tag}} and {tag} notations.
+ */
+export const formatWelcomeMessage = (
+  template,
+  lead = {},
+  orgInfo = {},
+  fallbackService = "",
+) => {
+  const rawTemplate =
+    template && template.trim() ? template : DEFAULT_WELCOME_MESSAGE_TEMPLATE;
+
+  const leadName =
+    lead.name && lead.name.trim() ? lead.name.trim() : "there";
+  const firstName =
+    leadName !== "there" ? leadName.split(/\s+/)[0] : "there";
+  const company =
+    orgInfo.companyName && orgInfo.companyName.trim()
+      ? orgInfo.companyName.trim()
+      : orgInfo.name && orgInfo.name.trim()
+        ? orgInfo.name.trim()
+        : "our team";
+
+  const resolvedFallbackService =
+    fallbackService && fallbackService.trim()
+      ? fallbackService.trim()
+      : orgInfo.primaryService && orgInfo.primaryService.trim()
+        ? orgInfo.primaryService.trim()
+        : "our services";
+
+  const leadService =
+    lead.service &&
+    lead.service.trim() &&
+    lead.service.trim() !== "General Enquiry"
+      ? lead.service.trim()
+      : resolvedFallbackService;
+
+  const phone = lead.phone || "";
+  const email = lead.email || "";
+  const city = lead.city || "";
+  const source = lead.source || "your enquiry";
+
+  const replacements = {
+    name: leadName,
+    firstname: firstName,
+    service: leadService,
+    company: company,
+    companyname: company,
+    phone: phone,
+    email: email,
+    city: city,
+    source: source,
+  };
+
+  // Replace {{tag}} or {tag} case-insensitively
+  return rawTemplate.replace(
+    /\{\{?\s*([a-zA-Z0-9_]+)\s*\}?\}/g,
+    (match, tag) => {
+      const key = tag.toLowerCase();
+      return replacements[key] !== undefined ? replacements[key] : match;
+    },
+  );
+};
+
 /**
  * Send an automated WhatsApp welcome message for brand new enquiry leads.
  * Triggered only for external sources (Web Form, Call, Email, Meta Ads, Mobile App).
@@ -1362,13 +1430,56 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
     }
 
     const targetJid = `${cleanPhone}@s.whatsapp.net`;
-    const leadName = lead.name || "there";
-    const leadService =
-      lead.service && lead.service !== "General Enquiry"
-        ? lead.service
-        : "Elevator Solutions";
 
-    const welcomeText = `Hello ${leadName}! 👋\n\nThank you for reaching out to us regarding *${leadService}*. 🏢🛗\n\nWe have received your enquiry and our specialist will connect with you shortly.\n\nFeel free to reply with your building type, number of floors, or specific requirements!`;
+    // Fetch organization info from master DB if organizationId is available
+    const orgInfo = {
+      name: "",
+      companyName: "",
+      primaryService: "",
+    };
+    if (organizationId) {
+      try {
+        const { Organization } = getMasterModels();
+        const orgDoc = await Organization.findById(organizationId).lean();
+        if (orgDoc) {
+          orgInfo.name = orgDoc.name || "";
+          orgInfo.companyName =
+            orgDoc.aiSettings?.companyName || orgDoc.name || "";
+          if (
+            Array.isArray(orgDoc.aiSettings?.services) &&
+            orgDoc.aiSettings.services.length > 0
+          ) {
+            orgInfo.primaryService = orgDoc.aiSettings.services[0].name || "";
+          }
+          if (
+            !settings.welcomeMessageTemplate &&
+            orgDoc.aiSettings?.welcomeMessageTemplate
+          ) {
+            settings.welcomeMessageTemplate =
+              orgDoc.aiSettings.welcomeMessageTemplate;
+          }
+          if (
+            !settings.welcomeMessageFallbackService &&
+            orgDoc.aiSettings?.welcomeMessageFallbackService
+          ) {
+            settings.welcomeMessageFallbackService =
+              orgDoc.aiSettings.welcomeMessageFallbackService;
+          }
+        }
+      } catch (orgErr) {
+        console.error(
+          "[WhatsApp Welcome] Error fetching organization details:",
+          orgErr.message,
+        );
+      }
+    }
+
+    const welcomeText = formatWelcomeMessage(
+      settings.welcomeMessageTemplate,
+      lead,
+      orgInfo,
+      settings.welcomeMessageFallbackService,
+    );
 
     const sendResult = await sock.sendMessage(targetJid, { text: welcomeText });
     const messageId = sendResult.key.id;
@@ -1451,12 +1562,19 @@ export const getSystemSettings = async (tenantModelsOrSessionId = null) => {
       settings = await SettingsModel.create({
         globalAIEnabled: true,
         welcomeMessageEnabled: true,
+        welcomeMessageTemplate: "",
+        welcomeMessageFallbackService: "",
       });
     }
     return settings.toObject ? settings.toObject() : settings;
   } catch (err) {
     console.error("Error loading SystemSettings:", err.message);
-    return { globalAIEnabled: true, welcomeMessageEnabled: true };
+    return {
+      globalAIEnabled: true,
+      welcomeMessageEnabled: true,
+      welcomeMessageTemplate: "",
+      welcomeMessageFallbackService: "",
+    };
   }
 };
 
@@ -1487,9 +1605,35 @@ export const updateSystemSettings = async (
   if (updates.welcomeMessageEnabled !== undefined) {
     settings.welcomeMessageEnabled = updates.welcomeMessageEnabled;
   }
+  if (updates.welcomeMessageTemplate !== undefined) {
+    settings.welcomeMessageTemplate = updates.welcomeMessageTemplate;
+  }
+  if (updates.welcomeMessageFallbackService !== undefined) {
+    settings.welcomeMessageFallbackService = updates.welcomeMessageFallbackService;
+  }
   settings.updatedBy = updatedBy;
   await settings.save();
   const saved = settings.toObject ? settings.toObject() : settings;
+
+  // Sync to master Organization model if organizationId is present
+  if (organizationId) {
+    try {
+      const { Organization } = getMasterModels();
+      const org = await Organization.findById(organizationId);
+      if (org) {
+        if (!org.aiSettings) org.aiSettings = {};
+        if (updates.welcomeMessageTemplate !== undefined) {
+          org.aiSettings.welcomeMessageTemplate = updates.welcomeMessageTemplate;
+        }
+        if (updates.welcomeMessageFallbackService !== undefined) {
+          org.aiSettings.welcomeMessageFallbackService = updates.welcomeMessageFallbackService;
+        }
+        await org.save();
+      }
+    } catch (syncErr) {
+      console.error("[WhatsApp Settings] Error syncing settings to organization:", syncErr.message);
+    }
+  }
 
   const io = getIO();
   if (io) {

@@ -191,6 +191,16 @@ const organizationSchema = new mongoose.Schema(
       },
       services: [serviceSubSchema],
       qualificationFields: [qualificationFieldSubSchema],
+      welcomeMessageTemplate: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      welcomeMessageFallbackService: {
+        type: String,
+        default: "",
+        trim: true,
+      },
       qdrantCollection: {
         type: String,
         default: "",
@@ -314,6 +324,8 @@ export const getDefaultAISettings = (orgName = "") => {
       },
     ],
     knowledgeDocs: [],
+    welcomeMessageTemplate: "",
+    welcomeMessageFallbackService: "",
     dailyAiUsage: {
       date: new Date().toISOString().slice(0, 10),
       chatApiCalls: 0,

@@ -804,6 +804,8 @@ export const getMyAISettings = async (req, res) => {
       qdrantCollection:
         aiSettings.qdrantCollection || defaults.qdrantCollection,
       knowledgeDocs: aiSettings.knowledgeDocs || [],
+      welcomeMessageTemplate: aiSettings.welcomeMessageTemplate || "",
+      welcomeMessageFallbackService: aiSettings.welcomeMessageFallbackService || "",
       dailyAiUsage: aiSettings.dailyAiUsage || defaults.dailyAiUsage,
     };
 
@@ -897,6 +899,8 @@ export const updateMyAISettings = async (req, res) => {
       isAiConfigured,
       geminiApiKey,
       dailyQuotaLimit,
+      welcomeMessageTemplate,
+      welcomeMessageFallbackService,
     } = req.body;
 
     if (!org.aiSettings) org.aiSettings = {};
@@ -997,8 +1001,55 @@ export const updateMyAISettings = async (req, res) => {
         org.markModified("aiSettings");
       }
     }
+    if (welcomeMessageTemplate !== undefined) {
+      org.aiSettings.welcomeMessageTemplate =
+        typeof welcomeMessageTemplate === "string"
+          ? welcomeMessageTemplate.trim()
+          : "";
+    }
+    if (welcomeMessageFallbackService !== undefined) {
+      org.aiSettings.welcomeMessageFallbackService =
+        typeof welcomeMessageFallbackService === "string"
+          ? welcomeMessageFallbackService.trim()
+          : "";
+    }
 
     await org.save();
+
+    // Cross-sync welcome message settings to tenant database SystemSettings
+    if (
+      org.tenantDbName &&
+      (welcomeMessageTemplate !== undefined ||
+        welcomeMessageFallbackService !== undefined)
+    ) {
+      try {
+        const tenantModels = getTenantModels(org.tenantDbName);
+        if (tenantModels?.SystemSettings) {
+          let tenantSettings = await tenantModels.SystemSettings.findOne();
+          if (!tenantSettings) {
+            tenantSettings = new tenantModels.SystemSettings();
+          }
+          if (welcomeMessageTemplate !== undefined) {
+            tenantSettings.welcomeMessageTemplate =
+              typeof welcomeMessageTemplate === "string"
+                ? welcomeMessageTemplate.trim()
+                : "";
+          }
+          if (welcomeMessageFallbackService !== undefined) {
+            tenantSettings.welcomeMessageFallbackService =
+              typeof welcomeMessageFallbackService === "string"
+                ? welcomeMessageFallbackService.trim()
+                : "";
+          }
+          await tenantSettings.save();
+        }
+      } catch (tErr) {
+        console.error(
+          "Error syncing tenant SystemSettings in updateMyAISettings:",
+          tErr.message,
+        );
+      }
+    }
 
     const responseSettings = org.aiSettings.toObject
       ? org.aiSettings.toObject()
@@ -1219,6 +1270,8 @@ export const getOrgAISettings = async (req, res) => {
       qdrantCollection:
         aiSettings.qdrantCollection || defaults.qdrantCollection,
       knowledgeDocs: aiSettings.knowledgeDocs || [],
+      welcomeMessageTemplate: aiSettings.welcomeMessageTemplate || "",
+      welcomeMessageFallbackService: aiSettings.welcomeMessageFallbackService || "",
       dailyAiUsage: aiSettings.dailyAiUsage || defaults.dailyAiUsage,
     };
 
@@ -1249,6 +1302,8 @@ export const updateOrgAISettings = async (req, res) => {
       qdrantCollection,
       geminiApiKey,
       dailyQuotaLimit,
+      welcomeMessageTemplate,
+      welcomeMessageFallbackService,
     } = req.body;
 
     if (!org.aiSettings) org.aiSettings = {};
@@ -1282,8 +1337,55 @@ export const updateOrgAISettings = async (req, res) => {
         org.markModified("aiSettings");
       }
     }
+    if (welcomeMessageTemplate !== undefined) {
+      org.aiSettings.welcomeMessageTemplate =
+        typeof welcomeMessageTemplate === "string"
+          ? welcomeMessageTemplate.trim()
+          : "";
+    }
+    if (welcomeMessageFallbackService !== undefined) {
+      org.aiSettings.welcomeMessageFallbackService =
+        typeof welcomeMessageFallbackService === "string"
+          ? welcomeMessageFallbackService.trim()
+          : "";
+    }
 
     await org.save();
+
+    // Cross-sync welcome message settings to tenant database SystemSettings
+    if (
+      org.tenantDbName &&
+      (welcomeMessageTemplate !== undefined ||
+        welcomeMessageFallbackService !== undefined)
+    ) {
+      try {
+        const tenantModels = getTenantModels(org.tenantDbName);
+        if (tenantModels?.SystemSettings) {
+          let tenantSettings = await tenantModels.SystemSettings.findOne();
+          if (!tenantSettings) {
+            tenantSettings = new tenantModels.SystemSettings();
+          }
+          if (welcomeMessageTemplate !== undefined) {
+            tenantSettings.welcomeMessageTemplate =
+              typeof welcomeMessageTemplate === "string"
+                ? welcomeMessageTemplate.trim()
+                : "";
+          }
+          if (welcomeMessageFallbackService !== undefined) {
+            tenantSettings.welcomeMessageFallbackService =
+              typeof welcomeMessageFallbackService === "string"
+                ? welcomeMessageFallbackService.trim()
+                : "";
+          }
+          await tenantSettings.save();
+        }
+      } catch (tErr) {
+        console.error(
+          "Error syncing tenant SystemSettings in updateOrgAISettings:",
+          tErr.message,
+        );
+      }
+    }
 
     const io = getIO();
     if (io) {
