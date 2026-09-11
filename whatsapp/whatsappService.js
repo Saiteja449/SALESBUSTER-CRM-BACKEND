@@ -50,6 +50,12 @@ const logWhatsAppEvent = (message) => {
 
 const sessions = {}; // map of sessionId -> { sock, status, qrCode, connectedPhone, connectedName, organizationId, tenantDbName }
 
+// AI Pause Management — tracks 5-minute snooze timers per lead
+const aiPauseTimers = {}; // leadIdStr -> setTimeout handle
+// Tracks lead IDs that have an ongoing automated send (AI reply, follow-up, welcome message)
+// Used to distinguish automated outgoing messages from manual ones in messages.upsert handler
+const automatedSendInProgress = new Set();
+
 export const normalizePhone = (jid) => {
   if (!jid) return "";
   const clean = jid.split("@")[0].split(":")[0];
@@ -802,17 +808,35 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       `[DEBUG] Successfully processed and broadcasted message to lead ID: ${lead._id} (Session: ${sessionId})`,
     );
 
+    // 5b. Detect manual outgoing messages and pause AI for 5 minutes
+    //     Manual = sent from WhatsApp mobile/web by a human, NOT by AI/automation
+    const leadIdStr = lead._id.toString();
+    if (isFromMe && !automatedSendInProgress.has(leadIdStr)) {
+      // Only pause if AI is currently enabled (don't interfere with permanent disable)
+      if (lead.aiEnabled) {
+        const orgId = sessions[sessionId]?.organizationId;
+        await pauseAIForLead(lead._id, models, orgId);
+        console.log(`[AI SNOOZE] Detected manual outgoing message for lead ${leadIdStr}. Pausing AI for 5 minutes.`);
+      }
+    }
+
     // 6. Asynchronously trigger AI agent response with 4-second debounce
     const settings = await getSystemSettings(models);
+    const isAiPaused = lead.aiPausedUntil && new Date(lead.aiPausedUntil) > new Date();
     if (
       !isFromMe &&
       lead.aiEnabled &&
+      !isAiPaused &&
       settings.globalAIEnabled &&
       textContent &&
       textContent.trim()
     ) {
       console.log(`[DEBUG] Queueing AI auto-reply for lead ID: ${lead._id} on session ${sessionId}`);
       triggerAIDebounced(lead, remoteJid, textContent, sessionId, models);
+    } else if (!isFromMe && lead.aiEnabled && isAiPaused) {
+      console.log(
+        `[AI SNOOZE] AI auto-reply skipped for lead ID: ${lead._id}. AI is paused until ${lead.aiPausedUntil}.`,
+      );
     } else if (!isFromMe && lead.aiEnabled && !settings.globalAIEnabled) {
       console.log(
         `[DEBUG] Global AI is paused. Skipping AI auto-reply for lead ID: ${lead._id}`,
@@ -877,6 +901,100 @@ const processGlobalAIQueue = async () => {
   }
 
   isGlobalQueueProcessing = false;
+};
+
+/**
+ * Temporarily pause AI auto-replies for a lead for a given duration.
+ * When a human agent sends a manual message (from mobile or CRM), AI is
+ * snoozed so the agent can have a live conversation without AI interference.
+ * After the duration elapses, AI auto-replies resume automatically.
+ */
+const pauseAIForLead = async (leadId, models, orgId, durationMs = 5 * 60 * 1000) => {
+  const leadIdStr = leadId.toString();
+  const LeadModel = models?.Lead || Lead;
+
+  // 1. Cancel any pending AI debounce timer and accumulated text for this lead
+  if (aiDebounceTimers[leadIdStr]) {
+    clearTimeout(aiDebounceTimers[leadIdStr]);
+    delete aiDebounceTimers[leadIdStr];
+  }
+  delete aiAccumulatedText[leadIdStr];
+
+  // 2. Cancel any existing resume timer (reset behavior on subsequent manual messages)
+  if (aiPauseTimers[leadIdStr]) {
+    clearTimeout(aiPauseTimers[leadIdStr]);
+    delete aiPauseTimers[leadIdStr];
+  }
+
+  // 3. Persist pause timestamp in DB (survives server restarts)
+  const pauseUntil = new Date(Date.now() + durationMs);
+  await LeadModel.findByIdAndUpdate(leadId, { aiPausedUntil: pauseUntil });
+
+  console.log(`[AI SNOOZE] Pausing AI for lead ${leadIdStr} until ${pauseUntil.toISOString()}`);
+
+  // 4. Notify connected frontends immediately
+  const io = getIO();
+  if (io) {
+    const payload = { leadId: leadIdStr, aiPausedUntil: pauseUntil.toISOString() };
+    io.to(leadIdStr).emit("ai_status_updated", payload);
+    if (orgId) {
+      io.to(`org_${orgId}`).emit("ai_status_updated", payload);
+    } else {
+      io.emit("ai_status_updated", payload);
+    }
+  }
+
+  // 5. Set in-memory timer to auto-resume and notify frontends
+  aiPauseTimers[leadIdStr] = setTimeout(async () => {
+    try {
+      delete aiPauseTimers[leadIdStr];
+      // Re-fetch to check if still paused (could have been manually resumed via toggle)
+      const freshLead = await LeadModel.findById(leadId);
+      if (freshLead && freshLead.aiPausedUntil && new Date(freshLead.aiPausedUntil) <= new Date()) {
+        await LeadModel.findByIdAndUpdate(leadId, { aiPausedUntil: null });
+        console.log(`[AI SNOOZE] 5-minute manual pause expired for lead ${leadIdStr}. AI re-enabled.`);
+
+        const ioNow = getIO();
+        if (ioNow) {
+          const resumePayload = { leadId: leadIdStr, aiPausedUntil: null };
+          ioNow.to(leadIdStr).emit("ai_status_updated", resumePayload);
+          if (orgId) {
+            ioNow.to(`org_${orgId}`).emit("ai_status_updated", resumePayload);
+          } else {
+            ioNow.emit("ai_status_updated", resumePayload);
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[AI SNOOZE] Error resuming AI for lead ${leadIdStr}:`, err);
+    }
+  }, durationMs);
+};
+
+/**
+ * Immediately clear an active AI pause for a lead.
+ * Called when a user manually toggles AI back on from the frontend.
+ */
+export const clearAIPauseForLead = async (leadId, models, orgId = null) => {
+  const leadIdStr = leadId.toString();
+  if (aiPauseTimers[leadIdStr]) {
+    clearTimeout(aiPauseTimers[leadIdStr]);
+    delete aiPauseTimers[leadIdStr];
+  }
+  const LeadModel = models?.Lead || Lead;
+  await LeadModel.findByIdAndUpdate(leadId, { aiPausedUntil: null });
+  console.log(`[AI SNOOZE] Manually cleared AI pause for lead ${leadIdStr}.`);
+
+  const io = getIO();
+  if (io) {
+    const resumePayload = { leadId: leadIdStr, aiPausedUntil: null };
+    io.to(leadIdStr).emit("ai_status_updated", resumePayload);
+    if (orgId) {
+      io.to(`org_${orgId}`).emit("ai_status_updated", resumePayload);
+    } else {
+      io.emit("ai_status_updated", resumePayload);
+    }
+  }
 };
 
 // AI Message Debouncer for batching rapid messages
@@ -944,6 +1062,16 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
     const ConversationModel = models?.Conversation || Conversation;
     const NotificationModel = models?.Notification || Notification;
 
+    // Safety check: Abort if AI was paused while this request was queued
+    const freshLead = await LeadModel.findById(lead._id);
+    if (freshLead) {
+      const isAiPaused = freshLead.aiPausedUntil && new Date(freshLead.aiPausedUntil) > new Date();
+      if (isAiPaused || !freshLead.aiEnabled) {
+        console.log(`[AI SNOOZE] AI response aborted for lead ${lead._id}. AI paused or disabled.`);
+        return;
+      }
+    }
+
     // Emit typing status over socket.io
     const io = getIO();
     const orgId = sessions[sessionId]?.organizationId;
@@ -997,50 +1125,59 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
       sock = sessions["device_1"]?.sock;
     }
     if (sock) {
-      const sendResult = await sock.sendMessage(remoteJid, { text: replyText });
+      // Mark this lead as having an automated send in progress
+      // so messages.upsert handler doesn't mistake the AI reply for a manual message
+      const leadIdStr = lead._id.toString();
+      automatedSendInProgress.add(leadIdStr);
+      try {
+        const sendResult = await sock.sendMessage(remoteJid, { text: replyText });
 
-      const outgoingId = sendResult.key.id;
-      const outboundTimestamp = new Date();
+        const outgoingId = sendResult.key.id;
+        const outboundTimestamp = new Date();
 
-      // Save outgoing message to tenant DB
-      const replyRecord = await MessageModel.create({
-        messageId: outgoingId,
-        leadId: lead._id,
-        sender: "system",
-        direction: "outgoing",
-        messageType: "text",
-        text: replyText,
-        timestamp: outboundTimestamp,
-        aiGenerated: true,
-        delivered: true,
-        read: false,
-        status: "sent",
-      });
-
-      // Update Conversation meta
-      await ConversationModel.findOneAndUpdate(
-        { leadId: lead._id },
-        {
-          lastMessage: replyText,
-          lastMessageTime: outboundTimestamp,
-        },
-        { upsert: true }
-      );
-
-      // Emit new outbound message over Socket
-      if (io) {
-        io.to(lead._id.toString()).emit("new_message", replyRecord);
-        const updatePayload = {
+        // Save outgoing message to tenant DB
+        const replyRecord = await MessageModel.create({
+          messageId: outgoingId,
           leadId: lead._id,
-          lastMessage: replyText,
-          lastMessageTime: outboundTimestamp,
-        };
-        if (orgId) {
-          io.to(`org_${orgId}`).emit("new_message", replyRecord);
-          io.to(`org_${orgId}`).emit("conversation_updated", updatePayload);
-        } else {
-          io.emit("conversation_updated", updatePayload);
+          sender: "system",
+          direction: "outgoing",
+          messageType: "text",
+          text: replyText,
+          timestamp: outboundTimestamp,
+          aiGenerated: true,
+          delivered: true,
+          read: false,
+          status: "sent",
+        });
+
+        // Update Conversation meta
+        await ConversationModel.findOneAndUpdate(
+          { leadId: lead._id },
+          {
+            lastMessage: replyText,
+            lastMessageTime: outboundTimestamp,
+          },
+          { upsert: true }
+        );
+
+        // Emit new outbound message over Socket
+        if (io) {
+          io.to(lead._id.toString()).emit("new_message", replyRecord);
+          const updatePayload = {
+            leadId: lead._id,
+            lastMessage: replyText,
+            lastMessageTime: outboundTimestamp,
+          };
+          if (orgId) {
+            io.to(`org_${orgId}`).emit("new_message", replyRecord);
+            io.to(`org_${orgId}`).emit("conversation_updated", updatePayload);
+          } else {
+            io.emit("conversation_updated", updatePayload);
+          }
         }
+      } finally {
+        // Clear automated send flag after message is fully saved and broadcast
+        automatedSendInProgress.delete(leadIdStr);
       }
     } else {
       console.warn(`[WhatsApp AI] No active WhatsApp socket found for session ${sessionId} (org: ${orgId || "default"}). Could not send AI reply.`);
@@ -1119,6 +1256,16 @@ export const sendMessageFromCRM = async (
   const targetJid = `${cleanPhone}@s.whatsapp.net`;
 
   const sendResult = await sock.sendMessage(targetJid, { text: messageText });
+
+  // Pause AI for 5 minutes when an agent sends a manual CRM message
+  if (lead.aiEnabled) {
+    try {
+      await pauseAIForLead(lead._id, models, organizationId);
+      console.log(`[AI SNOOZE] CRM manual message detected for lead ${lead._id}. AI paused for 5 minutes.`);
+    } catch (pauseErr) {
+      console.error(`[AI SNOOZE] Error pausing AI for lead ${lead._id}:`, pauseErr);
+    }
+  }
   const messageId = sendResult.key.id;
   const timestamp = new Date();
 
@@ -1227,60 +1374,69 @@ export const sendAutomatedFollowup = async (lead, imageUrl, text, context = {}) 
   }
   const targetJid = `${cleanPhone}@s.whatsapp.net`;
 
-  // Baileys downloads the image from the URL and sends it as media
-  const sendResult = await sock.sendMessage(targetJid, {
-    image: { url: imageUrl },
-    caption: text,
-  });
+  // Mark as automated send so messages.upsert handler doesn't trigger AI pause
+  const leadIdStr = lead._id.toString();
+  automatedSendInProgress.add(leadIdStr);
 
-  const messageId = sendResult.key.id;
-  const timestamp = new Date();
+  try {
+    // Baileys downloads the image from the URL and sends it as media
+    const sendResult = await sock.sendMessage(targetJid, {
+      image: { url: imageUrl },
+      caption: text,
+    });
 
-  // Create message record
-  const messageRecord = await MessageModel.create({
-    messageId,
-    leadId: lead._id,
-    sender: "system",
-    senderName: "Automated Follow-up",
-    direction: "outgoing",
-    messageType: "image",
-    mediaUrl: imageUrl,
-    text: text,
-    timestamp,
-    aiGenerated: false,
-    delivered: true,
-    read: false,
-    status: "sent",
-  });
+    const messageId = sendResult.key.id;
+    const timestamp = new Date();
 
-  // Update Conversation details
-  await ConversationModel.findOneAndUpdate(
-    { leadId: lead._id },
-    {
-      lastMessage: text,
-      lastMessageTime: timestamp,
-    },
-    { upsert: true }
-  );
-
-  // Emit socket updates
-  const io = getIO();
-  if (io) {
-    io.to(lead._id.toString()).emit("new_message", messageRecord);
-    const updatePayload = {
+    // Create message record
+    const messageRecord = await MessageModel.create({
+      messageId,
       leadId: lead._id,
-      lastMessage: text,
-      lastMessageTime: timestamp,
-    };
-    if (organizationId) {
-      io.to(`org_${organizationId}`).emit("new_message", messageRecord);
-      io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
-    } else {
-      io.emit("conversation_updated", updatePayload);
-    }
-  }
+      sender: "system",
+      senderName: "Automated Follow-up",
+      direction: "outgoing",
+      messageType: "image",
+      mediaUrl: imageUrl,
+      text: text,
+      timestamp,
+      aiGenerated: false,
+      delivered: true,
+      read: false,
+      status: "sent",
+    });
 
-  return messageRecord;
+    // Update Conversation details
+    await ConversationModel.findOneAndUpdate(
+      { leadId: lead._id },
+      {
+        lastMessage: text,
+        lastMessageTime: timestamp,
+      },
+      { upsert: true }
+    );
+
+    // Emit socket updates
+    const io = getIO();
+    if (io) {
+      io.to(lead._id.toString()).emit("new_message", messageRecord);
+      const updatePayload = {
+        leadId: lead._id,
+        lastMessage: text,
+        lastMessageTime: timestamp,
+      };
+      if (organizationId) {
+        io.to(`org_${organizationId}`).emit("new_message", messageRecord);
+        io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
+      } else {
+        io.emit("conversation_updated", updatePayload);
+      }
+    }
+
+    return messageRecord;
+  } finally {
+    // Clear automated send flag
+    automatedSendInProgress.delete(leadIdStr);
+  }
 };
 
 export const DEFAULT_WELCOME_MESSAGE_TEMPLATE = `Hello {{name}}! 👋\n\nThank you for reaching out to {{company}} regarding *{{service}}*.\n\nWe have received your enquiry and our specialist will connect with you shortly.\n\nFeel free to reply with any specific requirements or questions you may have!`;
@@ -1481,60 +1637,70 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
       settings.welcomeMessageFallbackService,
     );
 
-    const sendResult = await sock.sendMessage(targetJid, { text: welcomeText });
-    const messageId = sendResult.key.id;
-    const timestamp = new Date();
+    // Mark as automated send so messages.upsert handler doesn't trigger AI pause
+    const leadIdStr = lead._id.toString();
+    automatedSendInProgress.add(leadIdStr);
 
-    // Create message record in tenant DB
-    const messageRecord = await MessageModel.create({
-      messageId,
-      leadId: lead._id,
-      sender: "system",
-      senderName: "Automated Welcome",
-      direction: "outgoing",
-      messageType: "text",
-      text: welcomeText,
-      timestamp,
-      aiGenerated: true,
-      delivered: true,
-      read: false,
-      status: "sent",
-    });
+    try {
+      const sendResult = await sock.sendMessage(targetJid, { text: welcomeText });
+      const messageId = sendResult.key.id;
+      const timestamp = new Date();
 
-    // Update or Create Conversation
-    await ConversationModel.findOneAndUpdate(
-      { leadId: lead._id },
-      {
+      // Create message record in tenant DB
+      const messageRecord = await MessageModel.create({
+        messageId,
         leadId: lead._id,
-        lastMessage: welcomeText,
-        lastMessageTime: timestamp,
-        unreadCount: 0,
-      },
-      { upsert: true, new: true },
-    );
+        sender: "system",
+        senderName: "Automated Welcome",
+        direction: "outgoing",
+        messageType: "text",
+        text: welcomeText,
+        timestamp,
+        aiGenerated: true,
+        delivered: true,
+        read: false,
+        status: "sent",
+      });
 
-    // Emit socket updates
-    const io = getIO();
-    if (io) {
-      io.to(lead._id.toString()).emit("new_message", messageRecord);
-      const updatePayload = {
-        leadId: lead._id,
-        unreadCount: 0,
-        lastMessage: welcomeText,
-        lastMessageTime: timestamp,
-      };
-      if (organizationId) {
-        io.to(`org_${organizationId}`).emit("new_message", messageRecord);
-        io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
-      } else {
-        io.emit("conversation_updated", updatePayload);
+      // Update or Create Conversation
+      await ConversationModel.findOneAndUpdate(
+        { leadId: lead._id },
+        {
+          leadId: lead._id,
+          lastMessage: welcomeText,
+          lastMessageTime: timestamp,
+          unreadCount: 0,
+        },
+        { upsert: true, new: true },
+      );
+
+      // Emit socket updates
+      const io = getIO();
+      if (io) {
+        io.to(lead._id.toString()).emit("new_message", messageRecord);
+        const updatePayload = {
+          leadId: lead._id,
+          unreadCount: 0,
+          lastMessage: welcomeText,
+          lastMessageTime: timestamp,
+        };
+        if (organizationId) {
+          io.to(`org_${organizationId}`).emit("new_message", messageRecord);
+          io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
+        } else {
+          io.emit("conversation_updated", updatePayload);
+        }
       }
-    }
 
-    console.log(
-      `[WhatsApp Welcome] Successfully sent welcome message to ${lead.phone} (${lead.name})`,
-    );
-    return messageRecord;
+      console.log(
+        `[WhatsApp Welcome] Successfully sent welcome message to ${lead.phone} (${lead.name})`,
+      );
+
+      return messageRecord;
+    } finally {
+      // Clear automated send flag
+      automatedSendInProgress.delete(leadIdStr);
+    }
   } catch (err) {
     console.error(
       `[WhatsApp Welcome] Error sending welcome message to ${lead?.phone}:`,

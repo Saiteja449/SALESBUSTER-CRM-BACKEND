@@ -11,6 +11,7 @@ import {
   getSystemSettings,
   updateSystemSettings,
   DEFAULT_WELCOME_MESSAGE_TEMPLATE,
+  clearAIPauseForLead,
 } from "../whatsapp/whatsappService.js";
 import { getMasterModels } from "../services/tenantManager.js";
 
@@ -249,14 +250,32 @@ export const toggleAI = async (req, res) => {
     }
 
     const { LeadModel } = getModels(req);
+
+    // Build update payload
+    const updatePayload = { aiEnabled };
+    // When enabling AI, also clear any active 5-minute pause
+    if (aiEnabled) {
+      updatePayload.aiPausedUntil = null;
+    }
+
     const lead = await LeadModel.findByIdAndUpdate(
       leadId,
-      { aiEnabled },
+      updatePayload,
       { new: true },
     );
 
     if (!lead) {
       return res.status(404).json({ message: "Lead not found" });
+    }
+
+    // Cancel the in-memory pause timer if enabling AI
+    if (aiEnabled) {
+      try {
+        const orgId = req.user?.organizationId || req.organization?._id;
+        await clearAIPauseForLead(leadId, req.tenantModels, orgId);
+      } catch (clearErr) {
+        console.warn("Error clearing AI pause timer:", clearErr.message);
+      }
     }
 
     res.status(200).json({

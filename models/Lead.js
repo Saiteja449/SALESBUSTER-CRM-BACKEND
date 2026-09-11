@@ -121,6 +121,10 @@ const leadSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    aiPausedUntil: {
+      type: Date,
+      default: null,
+    },
     aiQualification: {
       type: mongoose.Schema.Types.Mixed,
       default: () => ({}),
