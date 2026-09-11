@@ -59,6 +59,23 @@ const messageSchema = new mongoose.Schema(
       type: String,
       default: "sent",
     },
+    source: {
+      type: String,
+      enum: [
+        "baileys",
+        "cloud_api_campaign",
+        "cloud_api_chat",
+        "crm_manual",
+        "ai_agent",
+      ],
+      default: "baileys",
+    },
+    campaignId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "WhatsAppCampaign",
+      default: null,
+      index: true,
+    },
   },
   { timestamps: true }
 );

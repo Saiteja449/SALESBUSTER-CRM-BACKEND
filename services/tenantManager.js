@@ -15,6 +15,10 @@ import TelecallerAnalytics from "../models/TelecallerAnalytics.js";
 import SystemSettings from "../models/SystemSettings.js";
 import WhatsAppAuthState from "../models/WhatsAppAuthState.js";
 import WhatsAppSession from "../models/WhatsAppSession.js";
+import WhatsAppTemplate from "../models/WhatsAppTemplate.js";
+import WhatsAppCampaign from "../models/WhatsAppCampaign.js";
+import WhatsAppCampaignRecipient from "../models/WhatsAppCampaignRecipient.js";
+import WhatsAppOptOut from "../models/WhatsAppOptOut.js";
 import Organization, { organizationSchema } from "../models/Organization.js";
 import AuthUser, { authUserSchema } from "../models/AuthUser.js";
 
@@ -80,6 +84,18 @@ export const getTenantModels = (tenantDbName) => {
     WhatsAppSession:
       db.models.WhatsAppSession ||
       db.model("WhatsAppSession", WhatsAppSession.schema),
+    WhatsAppTemplate:
+      db.models.WhatsAppTemplate ||
+      db.model("WhatsAppTemplate", WhatsAppTemplate.schema),
+    WhatsAppCampaign:
+      db.models.WhatsAppCampaign ||
+      db.model("WhatsAppCampaign", WhatsAppCampaign.schema),
+    WhatsAppCampaignRecipient:
+      db.models.WhatsAppCampaignRecipient ||
+      db.model("WhatsAppCampaignRecipient", WhatsAppCampaignRecipient.schema),
+    WhatsAppOptOut:
+      db.models.WhatsAppOptOut ||
+      db.model("WhatsAppOptOut", WhatsAppOptOut.schema),
     db,
   };
 };

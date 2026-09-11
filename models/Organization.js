@@ -249,6 +249,61 @@ const organizationSchema = new mongoose.Schema(
         },
       },
     },
+    whatsappCloudSettings: {
+      isConfigured: {
+        type: Boolean,
+        default: false,
+        index: true,
+      },
+      wabaId: {
+        type: String,
+        default: "",
+        trim: true,
+        index: true,
+      },
+      phoneNumberId: {
+        type: String,
+        default: "",
+        trim: true,
+        index: true,
+      },
+      displayPhoneNumber: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      verifiedName: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      accessTokenEncrypted: {
+        type: String,
+        default: "",
+      },
+      qualityRating: {
+        type: String,
+        default: "UNKNOWN",
+      },
+      messagingLimitTier: {
+        type: String,
+        default: "TIER_1K",
+      },
+      messagesPerSecond: {
+        type: Number,
+        default: 5,
+        min: 1,
+        max: 80,
+      },
+      webhookVerifyToken: {
+        type: String,
+        default: "",
+      },
+      lastSyncedAt: {
+        type: Date,
+        default: null,
+      },
+    },
   },
   {
     timestamps: true,

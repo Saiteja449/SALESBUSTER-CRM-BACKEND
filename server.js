@@ -18,16 +18,18 @@ import leadRoutes from "./routes/leadRoutes.js";
 import whatsappRoutes from "./routes/whatsappRoutes.js";
 import websiteRoutes from "./routes/websiteRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
-import metaRoutes from "./routes/metaRoutes.js";
 import followupRoutes from "./routes/followupRoutes.js";
 import analyticsRoutes from "./routes/analyticsRoutes.js";
 import mobileAppRoutes from "./routes/mobileAppRoutes.js";
 import organizationRoutes from "./routes/organizationRoutes.js";
 import staticChatRoutes from "./routes/staticChatRoutes.js";
+import whatsappCloudRoutes from "./routes/whatsappCloudRoutes.js";
+import whatsappWebhookRoutes from "./routes/whatsappWebhookRoutes.js";
 
 // Socket & WhatsApp Imports
 import { initSocket } from "./socket/socket.js";
 import { initAllOrganizationWhatsAppConnections } from "./whatsapp/whatsappService.js";
+import { resumeInterruptedCampaigns } from "./services/whatsappCampaignWorker.js";
 
 dotenv.config();
 
@@ -59,7 +61,13 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json());
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 
 // Attach tenant-scoped database models and organization metadata
@@ -75,10 +83,11 @@ app.use("/api/organization", organizationRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/leads", leadRoutes);
+app.use("/api/whatsapp/cloud/webhook", whatsappWebhookRoutes);
+app.use("/api/whatsapp/cloud", whatsappCloudRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/website", websiteRoutes);
 app.use("/api/notifications", notificationRoutes);
-app.use("/api/meta", metaRoutes);
 app.use("/api/followups", followupRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/mobile-app", mobileAppRoutes);
@@ -103,4 +112,7 @@ server.listen(PORT, () => {
 
   // Auto-connect WhatsApp on server start for all active tenant organizations
   initAllOrganizationWhatsAppConnections();
+
+  // Resume any interrupted WhatsApp Cloud campaigns
+  resumeInterruptedCampaigns();
 });

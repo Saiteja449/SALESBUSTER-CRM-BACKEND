@@ -133,6 +133,33 @@ const leadSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    isOptedOut: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    optedOutAt: {
+      type: Date,
+      default: null,
+    },
+    lastCloudInboundAt: {
+      type: Date,
+      default: null,
+    },
+    serviceWindowExpiresAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    hasWhatsAppConsent: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+    consentSource: {
+      type: String,
+      default: "Inquiry Form",
+    },
     isOldLead: {
       type: Boolean,
       default: false,
