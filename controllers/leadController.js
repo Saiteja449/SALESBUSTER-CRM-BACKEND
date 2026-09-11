@@ -165,6 +165,7 @@ export const getPaginatedLeads = async (req, res) => {
       const searchRegex = new RegExp(search, "i");
       const searchConditions = [
         { name: searchRegex },
+        { company: searchRegex },
         { phone: searchRegex },
         { email: searchRegex },
         { service: searchRegex },
@@ -247,6 +248,7 @@ export const getPaginatedLeads = async (req, res) => {
       const searchRegex = new RegExp(search, "i");
       const searchConditions = [
         { name: searchRegex },
+        { company: searchRegex },
         { phone: searchRegex },
         { email: searchRegex },
         { service: searchRegex },

@@ -4,6 +4,9 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import {
   handleStaticChatMessage,
+  captureWebsiteLeadDirectly,
+  recordCalendlyBooking,
+  getStaticChatConfig,
   getStaticChatHistory,
   resetStaticChatSession,
 } from "../services/staticChatService.js";
@@ -15,18 +18,36 @@ const widgetFilePath = path.join(__dirname, "..", "public", "widget.js");
 const router = express.Router();
 
 /**
+ * @route   GET /api/static-chat/config
+ * @desc    Get website chat widget runtime configuration
+ * @access  Public
+ */
+router.get("/config", (req, res) => {
+  try {
+    const config = getStaticChatConfig();
+    return res.status(200).json(config);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * @route   POST /api/static-chat
  * @desc    Chat with SalesBuster Website AI Bot
  * @access  Public
  */
 router.post("/", async (req, res) => {
   try {
-    const { message, sessionId } = req.body;
+    const { message, sessionId, leadDetails } = req.body;
     if (!message) {
       return res.status(400).json({ error: "Message is required." });
     }
 
-    const result = await handleStaticChatMessage({ message, sessionId });
+    const result = await handleStaticChatMessage({
+      message,
+      sessionId,
+      clientLeadDetails: leadDetails,
+    });
     return res.status(200).json(result);
   } catch (error) {
     console.error("[StaticChat Error]:", error);
@@ -34,6 +55,56 @@ router.post("/", async (req, res) => {
       error: "An error occurred while generating response.",
       details: error.message,
     });
+  }
+});
+
+/**
+ * @route   POST /api/static-chat/capture-lead
+ * @desc    Explicitly submit basic lead details (Name, Company, Mobile, Email, Requirement)
+ * @access  Public
+ */
+router.post("/capture-lead", async (req, res) => {
+  try {
+    const { sessionId, name, company, mobile, email, requirement } = req.body;
+    if (!mobile && !email && !name) {
+      return res.status(400).json({ error: "Name, Mobile, or Email is required." });
+    }
+
+    const result = await captureWebsiteLeadDirectly({
+      sessionId,
+      name,
+      company,
+      mobile,
+      email,
+      requirement,
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("[StaticChat capture-lead Error]:", error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @route   POST /api/static-chat/calendly-scheduled
+ * @desc    Record confirmed Calendly demo booking
+ * @access  Public
+ */
+router.post("/calendly-scheduled", async (req, res) => {
+  try {
+    const { sessionId, leadId, appointmentDate, appointmentTime, notes } = req.body;
+    const result = await recordCalendlyBooking({
+      sessionId,
+      leadId,
+      appointmentDate,
+      appointmentTime,
+      notes,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("[StaticChat calendly-scheduled Error]:", error);
+    return res.status(500).json({ error: error.message });
   }
 });
 

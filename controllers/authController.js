@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import { getMasterModels, getTenantModels } from "../services/tenantManager.js";
+import { sendLoginAlertEmail } from "../helpers/emailHelper.js";
 
 const generateToken = (payload) => {
   return jwt.sign(payload, process.env.JWT_SECRET, {
@@ -126,6 +127,26 @@ export const login = async (req, res) => {
       organizationId: user.organizationId || null,
       isOrgOwner: !!user.isOrgOwner,
     });
+
+    // 5. Optional Login Security Alert notification email
+    if (process.env.ENABLE_LOGIN_ALERTS === "true") {
+      const clientIp =
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.socket?.remoteAddress ||
+        req.ip ||
+        "Unknown IP";
+      const userAgent = req.headers["user-agent"] || "Unknown Device";
+
+      sendLoginAlertEmail({
+        email: user.email,
+        name: user.name,
+        ipAddress: clientIp,
+        userAgent,
+        loginTime: new Date(),
+      }).catch((err) => {
+        console.error("Failed to dispatch login alert email:", err.message);
+      });
+    }
 
     res.status(200).json({
       success: true,
