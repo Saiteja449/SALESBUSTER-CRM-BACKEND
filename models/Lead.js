@@ -13,6 +13,11 @@ const leadSchema = new mongoose.Schema(
     email: {
       type: String,
     },
+    company: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     source: {
       type: String,
       enum: [
@@ -20,6 +25,7 @@ const leadSchema = new mongoose.Schema(
         "WhatsApp",
         "Meta Ads",
         "Website Form",
+        "Website Chat",
         "Call",
         "Manual Entry",
         "Mobile App",
