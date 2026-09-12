@@ -914,6 +914,9 @@ export const importExcelLeads = async (req, res) => {
       seenPhonesInFile.add(formattedPhone);
       candidatePhones.push(formattedPhone);
 
+      const allowedSources = LeadModel.schema?.path("source")?.enumValues || [];
+      const leadSource = allowedSources.includes("Excel Import") ? "Excel Import" : "Manual Entry";
+
       validDocs.push({
         name: rawName || `Lead ${formattedPhone.slice(-4)}`,
         phone: formattedPhone,
@@ -922,7 +925,7 @@ export const importExcelLeads = async (req, res) => {
         city: rawCity,
         company: rawCompany,
         notes: rawNotes,
-        source: "Excel Import",
+        source: leadSource,
         status: "New",
         isOldLead: true, // Key requirement: added to Old Leads
         hasWhatsAppConsent: true,
@@ -991,12 +994,48 @@ export const importExcelLeads = async (req, res) => {
       }
     }
 
-    // 4. Batch insert into Tenant Lead Collection
+    // 4. Batch insert into Tenant Lead Collection with resilient fallback
     let insertedDocs = [];
     if (finalDocsToInsert.length > 0) {
-      insertedDocs = await LeadModel.insertMany(finalDocsToInsert, {
-        ordered: false,
-      });
+      try {
+        insertedDocs = await LeadModel.insertMany(finalDocsToInsert, {
+          ordered: false,
+        });
+      } catch (insertErr) {
+        console.warn("[leadController] insertMany encountered an error:", insertErr.message);
+        if (Array.isArray(insertErr.insertedDocs) && insertErr.insertedDocs.length > 0) {
+          insertedDocs = insertErr.insertedDocs;
+        }
+      }
+
+      // If insertMany inserted 0 or was rejected, insert one-by-one with retry
+      if (insertedDocs.length === 0 && finalDocsToInsert.length > 0) {
+        for (const doc of finalDocsToInsert) {
+          try {
+            const created = await LeadModel.create(doc);
+            if (created) insertedDocs.push(created);
+          } catch (singleErr) {
+            console.error(`[leadController] Failed to create lead ${doc.phone}:`, singleErr.message);
+            if (singleErr.message?.includes("source")) {
+              try {
+                const retryDoc = { ...doc, source: "Manual Entry" };
+                const createdRetry = await LeadModel.create(retryDoc);
+                if (createdRetry) {
+                  insertedDocs.push(createdRetry);
+                  continue;
+                }
+              } catch (retryErr) {
+                // fall through
+              }
+            }
+            invalidRows.push({
+              name: doc.name,
+              phone: doc.phone,
+              reason: singleErr.message,
+            });
+          }
+        }
+      }
     }
 
     // 5. Notify via Socket.IO
