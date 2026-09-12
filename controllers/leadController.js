@@ -14,6 +14,7 @@ import { analyzeAudioFile } from "../services/audioAnalysisService.js";
 import { sendWelcomeEnquiryMessage } from "../whatsapp/whatsappService.js";
 import { decryptApiKey } from "../utils/encryption.js";
 import { recordAiUsage } from "../services/aiUsageService.js";
+import * as XLSX from "xlsx";
 
 // Feature toggle to pause AI Call Analysis temporarily
 const ENABLE_AI_AUDIO_ANALYSIS =
@@ -791,5 +792,245 @@ export const analyzeRecording = async (req, res) => {
     res.json({ success: true, message: "Analysis triggered successfully" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc    Bulk imports leads from Excel (.xlsx, .xls) or CSV into Old Leads
+ * @route   POST /api/leads/import-excel
+ * @access  Protected / Tenant-scoped
+ */
+export const importExcelLeads = async (req, res) => {
+  let uploadedFilePath = null;
+  try {
+    const { LeadModel, UserModel, AssignmentStateModel } = getModels(req);
+    let rows = [];
+
+    // 1. Process from uploaded file or from JSON array
+    if (req.file) {
+      uploadedFilePath = req.file.path;
+      const workbook = XLSX.readFile(uploadedFilePath, { cellDates: true });
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      rows = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+    } else if (Array.isArray(req.body.leads) && req.body.leads.length > 0) {
+      rows = req.body.leads;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "No Excel/CSV file or leads array provided.",
+      });
+    }
+
+    if (rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "The uploaded spreadsheet contains no data rows.",
+      });
+    }
+
+    const batchTag =
+      req.body.batchTag?.trim() ||
+      `Excel-Import-${new Date().toISOString().slice(0, 10)}`;
+    const skipDuplicates = req.body.skipDuplicates !== false;
+    const defaultService = req.body.defaultService || "General Enquiry";
+
+    // Detect column name helper
+    const findValue = (row, candidates) => {
+      for (const key of Object.keys(row)) {
+        const cleanKey = key.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+        for (const c of candidates) {
+          const cleanCand = c.toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (cleanKey === cleanCand) {
+            return row[key];
+          }
+        }
+      }
+      return "";
+    };
+
+    const validDocs = [];
+    const duplicateRows = [];
+    const invalidRows = [];
+    const seenPhonesInFile = new Set();
+    const candidatePhones = [];
+
+    // First pass: validate and extract candidate phones
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowIndex = i + 2; // Accounting for 1-based index and header row
+
+      const rawName = String(
+        findValue(row, ["name", "fullname", "customername", "leadname", "clientname"]) || ""
+      ).trim();
+
+      const rawPhone = String(
+        findValue(row, ["phone", "mobile", "mobilenumber", "contact", "contactnumber", "phonenumber", "whatsappnumber"]) || ""
+      ).trim();
+
+      const rawEmail = String(
+        findValue(row, ["email", "emailaddress"]) || ""
+      ).trim();
+
+      const rawService = String(
+        findValue(row, ["service", "product", "serviceproduct", "category"]) || ""
+      ).trim();
+
+      const rawCity = String(
+        findValue(row, ["city", "location", "area"]) || ""
+      ).trim();
+
+      const rawCompany = String(
+        findValue(row, ["company", "organization", "business", "companyname"]) || ""
+      ).trim();
+
+      const rawNotes = String(
+        findValue(row, ["notes", "remarks", "comment", "description"]) || ""
+      ).trim();
+
+      const cleanDigits = rawPhone.replace(/\D/g, "");
+      if (!cleanDigits || cleanDigits.length < 10) {
+        invalidRows.push({
+          row: rowIndex,
+          name: rawName,
+          phone: rawPhone,
+          reason: "Invalid phone number (must contain at least 10 digits).",
+        });
+        continue;
+      }
+
+      const formattedPhone = cleanDigits;
+
+      if (seenPhonesInFile.has(formattedPhone)) {
+        duplicateRows.push({
+          row: rowIndex,
+          name: rawName,
+          phone: formattedPhone,
+          reason: "Duplicate number within the same spreadsheet.",
+        });
+        continue;
+      }
+
+      seenPhonesInFile.add(formattedPhone);
+      candidatePhones.push(formattedPhone);
+
+      validDocs.push({
+        name: rawName || `Lead ${formattedPhone.slice(-4)}`,
+        phone: formattedPhone,
+        email: rawEmail || undefined,
+        service: rawService || defaultService,
+        city: rawCity,
+        company: rawCompany,
+        notes: rawNotes,
+        source: "Excel Import",
+        status: "New",
+        isOldLead: true, // Key requirement: added to Old Leads
+        hasWhatsAppConsent: true,
+        consentSource: "Excel Import",
+        assignedTo: req.body.assignedTo || "Unassigned",
+        tags: ["Excel Import", batchTag],
+        joinedAt: new Date(),
+        lastActivity: new Date(),
+      });
+    }
+
+    // Second pass: Deduplicate against database if skipDuplicates is enabled
+    let finalDocsToInsert = validDocs;
+    if (skipDuplicates && candidatePhones.length > 0) {
+      const last10s = candidatePhones.map((p) => p.slice(-10));
+      const existingInDb = await LeadModel.find({
+        $or: [
+          { phone: { $in: candidatePhones } },
+          { phone: { $in: last10s } },
+        ],
+      }).select("phone");
+
+      const existingPhoneSet = new Set();
+      for (const ex of existingInDb) {
+        const clean = String(ex.phone || "").replace(/\D/g, "");
+        if (clean) {
+          existingPhoneSet.add(clean);
+          existingPhoneSet.add(clean.slice(-10));
+        }
+      }
+
+      finalDocsToInsert = [];
+      for (const doc of validDocs) {
+        const p = doc.phone;
+        const p10 = p.slice(-10);
+        if (existingPhoneSet.has(p) || existingPhoneSet.has(p10)) {
+          duplicateRows.push({
+            name: doc.name,
+            phone: doc.phone,
+            reason: "Lead already exists in CRM database.",
+          });
+        } else {
+          finalDocsToInsert.push(doc);
+        }
+      }
+    }
+
+    // 3. Round-robin assignment if assignedTo is not specified
+    if (finalDocsToInsert.length > 0 && (!req.body.assignedTo || req.body.assignedTo === "Unassigned")) {
+      const reps = await UserModel.find({ role: "sales person" }).sort({ _id: 1 });
+      if (reps && reps.length > 0) {
+        let state = await AssignmentStateModel.findOne({ key: "leadAssignment" });
+        if (!state) {
+          state = await AssignmentStateModel.create({
+            key: "leadAssignment",
+            lastAssignedIndex: -1,
+          });
+        }
+        let currentIndex = state.lastAssignedIndex;
+        for (const doc of finalDocsToInsert) {
+          currentIndex = (currentIndex + 1) % reps.length;
+          doc.assignedTo = reps[currentIndex]._id.toString();
+        }
+        state.lastAssignedIndex = currentIndex;
+        await state.save();
+      }
+    }
+
+    // 4. Batch insert into Tenant Lead Collection
+    let insertedDocs = [];
+    if (finalDocsToInsert.length > 0) {
+      insertedDocs = await LeadModel.insertMany(finalDocsToInsert, {
+        ordered: false,
+      });
+    }
+
+    // 5. Notify via Socket.IO
+    const io = getIO();
+    if (io && req.organization?._id) {
+      io.to(`org_${req.organization._id}`).emit("leads_imported", {
+        count: insertedDocs.length,
+        isOldLead: true,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Successfully imported ${insertedDocs.length} leads into Old Leads (${duplicateRows.length} duplicates skipped, ${invalidRows.length} invalid).`,
+      importedCount: insertedDocs.length,
+      skippedDuplicates: duplicateRows.length,
+      invalidCount: invalidRows.length,
+      totalRows: rows.length,
+      duplicates: duplicateRows.slice(0, 10),
+      invalids: invalidRows.slice(0, 10),
+    });
+  } catch (error) {
+    console.error("[LeadController] Error importing Excel leads:", error);
+    res.status(500).json({
+      success: false,
+      message: `Failed to import leads: ${error.message}`,
+    });
+  } finally {
+    if (uploadedFilePath && fs.existsSync(uploadedFilePath)) {
+      try {
+        fs.unlinkSync(uploadedFilePath);
+      } catch (e) {
+        // Ignored
+      }
+    }
   }
 };

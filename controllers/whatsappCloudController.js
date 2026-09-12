@@ -88,26 +88,41 @@ export const getCloudStatus = async (req, res) => {
 export const connectCloudAccount = async (req, res) => {
   try {
     const { wabaId, phoneNumberId, accessToken, messagesPerSecond } = req.body;
-    if (!wabaId || !phoneNumberId || !accessToken) {
+    if (!wabaId || !phoneNumberId) {
       return res.status(400).json({
         success: false,
-        message: "wabaId, phoneNumberId, and accessToken are required.",
+        message: "wabaId and phoneNumberId are required.",
       });
     }
 
-    // 1. Verify against Meta Graph API
-    const verified = await verifyCredentials(phoneNumberId.trim(), accessToken.trim());
-
-    // 2. Encrypt token using AES-256-GCM
-    const encryptedToken = encryptApiKey(accessToken.trim());
-
-    // 3. Save to Master Organization record
     const { Organization } = getMasterModels();
     const org = await Organization.findById(req.organization._id);
     if (!org) {
       return res.status(404).json({ success: false, message: "Organization not found." });
     }
 
+    // Use provided token or fall back to previously saved encrypted token
+    let tokenToUse = accessToken ? accessToken.trim() : "";
+    if (!tokenToUse && org.whatsappCloudSettings?.accessTokenEncrypted) {
+      tokenToUse = decryptApiKey(org.whatsappCloudSettings.accessTokenEncrypted);
+    }
+
+    if (!tokenToUse) {
+      return res.status(400).json({
+        success: false,
+        message: "Meta Access Token is required.",
+      });
+    }
+
+    // 1. Verify against Meta Graph API
+    const verified = await verifyCredentials(phoneNumberId.trim(), tokenToUse);
+
+    // 2. Encrypt token using AES-256-GCM if a new token was provided, else keep existing
+    const encryptedToken = accessToken
+      ? encryptApiKey(tokenToUse)
+      : org.whatsappCloudSettings.accessTokenEncrypted;
+
+    // 3. Save to Master Organization record
     org.whatsappCloudSettings = {
       isConfigured: true,
       wabaId: wabaId.trim(),
@@ -334,6 +349,12 @@ export const buildLeadAudienceQuery = (criteria = {}) => {
   if (criteria.filterType === "manual_selection" && Array.isArray(criteria.manualLeadIds)) {
     query._id = { $in: criteria.manualLeadIds };
     return query;
+  }
+
+  if (criteria.leadType === "old_leads_only") {
+    query.isOldLead = true;
+  } else if (criteria.leadType === "new_leads_only") {
+    query.isOldLead = { $ne: true };
   }
 
   if (Array.isArray(criteria.leadStatus) && criteria.leadStatus.length > 0) {

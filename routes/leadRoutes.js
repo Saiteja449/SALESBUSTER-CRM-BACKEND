@@ -10,6 +10,7 @@ import {
   deleteLead,
   updateStatusByWebhook,
   analyzeRecording,
+  importExcelLeads,
 } from "../controllers/leadController.js";
 
 const router = express.Router();
@@ -29,6 +30,8 @@ const storage = multer.diskStorage({
   },
 });
 const upload = multer({ storage: storage });
+
+router.post("/import-excel", upload.single("file"), importExcelLeads);
 
 router.route("/").get(getLeads).post(upload.single("recording"), createLead);
 router.route("/paginated").get(getPaginatedLeads);
