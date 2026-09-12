@@ -84,6 +84,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/leads", leadRoutes);
 app.use("/api/whatsapp/cloud/webhook", whatsappWebhookRoutes);
+app.use("/api/meta/webhook", whatsappWebhookRoutes);
+app.use("/api/webhooks/meta", whatsappWebhookRoutes);
 app.use("/api/whatsapp/cloud", whatsappCloudRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/website", websiteRoutes);

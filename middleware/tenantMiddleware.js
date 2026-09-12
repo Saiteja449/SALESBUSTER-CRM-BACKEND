@@ -97,6 +97,8 @@ export const checkSubscriptionActive = (req, res, next) => {
     path.startsWith("/api/auth/reset-password") ||
     path.startsWith("/api/static-chat") ||
     path.startsWith("/api/whatsapp/cloud/webhook") ||
+    path.startsWith("/api/meta/webhook") ||
+    path.startsWith("/api/webhooks/meta") ||
     path === "/" ||
     path === "/health"
   ) {
