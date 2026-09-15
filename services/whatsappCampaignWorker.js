@@ -65,7 +65,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
 
   try {
     const tenantModels = getTenantModels(tenantDbName);
-    const { WhatsAppCampaign, WhatsAppCampaignRecipient, Message, Conversation } = tenantModels;
+    const { WhatsAppCampaign, WhatsAppCampaignRecipient, WhatsAppTemplate, Message, Conversation } = tenantModels;
     const { Organization } = getMasterModels();
 
     const org = await Organization.findById(organizationId);
@@ -106,6 +106,16 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
         $set: { status: "Queued", lockedAt: null },
       }
     );
+
+    // Fetch template once for accurate message reconstruction in chat history
+    let templateDoc = null;
+    const initialCampaign = await WhatsAppCampaign.findById(campaignId);
+    if (initialCampaign?.templateId) {
+      templateDoc = await WhatsAppTemplate.findById(initialCampaign.templateId);
+    }
+    if (!templateDoc && initialCampaign?.templateName) {
+      templateDoc = await WhatsAppTemplate.findOne({ name: initialCampaign.templateName });
+    }
 
     let isRunning = true;
     let consecutiveRateLimits = 0;
@@ -208,14 +218,55 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
         // Optionally record in Lead conversation history if leadId exists
         if (recipient.leadId) {
           try {
+            let renderedMessageText = `[WhatsApp Campaign: ${currentCampaign.templateName}]`;
+
+            if (templateDoc) {
+              const headerComp = templateDoc.components?.find((c) => c.type === "HEADER");
+              const bodyComp = templateDoc.components?.find((c) => c.type === "BODY");
+              const footerComp = templateDoc.components?.find((c) => c.type === "FOOTER");
+
+              let body = bodyComp?.text || "";
+              if (Array.isArray(recipient.renderedParameters)) {
+                recipient.renderedParameters.forEach((val, idx) => {
+                  body = body.replaceAll(`{{${idx + 1}}}`, String(val ?? ""));
+                });
+              }
+
+              const parts = [];
+              if (headerComp?.format === "TEXT" && headerComp.text) {
+                parts.push(`*${headerComp.text}*`);
+              }
+              if (body) {
+                parts.push(body);
+              }
+              if (footerComp?.text) {
+                parts.push(`_${footerComp.text}_`);
+              }
+
+              if (parts.length > 0) {
+                renderedMessageText = parts.join("\n\n");
+              }
+            }
+
+            const headerMediaType = currentCampaign.headerMedia?.type?.toLowerCase();
+            const messageType =
+              headerMediaType === "image"
+                ? "image"
+                : headerMediaType === "document"
+                ? "document"
+                : headerMediaType === "video"
+                ? "video"
+                : "text";
+
             await Message.create({
               messageId: sendResult.metaMessageId || `campaign_${Date.now()}_${recipient._id}`,
               leadId: recipient.leadId,
               sender: "Campaign Bot",
               senderName: currentCampaign.name,
               direction: "outgoing",
-              messageType: "text",
-              text: `[WhatsApp Campaign: ${currentCampaign.templateName}]`,
+              messageType,
+              text: renderedMessageText,
+              mediaUrl: currentCampaign.headerMedia?.url || "",
               timestamp: sentTime,
               source: "cloud_api_campaign",
               campaignId: currentCampaign._id,
@@ -225,13 +276,19 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
             await Conversation.findOneAndUpdate(
               { leadId: recipient.leadId },
               {
-                lastMessage: `[Campaign: ${currentCampaign.templateName}]`,
+                lastMessage:
+                  renderedMessageText.length > 60
+                    ? renderedMessageText.substring(0, 60) + "..."
+                    : renderedMessageText,
                 lastMessageTime: sentTime,
               },
               { upsert: true }
             );
           } catch (msgErr) {
-            console.warn(`[CampaignWorker] Failed to sync message to conversation for lead ${recipient.leadId}:`, msgErr.message);
+            console.warn(
+              `[CampaignWorker] Failed to sync message to conversation for lead ${recipient.leadId}:`,
+              msgErr.message
+            );
           }
         }
 
