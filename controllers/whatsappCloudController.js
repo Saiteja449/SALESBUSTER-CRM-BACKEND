@@ -1,6 +1,9 @@
 import {
   verifyCredentials,
   fetchTemplates,
+  uploadResumableMedia,
+  createMessageTemplate,
+  deleteMessageTemplate,
 } from "../services/whatsappCloudService.js";
 import {
   encryptApiKey,
@@ -279,6 +282,215 @@ export const getTemplates = async (req, res) => {
 
     const templates = await WhatsAppTemplate.find(filter).sort({ name: 1 });
     res.status(200).json({ success: true, data: templates });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Creates a new WhatsApp Message Template on Meta and persists it in the tenant DB.
+ */
+export const createTemplate = async (req, res) => {
+  try {
+    const org = req.organization;
+    const cloud = org?.whatsappCloudSettings;
+
+    if (!cloud || !cloud.isConfigured || !cloud.wabaId || !cloud.accessTokenEncrypted) {
+      return res.status(400).json({
+        success: false,
+        message: "WhatsApp Cloud API is not connected. Please configure your Meta credentials in Settings first.",
+      });
+    }
+
+    const accessToken = decryptApiKey(cloud.accessTokenEncrypted);
+
+    // Parse body if sent via FormData
+    let templatePayload = req.body;
+    if (req.body.template && typeof req.body.template === "string") {
+      try {
+        templatePayload = JSON.parse(req.body.template);
+      } catch (e) {
+        return res.status(400).json({ success: false, message: "Invalid JSON in template field." });
+      }
+    }
+
+    let { name, category, language, components, sampleVariables } = templatePayload;
+
+    if (!name || typeof name !== "string") {
+      return res.status(400).json({ success: false, message: "Template name is required." });
+    }
+
+    // Sanitize name: Meta requires lowercase letters, numbers, and underscores only
+    const sanitizedName = name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9_]/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_|_$/g, "");
+
+    if (!sanitizedName) {
+      return res.status(400).json({
+        success: false,
+        message: "Template name must contain valid alphanumeric characters.",
+      });
+    }
+
+    const validCategories = ["MARKETING", "UTILITY", "AUTHENTICATION"];
+    const templateCategory = validCategories.includes(category) ? category : "MARKETING";
+    const templateLanguage = language || "en_US";
+
+    let metaComponents = Array.isArray(components) ? [...components] : [];
+
+    // Handle uploaded media sample file if present
+    if (req.file) {
+      const mimeType = req.file.mimetype || "image/jpeg";
+      const originalName = req.file.originalname || "sample_file";
+      const handle = await uploadResumableMedia(
+        accessToken,
+        req.file.buffer,
+        mimeType,
+        originalName
+      );
+
+      const headerIdx = metaComponents.findIndex((c) => c.type === "HEADER");
+      if (headerIdx !== -1) {
+        metaComponents[headerIdx].example = {
+          header_handle: [handle],
+        };
+      }
+    }
+
+    // Ensure variable examples are properly formatted for Meta review
+    const bodyIdx = metaComponents.findIndex((c) => c.type === "BODY");
+    if (bodyIdx !== -1) {
+      const bodyText = metaComponents[bodyIdx].text || "";
+      const varMatches = bodyText.match(/\{\{(\d+)\}\}/g);
+      if (varMatches && varMatches.length > 0) {
+        const uniqueVars = Array.from(new Set(varMatches)).sort((a, b) => {
+          return parseInt(a.replace(/\D/g, "")) - parseInt(b.replace(/\D/g, ""));
+        });
+
+        const samplesArray = [];
+        uniqueVars.forEach((v, idx) => {
+          const varNum = v.replace(/\D/g, "");
+          const val =
+            (sampleVariables && (sampleVariables[varNum] || sampleVariables[idx])) ||
+            `Sample${varNum}`;
+          samplesArray.push(String(val));
+        });
+
+        metaComponents[bodyIdx].example = {
+          body_text: [samplesArray],
+        };
+      }
+    }
+
+    // Ensure TEXT header with variables has example
+    const headerIdx = metaComponents.findIndex((c) => c.type === "HEADER");
+    if (headerIdx !== -1 && metaComponents[headerIdx].format === "TEXT") {
+      const headerText = metaComponents[headerIdx].text || "";
+      const varMatches = headerText.match(/\{\{(\d+)\}\}/g);
+      if (varMatches && varMatches.length > 0) {
+        const sampleVal =
+          (sampleVariables && (sampleVariables["header"] || sampleVariables["h1"])) ||
+          "Header Sample";
+        metaComponents[headerIdx].example = {
+          header_text: [String(sampleVal)],
+        };
+      }
+    }
+
+    const metaRequestData = {
+      name: sanitizedName,
+      category: templateCategory,
+      language: templateLanguage,
+      components: metaComponents,
+    };
+
+    // Submit to Meta Graph API
+    const metaResult = await createMessageTemplate(cloud.wabaId, accessToken, metaRequestData);
+
+    // Save to local tenant database
+    const { WhatsAppTemplate } = req.tenantModels;
+    const { count, variableNames } = extractTemplateVariables(metaComponents);
+
+    const templateDoc = await WhatsAppTemplate.findOneAndUpdate(
+      { name: sanitizedName, language: templateLanguage },
+      {
+        metaTemplateId: metaResult.id,
+        name: sanitizedName,
+        language: templateLanguage,
+        category: metaResult.category || templateCategory,
+        status: metaResult.status || "APPROVED",
+        components: metaComponents,
+        variableCount: count,
+        variableNames,
+        lastSyncedAt: new Date(),
+      },
+      { upsert: true, new: true }
+    );
+
+    res.status(201).json({
+      success: true,
+      message: `Template "${sanitizedName}" created successfully with status: ${metaResult.status || "PENDING"}.`,
+      data: templateDoc,
+      meta: metaResult,
+    });
+  } catch (error) {
+    console.error("Create template error:", error);
+    const metaMessage = error.meta?.message || error.message;
+    res.status(400).json({
+      success: false,
+      message: `Failed to create WhatsApp template: ${metaMessage}`,
+      error: error.meta || null,
+    });
+  }
+};
+
+/**
+ * Deletes a WhatsApp template from Meta and the tenant DB.
+ */
+export const deleteTemplate = async (req, res) => {
+  try {
+    const org = req.organization;
+    const cloud = org?.whatsappCloudSettings;
+
+    if (!cloud || !cloud.isConfigured || !cloud.wabaId || !cloud.accessTokenEncrypted) {
+      return res.status(400).json({
+        success: false,
+        message: "WhatsApp Cloud API is not connected.",
+      });
+    }
+
+    const { id } = req.params;
+    const { WhatsAppTemplate } = req.tenantModels;
+    const template = await WhatsAppTemplate.findById(id);
+
+    if (!template) {
+      return res.status(404).json({ success: false, message: "Template not found." });
+    }
+
+    const accessToken = decryptApiKey(cloud.accessTokenEncrypted);
+
+    // Delete on Meta
+    try {
+      await deleteMessageTemplate(
+        cloud.wabaId,
+        accessToken,
+        template.name,
+        template.metaTemplateId
+      );
+    } catch (metaErr) {
+      console.warn("Warning deleting template from Meta (may already be deleted):", metaErr.message);
+    }
+
+    // Delete from tenant DB
+    await WhatsAppTemplate.findByIdAndDelete(id);
+
+    res.status(200).json({
+      success: true,
+      message: `Template "${template.name}" deleted successfully.`,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

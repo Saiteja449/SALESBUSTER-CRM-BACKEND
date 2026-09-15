@@ -213,3 +213,131 @@ export const sendTextMessage = async ({
 export const getPhoneNumberHealth = async (phoneNumberId, accessToken) => {
   return verifyCredentials(phoneNumberId, accessToken);
 };
+
+/**
+ * Uploads a sample media file using Meta's Resumable Upload API to get a header_handle.
+ */
+export const uploadResumableMedia = async (accessToken, fileBuffer, mimeType, fileName = "sample_media") => {
+  if (!accessToken || !fileBuffer) {
+    throw new Error("accessToken and fileBuffer are required for media upload.");
+  }
+
+  // 1. Create upload session
+  const sessionUrl = `${getGraphApiBaseUrl()}/app/uploads?file_length=${fileBuffer.length}&file_type=${encodeURIComponent(
+    mimeType
+  )}&file_name=${encodeURIComponent(fileName)}`;
+
+  const sessionRes = await fetch(sessionUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  const sessionData = await sessionRes.json();
+  if (!sessionRes.ok || sessionData.error) {
+    const parsed = parseMetaError(sessionData, sessionRes.status);
+    const err = new Error(`Meta Media Session Error (${parsed.code}): ${parsed.message}`);
+    err.meta = parsed;
+    throw err;
+  }
+
+  const uploadSessionId = sessionData.id;
+  if (!uploadSessionId) {
+    throw new Error("Failed to obtain Meta upload session ID.");
+  }
+
+  // 2. Upload file binary data to obtain the handle
+  const uploadUrl = `${getGraphApiBaseUrl()}/${uploadSessionId}`;
+  const uploadRes = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `OAuth ${accessToken}`,
+      file_offset: "0",
+      "Content-Type": "application/octet-stream",
+    },
+    body: fileBuffer,
+  });
+
+  const uploadData = await uploadRes.json();
+  if (!uploadRes.ok || uploadData.error) {
+    const parsed = parseMetaError(uploadData, uploadRes.status);
+    const err = new Error(`Meta Media Upload Error (${parsed.code}): ${parsed.message}`);
+    err.meta = parsed;
+    throw err;
+  }
+
+  const handle = uploadData.h;
+  if (!handle) {
+    throw new Error("Meta upload succeeded but did not return a valid handle (h).");
+  }
+
+  return handle;
+};
+
+/**
+ * Creates a message template on Meta WhatsApp Business Account (WABA).
+ */
+export const createMessageTemplate = async (wabaId, accessToken, templateData) => {
+  if (!wabaId || !accessToken || !templateData) {
+    throw new Error("wabaId, accessToken, and templateData are required.");
+  }
+
+  const url = `${getGraphApiBaseUrl()}/${wabaId}/message_templates`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(templateData),
+  });
+
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    const parsed = parseMetaError(data, res.status);
+    const err = new Error(`Meta Template Creation Error (${parsed.code}): ${parsed.message}`);
+    err.meta = parsed;
+    throw err;
+  }
+
+  return {
+    id: data.id,
+    status: data.status || "PENDING",
+    category: data.category || templateData.category,
+  };
+};
+
+/**
+ * Deletes a message template from Meta WABA by name.
+ */
+export const deleteMessageTemplate = async (wabaId, accessToken, templateName, metaTemplateId = null) => {
+  if (!wabaId || !accessToken || !templateName) {
+    throw new Error("wabaId, accessToken, and templateName are required.");
+  }
+
+  let url = `${getGraphApiBaseUrl()}/${wabaId}/message_templates?name=${encodeURIComponent(templateName)}`;
+  if (metaTemplateId) {
+    url += `&hsm_id=${encodeURIComponent(metaTemplateId)}`;
+  }
+
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    const parsed = parseMetaError(data, res.status);
+    const err = new Error(`Meta Template Deletion Error (${parsed.code}): ${parsed.message}`);
+    err.meta = parsed;
+    throw err;
+  }
+
+  return {
+    success: true,
+  };
+};
+

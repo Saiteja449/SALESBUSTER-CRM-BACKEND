@@ -1,4 +1,5 @@
 import express from "express";
+import multer from "multer";
 import { protect } from "../middleware/authMiddleware.js";
 import {
   getCloudStatus,
@@ -6,6 +7,8 @@ import {
   disconnectCloudAccount,
   syncTemplates,
   getTemplates,
+  createTemplate,
+  deleteTemplate,
   estimateAudience,
 } from "../controllers/whatsappCloudController.js";
 import {
@@ -23,6 +26,12 @@ import {
 
 const router = express.Router();
 
+// Memory upload handler for template sample media files (Image, Video, Document)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB max
+});
+
 // All WhatsApp Cloud routes require authentication
 router.use(protect);
 
@@ -33,6 +42,8 @@ router.post("/disconnect", disconnectCloudAccount);
 
 // 2. Templates
 router.get("/templates", getTemplates);
+router.post("/templates", upload.single("sampleFile"), createTemplate);
+router.delete("/templates/:id", deleteTemplate);
 router.post("/templates/sync", syncTemplates);
 
 // 3. Audience Estimation
