@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import {
   normalizePhoneNumber,
   buildLeadAudienceQuery,
@@ -49,7 +50,14 @@ export const createCampaign = async (req, res) => {
       autoStart,
     } = req.body;
 
-    if (!name || !templateId) {
+    const resolvedTemplateId =
+      templateId ||
+      req.body.templateId ||
+      req.body.template?.id ||
+      req.body.template?._id ||
+      req.body.template?.metaTemplateId;
+
+    if (!name || !resolvedTemplateId) {
       return res.status(400).json({
         success: false,
         message: "Campaign name and templateId are required.",
@@ -64,10 +72,25 @@ export const createCampaign = async (req, res) => {
       Lead,
     } = req.tenantModels;
 
-    // 1. Validate template
-    const template = await WhatsAppTemplate.findById(templateId);
+    // 1. Validate template (support MongoDB _id, metaTemplateId, or name)
+    let template = null;
+    if (mongoose.Types.ObjectId.isValid(resolvedTemplateId)) {
+      template = await WhatsAppTemplate.findById(resolvedTemplateId);
+    }
     if (!template) {
-      return res.status(404).json({ success: false, message: "Template not found." });
+      template = await WhatsAppTemplate.findOne({
+        $or: [
+          { metaTemplateId: String(resolvedTemplateId) },
+          { name: String(resolvedTemplateId) },
+        ],
+      });
+    }
+
+    if (!template) {
+      return res.status(404).json({
+        success: false,
+        message: `Template "${resolvedTemplateId}" not found. Please re-sync or select an approved template.`,
+      });
     }
 
     // 2. Fetch opt-out list
