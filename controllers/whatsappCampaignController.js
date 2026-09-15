@@ -4,6 +4,11 @@ import {
   buildLeadAudienceQuery,
 } from "./whatsappCloudController.js";
 import { processCampaignQueue } from "../services/whatsappCampaignWorker.js";
+import {
+  buildCronExpression,
+  calculateNextRun,
+  executeScheduledRun,
+} from "../services/whatsappCronScheduler.js";
 import { getIO } from "../socket/socket.js";
 
 /**
@@ -152,13 +157,90 @@ export const createCampaign = async (req, res) => {
       });
     }
 
-    // 5. Create Campaign Record (Immediate dispatch or draft)
+    // 5. Handle Automated Campaign Setup
+    const isAutomated =
+      req.body.campaignType === "automated" ||
+      (req.body.schedule && req.body.schedule.frequency);
+
+    if (isAutomated) {
+      const scheduleInput = req.body.schedule || {};
+      const cronExpression = buildCronExpression(scheduleInput);
+      const nextRunAt = calculateNextRun(scheduleInput, new Date());
+
+      const campaign = await WhatsAppCampaign.create({
+        name: name.trim(),
+        campaignType: "automated",
+        templateId: template._id,
+        templateName: template.name,
+        templateLanguage: template.language || "en_US",
+        variableMappings: variableMappings || [],
+        headerMedia: headerMedia || null,
+        audienceCriteria: audienceCriteria || {},
+        schedule: {
+          startDate: scheduleInput.startDate ? new Date(scheduleInput.startDate) : new Date(),
+          timeOfDay: scheduleInput.timeOfDay || "10:00",
+          frequency: scheduleInput.frequency || "once",
+          daysOfWeek: Array.isArray(scheduleInput.daysOfWeek) ? scheduleInput.daysOfWeek : [1],
+          cronExpression,
+          dayOfMonth: scheduleInput.dayOfMonth || 1,
+          intervalDays: scheduleInput.intervalDays || 1,
+          endCondition: scheduleInput.endCondition || "indefinite",
+          endDate: scheduleInput.endDate ? new Date(scheduleInput.endDate) : null,
+          maxRuns: Number(scheduleInput.maxRuns) || 0,
+          currentRunCount: 0,
+          nextRunAt,
+          lastRunAt: null,
+        },
+        audiencePolicy: req.body.audiencePolicy || {
+          mode: "cooldown",
+          cooldownDays: 7,
+        },
+        status: "Scheduled",
+        messagesPerSecond: messagesPerSecond
+          ? Math.min(80, Math.max(1, parseInt(messagesPerSecond)))
+          : req.organization.whatsappCloudSettings?.messagesPerSecond || 5,
+        totalRecipients: recipientDocs.length,
+        queuedCount: 0,
+        skippedCount,
+        startedAt: null,
+        createdBy: req.user?._id || null,
+        createdByName: req.user?.name || "Agent",
+      });
+
+      // If autoStart is requested and nextRunAt is now or past, immediately run first iteration
+      if (autoStart && nextRunAt <= new Date()) {
+        const orgId = req.organization._id.toString();
+        const tenantDb = req.tenantDbName;
+        executeScheduledRun(campaign._id, tenantDb, orgId).catch((err) =>
+          console.error(`[CampaignController] Auto-start run error for ${campaign._id}:`, err)
+        );
+      }
+
+      const io = getIO();
+      if (io) {
+        io.to(`org_${req.organization._id}`).emit("campaign_scheduled", {
+          campaignId: campaign._id,
+          name: campaign.name,
+          nextRunAt,
+          frequency: scheduleInput.frequency || "once",
+        });
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: `Automated campaign scheduled successfully. Next execution: ${nextRunAt ? nextRunAt.toLocaleString() : "Pending"}`,
+        campaign,
+      });
+    }
+
+    // 6. Create One-Time Campaign Record (Immediate dispatch or draft)
     const shouldStartNow = !!autoStart || req.body.status === "Running";
     const campaignStatus = shouldStartNow ? "Running" : "Draft";
     const startedAt = shouldStartNow ? new Date() : null;
 
     const campaign = await WhatsAppCampaign.create({
       name: name.trim(),
+      campaignType: "one_time",
       templateId: template._id,
       templateName: template.name,
       templateLanguage: template.language || "en_US",
@@ -177,17 +259,18 @@ export const createCampaign = async (req, res) => {
       createdByName: req.user?.name || "Agent",
     });
 
-    // 6. Bulk write recipients attached to campaign._id
+    // Bulk write recipients attached to campaign._id
     const recipientInsertBatch = recipientDocs.map((r) => ({
       ...r,
       campaignId: campaign._id,
+      runNumber: 1,
     }));
 
     await WhatsAppCampaignRecipient.insertMany(recipientInsertBatch, {
       ordered: false,
     });
 
-    // 7. If autoStart, immediately launch worker
+    // If autoStart, immediately launch worker
     if (shouldStartNow) {
       const orgId = req.organization._id.toString();
       const tenantDb = req.tenantDbName;
@@ -619,3 +702,95 @@ export const getCampaignAnalytics = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Manually triggers an immediate run of a scheduled campaign without disrupting its recurring schedule.
+ */
+export const triggerScheduledRun = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { WhatsAppCampaign } = req.tenantModels;
+    const campaign = await WhatsAppCampaign.findById(id);
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: "Campaign not found." });
+    }
+
+    const tenantDb = req.tenantDbName;
+    const orgId = req.organization._id.toString();
+
+    // Trigger execution in background
+    executeScheduledRun(campaign._id, tenantDb, orgId).catch((err) =>
+      console.error(`[CampaignController] Manual trigger error for ${id}:`, err)
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `Manual run triggered for '${campaign.name}'.`,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Toggles the automated schedule between Scheduled and Paused.
+ */
+export const togglePauseSchedule = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { WhatsAppCampaign } = req.tenantModels;
+    const campaign = await WhatsAppCampaign.findById(id);
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: "Campaign not found." });
+    }
+
+    if (campaign.status === "Scheduled") {
+      campaign.status = "Paused";
+      await campaign.save();
+
+      const io = getIO();
+      if (io) {
+        io.to(`org_${req.organization._id}`).emit("campaign_paused", {
+          campaignId: campaign._id,
+          name: campaign.name,
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Automated schedule paused.",
+        data: campaign,
+      });
+    } else if (campaign.status === "Paused") {
+      // Resume schedule and recalculate upcoming nextRunAt
+      const nextRun = calculateNextRun(campaign.schedule || {}, new Date());
+      campaign.status = "Scheduled";
+      if (!campaign.schedule) campaign.schedule = {};
+      campaign.schedule.nextRunAt = nextRun;
+      await campaign.save();
+
+      const io = getIO();
+      if (io) {
+        io.to(`org_${req.organization._id}`).emit("campaign_resumed", {
+          campaignId: campaign._id,
+          name: campaign.name,
+          nextRunAt: nextRun,
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: `Automated schedule resumed. Next run: ${nextRun.toLocaleString()}`,
+        data: campaign,
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot toggle schedule for campaign with status '${campaign.status}'.`,
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+

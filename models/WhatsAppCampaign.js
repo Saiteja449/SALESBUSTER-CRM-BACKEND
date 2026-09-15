@@ -77,12 +77,95 @@ const audienceCriteriaSubSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const scheduleSubSchema = new mongoose.Schema(
+  {
+    startDate: {
+      type: Date,
+      default: null,
+    },
+    timeOfDay: {
+      type: String,
+      default: "10:00", // HH:mm in 24hr format
+    },
+    frequency: {
+      type: String,
+      enum: ["once", "daily", "weekly", "monthly", "custom"],
+      default: "once",
+    },
+    daysOfWeek: [
+      {
+        type: Number, // 0 = Sun, 1 = Mon, ..., 6 = Sat
+      },
+    ],
+    cronExpression: {
+      type: String,
+      default: "", // e.g. "0 10 * * 1"
+    },
+    intervalDays: {
+      type: Number,
+      default: 1,
+    },
+    dayOfMonth: {
+      type: Number,
+      default: 1,
+    },
+    endCondition: {
+      type: String,
+      enum: ["indefinite", "until_date", "max_runs"],
+      default: "indefinite",
+    },
+    endDate: {
+      type: Date,
+      default: null,
+    },
+    maxRuns: {
+      type: Number,
+      default: 0,
+    },
+    currentRunCount: {
+      type: Number,
+      default: 0,
+    },
+    nextRunAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    lastRunAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const audiencePolicySubSchema = new mongoose.Schema(
+  {
+    mode: {
+      type: String,
+      enum: ["new_leads_only", "cooldown", "all_matching"],
+      default: "cooldown",
+    },
+    cooldownDays: {
+      type: Number,
+      default: 7,
+    },
+  },
+  { _id: false }
+);
+
 const whatsAppCampaignSchema = new mongoose.Schema(
   {
     name: {
       type: String,
       required: true,
       trim: true,
+    },
+    campaignType: {
+      type: String,
+      enum: ["one_time", "automated"],
+      default: "one_time",
+      index: true,
     },
     templateId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -118,10 +201,19 @@ const whatsAppCampaignSchema = new mongoose.Schema(
       type: audienceCriteriaSubSchema,
       default: () => ({}),
     },
+    schedule: {
+      type: scheduleSubSchema,
+      default: () => ({}),
+    },
+    audiencePolicy: {
+      type: audiencePolicySubSchema,
+      default: () => ({}),
+    },
     status: {
       type: String,
       enum: [
         "Draft",
+        "Scheduled",
         "Queued",
         "Running",
         "Paused",
@@ -187,6 +279,8 @@ const whatsAppCampaignSchema = new mongoose.Schema(
 );
 
 whatsAppCampaignSchema.index({ status: 1, createdAt: -1 });
+whatsAppCampaignSchema.index({ status: 1, "schedule.nextRunAt": 1 });
+whatsAppCampaignSchema.index({ campaignType: 1, status: 1 });
 
 whatsAppCampaignSchema.set("toJSON", {
   virtuals: true,

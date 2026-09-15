@@ -22,6 +22,8 @@ import {
   retryFailedRecipients,
   getCampaignRecipients,
   getCampaignAnalytics,
+  triggerScheduledRun,
+  togglePauseSchedule,
 } from "../controllers/whatsappCampaignController.js";
 
 const router = express.Router();
@@ -58,6 +60,8 @@ router.post("/campaigns/:id/pause", pauseCampaign);
 router.post("/campaigns/:id/resume", resumeCampaign);
 router.post("/campaigns/:id/cancel", cancelCampaign);
 router.post("/campaigns/:id/retry-failed", retryFailedRecipients);
+router.post("/campaigns/:id/trigger-run", triggerScheduledRun);
+router.post("/campaigns/:id/toggle-schedule", togglePauseSchedule);
 
 // 5. Recipients & Analytics
 router.get("/campaigns/:id/recipients", getCampaignRecipients);

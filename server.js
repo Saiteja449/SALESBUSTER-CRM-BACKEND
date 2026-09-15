@@ -30,6 +30,7 @@ import whatsappWebhookRoutes from "./routes/whatsappWebhookRoutes.js";
 import { initSocket } from "./socket/socket.js";
 import { initAllOrganizationWhatsAppConnections } from "./whatsapp/whatsappService.js";
 import { resumeInterruptedCampaigns } from "./services/whatsappCampaignWorker.js";
+import { initCronScheduler } from "./services/whatsappCronScheduler.js";
 
 dotenv.config();
 
@@ -117,4 +118,7 @@ server.listen(PORT, () => {
 
   // Resume any interrupted WhatsApp Cloud campaigns
   resumeInterruptedCampaigns();
+
+  // Initialize node-cron automated campaign scheduler
+  initCronScheduler();
 });

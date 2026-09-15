@@ -69,6 +69,11 @@ const whatsAppCampaignRecipientSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    runNumber: {
+      type: Number,
+      default: 1,
+      index: true,
+    },
     sentAt: {
       type: Date,
       default: null,
@@ -89,9 +94,9 @@ const whatsAppCampaignRecipientSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Compound unique index to prevent duplicate recipient numbers in the same campaign
+// Compound unique index to prevent duplicate recipient numbers in the same campaign run
 whatsAppCampaignRecipientSchema.index(
-  { campaignId: 1, recipientPhone: 1 },
+  { campaignId: 1, recipientPhone: 1, runNumber: 1 },
   { unique: true }
 );
 
