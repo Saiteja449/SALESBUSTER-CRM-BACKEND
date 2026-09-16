@@ -25,6 +25,7 @@ import organizationRoutes from "./routes/organizationRoutes.js";
 import staticChatRoutes from "./routes/staticChatRoutes.js";
 import whatsappCloudRoutes from "./routes/whatsappCloudRoutes.js";
 import whatsappWebhookRoutes from "./routes/whatsappWebhookRoutes.js";
+import appReleaseRoutes from "./routes/appReleaseRoutes.js";
 
 // Socket & WhatsApp Imports
 import { initSocket } from "./socket/socket.js";
@@ -93,6 +94,8 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/followups", followupRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/mobile-app", mobileAppRoutes);
+app.use("/api/mobile-app/apk", appReleaseRoutes);
+app.use("/api/app-release", appReleaseRoutes);
 app.use("/api/static-chat", staticChatRoutes);
 
 // Base route

@@ -474,13 +474,100 @@ curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
 
 ---
 
+## 10. Upload & Manage Mobile App APK (`POST /api/app-release/upload`)
+
+Uploads a new Android application package (`.apk`). **Every time a new APK is uploaded, the backend automatically deletes the previous APK file from disk to conserve storage space, purges obsolete records, and stores the new release.**
+
+### Endpoints:
+- `POST /api/app-release/upload` (Recommended)
+- `POST /api/mobile-app/apk/upload` (Mobile-app namespace alias)
+
+### Headers:
+- `Content-Type: multipart/form-data`
+- `Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>` OR `x-admin-key: salesbuster_super_admin_secret_key_2026`
+
+### Form-Data Fields:
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `file` (or `apk`) | File (binary) | **Yes** | The `.apk` application binary (up to 200 MB). |
+| `version` | Text | No | Semantic version string (e.g. `"1.0.4"`). Defaults to `"1.0.0"`. |
+| `versionCode` | Number | No | Android numeric build number (e.g. `4`). Defaults to `1`. |
+| `minSupportedVersion` | Text | No | Minimum app version required (e.g. `"1.0.0"`). |
+| `releaseNotes` | Text | No | Description of changes, bug fixes, or new features. |
+
+### cURL Request (Using Super Admin JWT):
+```bash
+curl -X POST https://api.salesbuster.ai/api/app-release/upload \
+  -H "Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>" \
+  -F "file=@/path/to/app-release.apk" \
+  -F "version=1.0.4" \
+  -F "versionCode=4" \
+  -F "releaseNotes=Added background call recording and real-time lead sync."
+```
+
+### Alternative cURL Request (Using Admin API Key):
+```bash
+curl -X POST https://api.salesbuster.ai/api/app-release/upload \
+  -H "x-admin-key: salesbuster_super_admin_secret_key_2026" \
+  -F "file=@/path/to/app-release.apk" \
+  -F "version=1.0.4" \
+  -F "versionCode=4" \
+  -F "releaseNotes=Added background call recording and real-time lead sync."
+```
+
+### Success Response (`201 Created`):
+```json
+{
+  "success": true,
+  "message": "New APK (version 1.0.4) uploaded successfully. Previous APK has been replaced.",
+  "data": {
+    "_id": "6701a2b3c4d5e6f7a8b9c0d1",
+    "version": "1.0.4",
+    "versionCode": 4,
+    "minSupportedVersion": "1.0.0",
+    "releaseNotes": "Added background call recording and real-time lead sync.",
+    "originalName": "app-release.apk",
+    "fileName": "1726501234567-app_release.apk",
+    "fileSize": 45218900,
+    "fileSizeFormatted": "43.12 MB",
+    "downloadUrl": "https://api.salesbuster.ai/api/mobile-app/apk/download",
+    "fileUrl": "https://api.salesbuster.ai/uploads/apk/1726501234567-app_release.apk",
+    "uploadedByName": "Super Admin",
+    "uploadedAt": "2026-09-16T17:35:00.000Z"
+  }
+}
+```
+
+---
+
+### Check Current Uploaded APK Info (`GET /api/app-release/latest`)
+Returns the active release metadata for administrative dashboards or mobile in-app update prompts:
+```bash
+curl -X GET https://api.salesbuster.ai/api/app-release/latest
+```
+
+### Direct Download Endpoint for Android Devices (`GET /api/mobile-app/apk/download`)
+Triggers an immediate file download of the `.apk` on Android phones/browsers with `application/vnd.android.package-archive`:
+```bash
+curl -O -J https://api.salesbuster.ai/api/mobile-app/apk/download
+```
+
+### Delete Active APK (`DELETE /api/app-release`)
+Removes the current APK file from disk and clears the database record:
+```bash
+curl -X DELETE https://api.salesbuster.ai/api/app-release \
+  -H "x-admin-key: salesbuster_super_admin_secret_key_2026"
+```
+
+---
+
 ## Error Handling Reference
 
 | Status Code | Description | Example Response |
 |---|---|---|
-| `400 Bad Request` | Missing required fields, invalid limit value, or duplicate email | `{"success": false, "message": "whatsappLineLimit must be 1 (Single Line) or 2 (Dual Lines)."}` |
+| `400 Bad Request` | Missing required fields, non-apk file, or file >200MB | `{"success": false, "message": "Only .apk files are allowed."}` |
 | `401 Unauthorized` | Missing or invalid auth token/key | `{"success": false, "message": "Not authorized, token failed"}` |
-| `403 Forbidden` | Super Admin privileges required or limit reached | `{"success": false, "message": "Access forbidden: Super Administrator privileges required"}` |
-| `404 Not Found` | Organization not found | `{"success": false, "message": "Organization not found"}` |
-| `500 Server Error`| Internal error during provisioning/database switch | `{"success": false, "message": "Server error while provisioning organization"}` |
+| `403 Forbidden` | Super Admin privileges required | `{"success": false, "message": "Access forbidden: Super Administrator privileges required"}` |
+| `404 Not Found` | No APK uploaded yet | `{"success": false, "message": "No APK release has been uploaded yet."}` |
+| `500 Server Error`| Disk write or database error | `{"success": false, "message": "Server error while processing APK upload"}` |
 
