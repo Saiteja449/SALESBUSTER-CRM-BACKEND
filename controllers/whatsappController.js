@@ -60,31 +60,50 @@ export const getStatus = async (req, res) => {
 
     const memoryStatuses = getWhatsAppStatus(orgId);
     const targetSessionId = orgId ? `org_${orgId}` : req.query.sessionId || "device_1";
-    const dbSessions = await WhatsAppSessionModel.find(orgId ? { sessionId: targetSessionId } : {});
 
-    let result = memoryStatuses.map((mem) => {
-      const db = dbSessions.find((s) => s.sessionId === mem.sessionId);
-      const status = mem.status || db?.status || "disconnected";
+    // Query all sessions present in the tenant database (supports primary + secondary devices)
+    const dbSessions = await WhatsAppSessionModel.find(
+      orgId
+        ? {
+            $or: [
+              { sessionId: targetSessionId },
+              { sessionId: new RegExp(`^org_${orgId}`) },
+              { sessionId: "device_1" },
+              { sessionId: "device_2" },
+            ],
+          }
+        : {}
+    );
+
+    // Merge in-memory active statuses with database records so all devices are accurately reflected
+    const allSessionIds = new Set([
+      ...memoryStatuses.map((m) => m.sessionId),
+      ...dbSessions.map((d) => d.sessionId),
+    ]);
+
+    let result = Array.from(allSessionIds).map((sId) => {
+      const mem = memoryStatuses.find((m) => m.sessionId === sId);
+      const db = dbSessions.find((d) => d.sessionId === sId);
+      const status = mem?.status || db?.status || "disconnected";
       return {
-        sessionId: mem.sessionId,
-        organizationId: mem.organizationId || orgId,
+        sessionId: sId,
+        organizationId: mem?.organizationId || orgId,
         status: status,
-        qrCode: status === "qr" ? mem.qrCode || db?.qrCode || "" : "",
-        connectedPhone: mem.connectedPhone || db?.connectedPhone || "",
-        connectedName: mem.connectedName || db?.connectedName || "",
+        qrCode: status === "qr" ? mem?.qrCode || db?.qrCode || "" : "",
+        connectedPhone: mem?.connectedPhone || db?.connectedPhone || "",
+        connectedName: mem?.connectedName || db?.connectedName || "",
       };
     });
 
     if (result.length === 0 && orgId) {
-      const db = dbSessions.find((s) => s.sessionId === targetSessionId);
       result = [
         {
           sessionId: targetSessionId,
           organizationId: orgId,
-          status: db?.status || "disconnected",
-          qrCode: db?.qrCode || "",
-          connectedPhone: db?.connectedPhone || "",
-          connectedName: db?.connectedName || "",
+          status: "disconnected",
+          qrCode: "",
+          connectedPhone: "",
+          connectedName: "",
         },
       ];
     }

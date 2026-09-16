@@ -82,9 +82,10 @@ export const getModelsForSession = async (sessionId) => {
       console.error(`[WhatsApp] Failed to resolve tenantDbName for org ${sessionData.organizationId}:`, err);
     }
   }
-  // Try to parse orgId from standard naming convention "org_<orgId>"
+  // Try to parse orgId from standard naming convention "org_<orgId>" (e.g. org_<orgId> or org_<orgId>_device_2)
   if (sessionId && sessionId.startsWith("org_")) {
-    const orgId = sessionId.replace("org_", "");
+    const match = sessionId.match(/^org_([a-fA-F0-9]{24})/);
+    const orgId = match ? match[1] : sessionId.replace("org_", "");
     try {
       const { Organization } = getMasterModels();
       const org = await Organization.findById(orgId);
@@ -1333,7 +1334,10 @@ export const getWhatsAppStatus = (organizationId = null) => {
   if (organizationId) {
     const orgStr = organizationId.toString();
     list = list.filter(
-      (s) => s.organizationId === orgStr || s.sessionId === `org_${orgStr}`,
+      (s) =>
+        s.organizationId === orgStr ||
+        s.sessionId === `org_${orgStr}` ||
+        s.sessionId?.startsWith(`org_${orgStr}`)
     );
   }
 
@@ -1826,23 +1830,25 @@ export const initAllOrganizationWhatsAppConnections = async () => {
     for (const org of organizations) {
       try {
         const orgId = org._id.toString();
-        const sessionId = `org_${orgId}`;
+        const defaultSessionId = `org_${orgId}`;
         const tenantDbName = org.tenantDbName;
         const models = getTenantModels(tenantDbName);
 
-        // Check if credentials exist for this org in its tenant DB
-        const existingCreds = await models.WhatsAppAuthState.findOne({
-          sessionId,
-          type: "creds",
-        });
+        // Find all saved credentials in this tenant's WhatsAppAuthState (supports multiple connected devices)
+        const allCreds = await models.WhatsAppAuthState.find({ type: "creds" });
 
-        if (existingCreds) {
-          console.log(`[WhatsApp] Found existing credentials for organization "${org.name}" (${sessionId}). Auto-connecting...`);
-          await connectWhatsApp({
-            sessionId,
-            organizationId: orgId,
-            tenantDbName,
-          });
+        if (allCreds && allCreds.length > 0) {
+          for (const cred of allCreds) {
+            const sId = cred.sessionId || defaultSessionId;
+            console.log(
+              `[WhatsApp] Found existing credentials for organization "${org.name}" (${sId}). Auto-connecting...`
+            );
+            await connectWhatsApp({
+              sessionId: sId,
+              organizationId: orgId,
+              tenantDbName,
+            });
+          }
         } else {
           console.log(`[WhatsApp] No saved session credentials for organization "${org.name}". Ready for linking.`);
         }
