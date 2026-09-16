@@ -21,6 +21,7 @@ import WhatsAppCampaignRecipient from "../models/WhatsAppCampaignRecipient.js";
 import WhatsAppOptOut from "../models/WhatsAppOptOut.js";
 import Organization, { organizationSchema } from "../models/Organization.js";
 import AuthUser, { authUserSchema } from "../models/AuthUser.js";
+import AppRelease, { appReleaseSchema } from "../models/AppRelease.js";
 
 /**
  * Gets master database connection and models
@@ -34,10 +35,14 @@ export const getMasterModels = () => {
     masterDb.model("Organization", organizationSchema);
   const MasterAuthUser =
     masterDb.models.AuthUser || masterDb.model("AuthUser", authUserSchema);
+  const MasterAppRelease =
+    masterDb.models.AppRelease ||
+    masterDb.model("AppRelease", appReleaseSchema);
 
   return {
     Organization: MasterOrg,
     AuthUser: MasterAuthUser,
+    AppRelease: MasterAppRelease,
     masterDb,
   };
 };

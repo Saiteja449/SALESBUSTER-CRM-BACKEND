@@ -77,6 +77,8 @@ export const provisionOrganization = async (req, res) => {
       months,
       subscriptionStartDate,
       notes,
+      whatsappLineLimit,
+      whatsappConnectionMode,
     } = req.body;
 
     // 1. Validate required fields
@@ -182,6 +184,17 @@ export const provisionOrganization = async (req, res) => {
       status: "active",
       tenantDbName,
       notes: notes || "",
+      whatsappLineLimit: (() => {
+        if (whatsappLineLimit != null) {
+          const parsed = parseInt(whatsappLineLimit, 10);
+          if (parsed === 1 || parsed === 2) return parsed;
+        }
+        if (whatsappConnectionMode) {
+          const mode = String(whatsappConnectionMode).toLowerCase().trim();
+          if (mode === "double" || mode === "dual" || mode === "2") return 2;
+        }
+        return 1;
+      })(),
       aiSettings: getDefaultAISettings(name.trim()),
       createdBy: req.user?._id || null,
     });
@@ -300,6 +313,8 @@ export const getOrganizations = async (req, res) => {
 
         return {
           ...org.toJSON(),
+          whatsappLineLimit: org.whatsappLineLimit || 1,
+          whatsappConnectionMode: (org.whatsappLineLimit || 1) === 2 ? "double" : "single",
           usedSeats,
           remainingSeats: Math.max(0, org.seats - usedSeats),
           isExpired: !!isExpired,
@@ -353,6 +368,8 @@ export const getOrganizationById = async (req, res) => {
       success: true,
       data: {
         ...org.toJSON(),
+        whatsappLineLimit: org.whatsappLineLimit || 1,
+        whatsappConnectionMode: (org.whatsappLineLimit || 1) === 2 ? "double" : "single",
         usedSeats,
         remainingSeats: Math.max(0, org.seats - usedSeats),
         isExpired: !!isExpired,
@@ -578,6 +595,82 @@ export const toggleStatus = async (req, res) => {
   }
 };
 
+// @desc    Update organization WhatsApp line limit (1 = Single, 2 = Dual)
+// @route   PUT /api/organizations/:id/whatsapp-limit
+// @access  Protected (Super Admin)
+export const updateOrganizationWhatsAppLimit = async (req, res) => {
+  try {
+    let { whatsappLineLimit, whatsappConnectionMode } = req.body;
+
+    // Accept "single" / "double" aliases
+    if (!whatsappLineLimit && whatsappConnectionMode) {
+      const mode = String(whatsappConnectionMode).toLowerCase().trim();
+      if (mode === "single" || mode === "1") whatsappLineLimit = 1;
+      else if (mode === "double" || mode === "dual" || mode === "2") whatsappLineLimit = 2;
+    }
+
+    const limit = parseInt(whatsappLineLimit, 10);
+    if (![1, 2].includes(limit)) {
+      return res.status(400).json({
+        success: false,
+        message: "whatsappLineLimit must be 1 (Single Line) or 2 (Dual Lines). You can also pass whatsappConnectionMode: 'single' or 'double'.",
+      });
+    }
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(req.params.id);
+
+    if (!org) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found",
+      });
+    }
+
+    const previousLimit = org.whatsappLineLimit || 1;
+    org.whatsappLineLimit = limit;
+    await org.save();
+
+    // If downgrading from 2 → 1, disconnect secondary session if active
+    if (previousLimit === 2 && limit === 1) {
+      try {
+        const { logoutWhatsApp } = await import("../whatsapp/whatsappService.js");
+        const secondarySessionId = `org_${org._id}_device_2`;
+        await logoutWhatsApp(secondarySessionId);
+        console.log(`[WhatsApp] Auto-disconnected secondary session ${secondarySessionId} after line limit downgrade for org "${org.name}".`);
+      } catch (disconnectErr) {
+        // Non-fatal — session may not have been active
+        console.warn(`[WhatsApp] Could not disconnect secondary session for org "${org.name}":`, disconnectErr.message);
+      }
+    }
+
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit("organization_updated", {
+        ...org.toJSON(),
+        whatsappLineLimit: limit,
+        whatsappConnectionMode: limit === 2 ? "double" : "single",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `WhatsApp line limit updated to ${limit} (${limit === 2 ? "Dual Lines" : "Single Line"}) for organization "${org.name}".`,
+      data: {
+        ...org.toJSON(),
+        whatsappLineLimit: limit,
+        whatsappConnectionMode: limit === 2 ? "double" : "single",
+      },
+    });
+  } catch (error) {
+    console.error("Error updating WhatsApp line limit:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error while updating WhatsApp line limit",
+    });
+  }
+};
+
 // @desc    Resend Welcome Email / regenerate credentials
 // @route   POST /api/organizations/:id/resend-welcome
 // @access  Protected (Super Admin)
@@ -725,6 +818,8 @@ export const getMyOrganization = async (req, res) => {
       success: true,
       data: {
         ...orgJson,
+        whatsappLineLimit: org.whatsappLineLimit || 1,
+        whatsappConnectionMode: (org.whatsappLineLimit || 1) === 2 ? "double" : "single",
         usedSeats,
         salesPersonCount: usedSeats,
         hasSalesPerson,

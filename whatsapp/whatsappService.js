@@ -82,9 +82,10 @@ export const getModelsForSession = async (sessionId) => {
       console.error(`[WhatsApp] Failed to resolve tenantDbName for org ${sessionData.organizationId}:`, err);
     }
   }
-  // Try to parse orgId from standard naming convention "org_<orgId>"
+  // Try to parse orgId from standard naming convention "org_<orgId>" (e.g. org_<orgId> or org_<orgId>_device_2)
   if (sessionId && sessionId.startsWith("org_")) {
-    const orgId = sessionId.replace("org_", "");
+    const match = sessionId.match(/^org_([a-fA-F0-9]{24})/);
+    const orgId = match ? match[1] : sessionId.replace("org_", "");
     try {
       const { Organization } = getMasterModels();
       const org = await Organization.findById(orgId);
@@ -134,6 +135,10 @@ const updateSessionStatus = async (
   sessions[sessionId].qrCode = qr;
   if (phone) sessions[sessionId].connectedPhone = phone;
   if (name) sessions[sessionId].connectedName = name;
+  if (!sessions[sessionId].organizationId && sessionId.startsWith("org_")) {
+    const match = sessionId.match(/^org_([a-fA-F0-9]{24})/);
+    if (match) sessions[sessionId].organizationId = match[1];
+  }
 
   try {
     const models = await getModelsForSession(sessionId);
@@ -1332,8 +1337,10 @@ export const getWhatsAppStatus = (organizationId = null) => {
 
   if (organizationId) {
     const orgStr = organizationId.toString();
+    const primaryId = `org_${orgStr}`;
+    const secondaryId = `org_${orgStr}_device_2`;
     list = list.filter(
-      (s) => s.organizationId === orgStr || s.sessionId === `org_${orgStr}`,
+      (s) => s.sessionId === primaryId || s.sessionId === secondaryId
     );
   }
 
@@ -1826,23 +1833,30 @@ export const initAllOrganizationWhatsAppConnections = async () => {
     for (const org of organizations) {
       try {
         const orgId = org._id.toString();
-        const sessionId = `org_${orgId}`;
-        const tenantDbName = org.tenantDbName;
-        const models = getTenantModels(tenantDbName);
+        const lineLimit = org.whatsappLineLimit || 1;
+        const primarySessionId = `org_${orgId}`;
+        const secondarySessionId = `org_${orgId}_device_2`;
+        const allowedSessions = lineLimit >= 2
+          ? [primarySessionId, secondarySessionId]
+          : [primarySessionId];
 
-        // Check if credentials exist for this org in its tenant DB
-        const existingCreds = await models.WhatsAppAuthState.findOne({
-          sessionId,
+        // Find saved credentials for this organization (respecting line limit)
+        const validCreds = await models.WhatsAppAuthState.find({
+          sessionId: { $in: allowedSessions },
           type: "creds",
         });
 
-        if (existingCreds) {
-          console.log(`[WhatsApp] Found existing credentials for organization "${org.name}" (${sessionId}). Auto-connecting...`);
-          await connectWhatsApp({
-            sessionId,
-            organizationId: orgId,
-            tenantDbName,
-          });
+        if (validCreds && validCreds.length > 0) {
+          for (const cred of validCreds) {
+            console.log(
+              `[WhatsApp] Found existing credentials for organization "${org.name}" (${cred.sessionId}). Auto-connecting...`
+            );
+            await connectWhatsApp({
+              sessionId: cred.sessionId,
+              organizationId: orgId,
+              tenantDbName,
+            });
+          }
         } else {
           console.log(`[WhatsApp] No saved session credentials for organization "${org.name}". Ready for linking.`);
         }

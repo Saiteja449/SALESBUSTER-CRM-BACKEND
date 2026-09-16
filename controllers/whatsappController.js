@@ -33,7 +33,40 @@ export const connectClient = async (req, res) => {
         ? req.organization._id.toString()
         : req.body.organizationId || null;
     const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
-    const targetSessionId = orgId ? `org_${orgId}` : req.body.sessionId || "device_1";
+
+    // Determine organization's allowed WhatsApp line limit
+    let lineLimit = 2; // default fallback
+    if (orgId) {
+      try {
+        const { Organization } = getMasterModels();
+        const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
+        if (org) lineLimit = org.whatsappLineLimit || 1;
+      } catch (e) {}
+    }
+    
+    let targetSessionId;
+    if (orgId) {
+      const isDevice2 = req.body.device === 2 || req.body.deviceNumber === 2 || req.body.isSecondary;
+      const allowedSessionIds = lineLimit >= 2
+        ? [`org_${orgId}`, `org_${orgId}_device_2`]
+        : [`org_${orgId}`];
+
+      if (isDevice2 && lineLimit < 2) {
+        return res.status(403).json({
+          message: "This organization is restricted to a Single WhatsApp Line. Upgrade to Dual Lines to connect a second device.",
+        });
+      }
+
+      if (req.body.sessionId && allowedSessionIds.includes(req.body.sessionId)) {
+        targetSessionId = req.body.sessionId;
+      } else if (isDevice2) {
+        targetSessionId = `org_${orgId}_device_2`;
+      } else {
+        targetSessionId = `org_${orgId}`;
+      }
+    } else {
+      targetSessionId = req.body.sessionId || (req.body.device === 2 ? "device_2" : "device_1");
+    }
 
     connectWhatsApp({
       sessionId: targetSessionId,
@@ -58,38 +91,89 @@ export const getStatus = async (req, res) => {
         ? req.organization._id.toString()
         : null;
 
-    const memoryStatuses = getWhatsAppStatus(orgId);
-    const targetSessionId = orgId ? `org_${orgId}` : req.query.sessionId || "device_1";
-    const dbSessions = await WhatsAppSessionModel.find(orgId ? { sessionId: targetSessionId } : {});
-
-    let result = memoryStatuses.map((mem) => {
-      const db = dbSessions.find((s) => s.sessionId === mem.sessionId);
-      const status = mem.status || db?.status || "disconnected";
-      return {
-        sessionId: mem.sessionId,
-        organizationId: mem.organizationId || orgId,
-        status: status,
-        qrCode: status === "qr" ? mem.qrCode || db?.qrCode || "" : "",
-        connectedPhone: mem.connectedPhone || db?.connectedPhone || "",
-        connectedName: mem.connectedName || db?.connectedName || "",
-      };
-    });
-
-    if (result.length === 0 && orgId) {
-      const db = dbSessions.find((s) => s.sessionId === targetSessionId);
-      result = [
-        {
-          sessionId: targetSessionId,
-          organizationId: orgId,
-          status: db?.status || "disconnected",
-          qrCode: db?.qrCode || "",
-          connectedPhone: db?.connectedPhone || "",
-          connectedName: db?.connectedName || "",
-        },
-      ];
+    if (!orgId) {
+      // Legacy single-tenant fallback (always return both device slots)
+      const allowedSessionIds = ["device_1", "device_2"];
+      const memoryStatuses = getWhatsAppStatus(null);
+      const dbSessions = await WhatsAppSessionModel.find({
+        sessionId: { $in: allowedSessionIds },
+      });
+      const result = allowedSessionIds.map((sId, index) => {
+        const mem = memoryStatuses.find((m) => m.sessionId === sId);
+        const db = dbSessions.find((d) => d.sessionId === sId);
+        const status = mem?.status || db?.status || "disconnected";
+        return {
+          sessionId: sId,
+          organizationId: null,
+          status,
+          qrCode: status === "qr" ? mem?.qrCode || db?.qrCode || "" : "",
+          connectedPhone: mem?.connectedPhone || db?.connectedPhone || "",
+          connectedName: mem?.connectedName || db?.connectedName || "",
+          isPrimary: index === 0,
+          label: index === 0 ? "Device 1 (Primary)" : "Device 2 (Secondary)",
+        };
+      });
+      return res.status(200).json(result);
     }
 
-    res.status(200).json(result);
+    // Determine organization's allowed WhatsApp line limit
+    let lineLimit = 1;
+    try {
+      const { Organization } = getMasterModels();
+      const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
+      if (org) lineLimit = org.whatsappLineLimit || 1;
+    } catch (e) {}
+
+    const primarySessionId = `org_${orgId}`;
+    const secondarySessionId = `org_${orgId}_device_2`;
+    const allowedSessionIds = lineLimit >= 2
+      ? [primarySessionId, secondarySessionId]
+      : [primarySessionId];
+
+    const memoryStatuses = getWhatsAppStatus(orgId).filter((m) =>
+      allowedSessionIds.includes(m.sessionId)
+    );
+
+    const dbSessions = await WhatsAppSessionModel.find({
+      sessionId: { $in: allowedSessionIds },
+    });
+
+    const result = [];
+
+    // 1. Always include Primary Session
+    const primaryMem = memoryStatuses.find((m) => m.sessionId === primarySessionId);
+    const primaryDb = dbSessions.find((d) => d.sessionId === primarySessionId);
+    const primaryStatus = primaryMem?.status || primaryDb?.status || "disconnected";
+    result.push({
+      sessionId: primarySessionId,
+      organizationId: orgId,
+      status: primaryStatus,
+      qrCode: primaryStatus === "qr" ? primaryMem?.qrCode || primaryDb?.qrCode || "" : "",
+      connectedPhone: primaryMem?.connectedPhone || primaryDb?.connectedPhone || "",
+      connectedName: primaryMem?.connectedName || primaryDb?.connectedName || "",
+      isPrimary: true,
+      label: "Device 1 (Primary)",
+    });
+
+    // 2. Include Secondary Session only if line limit allows
+    if (lineLimit >= 2) {
+      const secondaryMem = memoryStatuses.find((m) => m.sessionId === secondarySessionId);
+      const secondaryDb = dbSessions.find((d) => d.sessionId === secondarySessionId);
+      const secondaryStatus = secondaryMem?.status || secondaryDb?.status || "disconnected";
+      result.push({
+        sessionId: secondarySessionId,
+        organizationId: orgId,
+        status: secondaryStatus,
+        qrCode: secondaryStatus === "qr" ? secondaryMem?.qrCode || secondaryDb?.qrCode || "" : "",
+        connectedPhone: secondaryMem?.connectedPhone || secondaryDb?.connectedPhone || "",
+        connectedName: secondaryMem?.connectedName || secondaryDb?.connectedName || "",
+        isPrimary: false,
+        label: "Device 2 (Secondary)",
+      });
+    }
+
+    // Include the line limit in the response for frontend adaptation
+    res.status(200).json({ sessions: result, whatsappLineLimit: lineLimit });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -105,7 +189,21 @@ export const logoutClient = async (req, res) => {
       : req.organization?._id
         ? req.organization._id.toString()
         : null;
-    const targetSessionId = orgId ? `org_${orgId}` : req.body.sessionId || "device_1";
+
+    let targetSessionId;
+    if (orgId) {
+      const allowedSessionIds = [`org_${orgId}`, `org_${orgId}_device_2`];
+      if (req.body.sessionId && allowedSessionIds.includes(req.body.sessionId)) {
+        targetSessionId = req.body.sessionId;
+      } else if (req.body.device === 2 || req.body.deviceNumber === 2 || req.body.isSecondary) {
+        targetSessionId = `org_${orgId}_device_2`;
+      } else {
+        targetSessionId = `org_${orgId}`;
+      }
+    } else {
+      targetSessionId = req.body.sessionId || (req.body.device === 2 ? "device_2" : "device_1");
+    }
+
     await logoutWhatsApp(targetSessionId);
     res
       .status(200)
@@ -125,10 +223,37 @@ export const getQR = async (req, res) => {
       : req.organization?._id
         ? req.organization._id.toString()
         : null;
+    let lineLimit = 1;
+    if (orgId) {
+      try {
+        const { Organization } = getMasterModels();
+        const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
+        if (org) lineLimit = org.whatsappLineLimit || 1;
+      } catch (e) {}
+    }
+
+    let targetSessionId = req.query.sessionId;
+    const isDevice2 =
+      req.query.device === "2" ||
+      req.query.deviceNumber === "2" ||
+      targetSessionId?.includes("device_2");
+
+    if (orgId && isDevice2 && lineLimit < 2) {
+      return res.status(403).json({
+        message:
+          "This organization is configured for a Single WhatsApp Line. Upgrade to Dual Lines to access Line 2.",
+        qrCode: "",
+      });
+    }
+
     const statusDataList = getWhatsAppStatus(orgId);
-    const targetSessionId = orgId ? `org_${orgId}` : "device_1";
+    if (!targetSessionId) {
+      targetSessionId = isDevice2
+        ? (orgId ? `org_${orgId}_device_2` : "device_2")
+        : (orgId ? `org_${orgId}` : "device_1");
+    }
     const statusData = statusDataList.find((s) => s.sessionId === targetSessionId) || statusDataList[0] || {};
-    res.status(200).json({ qrCode: statusData.qrCode || "" });
+    res.status(200).json({ qrCode: statusData.qrCode || "", sessionId: targetSessionId });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -221,6 +346,22 @@ export const sendMessage = async (req, res) => {
         ? req.organization._id.toString()
         : null;
 
+    let targetSessionId = req.body.sessionId;
+    if (orgId) {
+      let lineLimit = 1;
+      try {
+        const { Organization } = getMasterModels();
+        const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
+        if (org) lineLimit = org.whatsappLineLimit || 1;
+      } catch (e) {}
+
+      if (!targetSessionId) {
+        targetSessionId = req.body.device === 2 && lineLimit >= 2 ? `org_${orgId}_device_2` : `org_${orgId}`;
+      } else if (targetSessionId.includes("device_2") && lineLimit < 2) {
+        targetSessionId = `org_${orgId}`;
+      }
+    }
+
     const messageRecord = await sendMessageFromCRM(
       leadId,
       text,
@@ -228,7 +369,7 @@ export const sendMessage = async (req, res) => {
       {
         organizationId: orgId,
         tenantModels: req.tenantModels,
-        sessionId: orgId ? `org_${orgId}` : null,
+        sessionId: targetSessionId,
       },
     );
     res.status(200).json(messageRecord);

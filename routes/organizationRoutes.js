@@ -10,6 +10,7 @@ import {
   renewSubscription,
   toggleStatus,
   resendWelcomeEmail,
+  updateOrganizationWhatsAppLimit,
   getMyOrganization,
   getMyAISettings,
   updateMyAISettings,
@@ -81,6 +82,7 @@ router.put("/:id/seats", verifySuperAdmin, updateOrganizationSeats);
 router.put("/:id/renew", verifySuperAdmin, renewSubscription);
 router.patch("/:id/status", verifySuperAdmin, toggleStatus);
 router.post("/:id/resend-welcome", verifySuperAdmin, resendWelcomeEmail);
+router.put("/:id/whatsapp-limit", verifySuperAdmin, updateOrganizationWhatsAppLimit);
 
 // Super Admin AI Settings & Knowledge Base APIs
 router.get("/:id/ai-settings", verifySuperAdmin, getOrgAISettings);

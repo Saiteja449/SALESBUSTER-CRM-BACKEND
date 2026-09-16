@@ -35,6 +35,10 @@ export const API_ENDPOINTS = {
     SERVICES: `${BASE_URL}/organization/services`,
     SETTINGS: `${BASE_URL}/organization/settings`,
   },
+  APK: {
+    LATEST: `${BASE_URL}/mobile-app/apk/latest`,
+    DOWNLOAD: `${BASE_URL}/mobile-app/apk/download`,
+  },
 };
 ```
 
@@ -1005,5 +1009,38 @@ apiClient.interceptors.response.use(
 );
 
 export default apiClient;
+```
+
+---
+
+## 📌 Mobile App APK Updates & Download
+
+The backend provides public endpoints for checking application updates and downloading the latest Android APK.
+
+### 1. Check Latest APK Version (`GET /mobile-app/apk/latest`)
+Checks if a new build is available:
+```bash
+curl -X GET https://api.salesbuster.ai/api/mobile-app/apk/latest
+```
+
+**Response (`200 OK`)**:
+```json
+{
+  "success": true,
+  "data": {
+    "version": "1.0.4",
+    "versionCode": 4,
+    "minSupportedVersion": "1.0.0",
+    "releaseNotes": "Added background call recording and real-time lead sync.",
+    "fileSizeFormatted": "43.12 MB",
+    "downloadUrl": "https://api.salesbuster.ai/api/mobile-app/apk/download"
+  }
+}
+```
+
+### 2. Direct APK Download (`GET /mobile-app/apk/download`)
+Initiates direct file download for Android clients:
+```bash
+curl -O -J https://api.salesbuster.ai/api/mobile-app/apk/download
 ```
 
