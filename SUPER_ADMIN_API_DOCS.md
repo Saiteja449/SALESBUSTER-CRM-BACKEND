@@ -87,6 +87,7 @@ curl -X POST https://api.salesbuster.ai/api/organizations/provision \
     "paymentMethod": "UPI",
     "subscriptionPlan": "quarterly",
     "subscriptionStartDate": "2026-09-08T00:00:00.000Z",
+    "whatsappLineLimit": 2,
     "notes": "Enterprise Tier client"
   }'
 ```
@@ -107,6 +108,7 @@ curl -X POST https://api.salesbuster.ai/api/organizations/provision \
     "paymentMethod": "UPI",
     "subscriptionPlan": "quarterly",
     "subscriptionStartDate": "2026-09-08T00:00:00.000Z",
+    "whatsappLineLimit": 2,
     "notes": "Enterprise Tier client"
   }'
 ```
@@ -409,12 +411,76 @@ curl -X GET https://api.salesbuster.ai/api/organizations/my-org \
 
 ---
 
+## 9. Update WhatsApp Connection Limit (`PUT /api/organizations/:id/whatsapp-limit`)
+
+Configures the maximum number of WhatsApp Baileys connection lines for an organization tenant. 
+- `1` (or `"single"`): **Single Line (1 Device)**
+- `2` (or `"double"` / `"dual"`): **Dual Lines (2 Devices)**
+
+> [!NOTE]
+> - **Downgrade Safety**: If downgrading an organization from `2` &rarr; `1` while Device 2 (`org_<orgId>_device_2`) is currently connected, the backend automatically logs out and terminates the secondary WhatsApp session.
+> - **Real-time Synchronization**: The backend immediately emits an `organization_updated` socket event to the organization room (`org_<orgId>`), so active client sessions adjust without requiring a manual refresh.
+
+### cURL Request (Using Super Admin JWT):
+```bash
+curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/whatsapp-limit \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>" \
+  -d '{
+    "whatsappLineLimit": 2
+  }'
+```
+
+### Alternative cURL Request (Using Admin API Key & String Mode):
+```bash
+curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/whatsapp-limit \
+  -H "Content-Type: application/json" \
+  -H "x-admin-key: salesbuster_super_admin_secret_key_2026" \
+  -d '{
+    "whatsappConnectionMode": "single"
+  }'
+```
+
+### Accepted Request Body Formats:
+```json
+{ "whatsappLineLimit": 1 }
+```
+```json
+{ "whatsappLineLimit": 2 }
+```
+```json
+{ "whatsappConnectionMode": "single" }
+```
+```json
+{ "whatsappConnectionMode": "double" }
+```
+
+### Success Response (`200 OK`):
+```json
+{
+  "success": true,
+  "message": "WhatsApp line limit updated to 2 (Dual Lines) for organization \"Acme Technologies Inc.\".",
+  "data": {
+    "_id": "66dd1f5e8b4e7a2b9c1d0001",
+    "name": "Acme Technologies Inc.",
+    "email": "billing@acmetech.io",
+    "whatsappLineLimit": 2,
+    "whatsappConnectionMode": "double",
+    "seats": 10,
+    "status": "active"
+  }
+}
+```
+
+---
+
 ## Error Handling Reference
 
 | Status Code | Description | Example Response |
 |---|---|---|
-| `400 Bad Request` | Missing required fields or duplicate email | `{"success": false, "message": "An account with email 'billing@acmetech.io' already exists."}` |
+| `400 Bad Request` | Missing required fields, invalid limit value, or duplicate email | `{"success": false, "message": "whatsappLineLimit must be 1 (Single Line) or 2 (Dual Lines)."}` |
 | `401 Unauthorized` | Missing or invalid auth token/key | `{"success": false, "message": "Not authorized, token failed"}` |
 | `403 Forbidden` | Super Admin privileges required or limit reached | `{"success": false, "message": "Access forbidden: Super Administrator privileges required"}` |
 | `404 Not Found` | Organization not found | `{"success": false, "message": "Organization not found"}` |
 | `500 Server Error`| Internal error during provisioning/database switch | `{"success": false, "message": "Server error while provisioning organization"}` |
+

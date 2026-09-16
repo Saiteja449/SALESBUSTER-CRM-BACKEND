@@ -135,6 +135,10 @@ const updateSessionStatus = async (
   sessions[sessionId].qrCode = qr;
   if (phone) sessions[sessionId].connectedPhone = phone;
   if (name) sessions[sessionId].connectedName = name;
+  if (!sessions[sessionId].organizationId && sessionId.startsWith("org_")) {
+    const match = sessionId.match(/^org_([a-fA-F0-9]{24})/);
+    if (match) sessions[sessionId].organizationId = match[1];
+  }
 
   try {
     const models = await getModelsForSession(sessionId);
@@ -1829,11 +1833,14 @@ export const initAllOrganizationWhatsAppConnections = async () => {
     for (const org of organizations) {
       try {
         const orgId = org._id.toString();
+        const lineLimit = org.whatsappLineLimit || 1;
         const primarySessionId = `org_${orgId}`;
         const secondarySessionId = `org_${orgId}_device_2`;
-        const allowedSessions = [primarySessionId, secondarySessionId];
+        const allowedSessions = lineLimit >= 2
+          ? [primarySessionId, secondarySessionId]
+          : [primarySessionId];
 
-        // Find saved credentials for this organization (strictly capped at primary & secondary)
+        // Find saved credentials for this organization (respecting line limit)
         const validCreds = await models.WhatsAppAuthState.find({
           sessionId: { $in: allowedSessions },
           type: "creds",
