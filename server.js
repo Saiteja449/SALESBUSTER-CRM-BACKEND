@@ -29,7 +29,10 @@ import appReleaseRoutes from "./routes/appReleaseRoutes.js";
 
 // Socket & WhatsApp Imports
 import { initSocket } from "./socket/socket.js";
-import { initAllOrganizationWhatsAppConnections } from "./whatsapp/whatsappService.js";
+import {
+  initAllOrganizationWhatsAppConnections,
+  startWhatsAppWatchdog,
+} from "./whatsapp/whatsappService.js";
 import { resumeInterruptedCampaigns } from "./services/whatsappCampaignWorker.js";
 import { initCronScheduler } from "./services/whatsappCronScheduler.js";
 
@@ -118,6 +121,9 @@ server.listen(PORT, () => {
 
   // Auto-connect WhatsApp on server start for all active tenant organizations
   initAllOrganizationWhatsAppConnections();
+
+  // Start background watchdog to auto-heal disconnected WhatsApp sessions
+  startWhatsAppWatchdog();
 
   // Resume any interrupted WhatsApp Cloud campaigns
   resumeInterruptedCampaigns();

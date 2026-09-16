@@ -101,7 +101,12 @@ export const getStatus = async (req, res) => {
       const result = allowedSessionIds.map((sId, index) => {
         const mem = memoryStatuses.find((m) => m.sessionId === sId);
         const db = dbSessions.find((d) => d.sessionId === sId);
-        const status = mem?.status || db?.status || "disconnected";
+        if (db?.status === "connected" && mem?.status !== "connected" && mem?.status !== "connecting") {
+          connectWhatsApp(sId).catch((e) => console.error(`[WhatsApp] Legacy auto-connect failed for ${sId}:`, e));
+        }
+        const status =
+          mem?.status ||
+          (db?.status === "connected" ? "connecting" : db?.status || "disconnected");
         return {
           sessionId: sId,
           organizationId: null,
@@ -140,10 +145,26 @@ export const getStatus = async (req, res) => {
 
     const result = [];
 
+    const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
+
     // 1. Always include Primary Session
     const primaryMem = memoryStatuses.find((m) => m.sessionId === primarySessionId);
     const primaryDb = dbSessions.find((d) => d.sessionId === primarySessionId);
-    const primaryStatus = primaryMem?.status || primaryDb?.status || "disconnected";
+
+    // If DB says connected but in-memory socket is missing, auto-heal connection in background
+    if (primaryDb?.status === "connected" && primaryMem?.status !== "connected" && primaryMem?.status !== "connecting") {
+      console.log(`[WhatsApp] getStatus detected disconnected memory state for ${primarySessionId}. Triggering auto-heal...`);
+      connectWhatsApp({
+        sessionId: primarySessionId,
+        organizationId: orgId,
+        tenantDbName,
+      }).catch((e) => console.error(`[WhatsApp] Auto-connect from getStatus failed for ${primarySessionId}:`, e));
+    }
+
+    const primaryStatus =
+      primaryMem?.status ||
+      (primaryDb?.status === "connected" ? "connecting" : primaryDb?.status || "disconnected");
+
     result.push({
       sessionId: primarySessionId,
       organizationId: orgId,
@@ -159,7 +180,20 @@ export const getStatus = async (req, res) => {
     if (lineLimit >= 2) {
       const secondaryMem = memoryStatuses.find((m) => m.sessionId === secondarySessionId);
       const secondaryDb = dbSessions.find((d) => d.sessionId === secondarySessionId);
-      const secondaryStatus = secondaryMem?.status || secondaryDb?.status || "disconnected";
+
+      if (secondaryDb?.status === "connected" && secondaryMem?.status !== "connected" && secondaryMem?.status !== "connecting") {
+        console.log(`[WhatsApp] getStatus detected disconnected memory state for ${secondarySessionId}. Triggering auto-heal...`);
+        connectWhatsApp({
+          sessionId: secondarySessionId,
+          organizationId: orgId,
+          tenantDbName,
+        }).catch((e) => console.error(`[WhatsApp] Auto-connect from getStatus failed for ${secondarySessionId}:`, e));
+      }
+
+      const secondaryStatus =
+        secondaryMem?.status ||
+        (secondaryDb?.status === "connected" ? "connecting" : secondaryDb?.status || "disconnected");
+
       result.push({
         sessionId: secondarySessionId,
         organizationId: orgId,
