@@ -261,41 +261,51 @@ export const connectWhatsApp = async (param1, param2, param3) => {
       if (connection === "close") {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const errMsg = lastDisconnect?.error?.message || "Unknown error";
-        console.log(`WhatsApp connection closed for ${sessionId}. Status code: ${statusCode}`);
+        console.log(`WhatsApp connection closed for ${sessionId}. Status code: ${statusCode}, Reason: ${errMsg}`);
         logWhatsAppEvent(`Session: ${sessionId} | CONNECTION DROPPED | Status: ${statusCode} | Reason: ${errMsg}`);
         
-        // Update status to disconnected so reconnect doesn't abort
+        // Clean up socket reference in memory
+        if (sessions[sessionId]) {
+          sessions[sessionId].sock = null;
+        }
+
+        // Check if connection was closed because QR code expired (408 or "QR refs attempts ended")
+        const isQrExpired =
+          statusCode === 408 &&
+          (errMsg.includes("QR refs") || sessions[sessionId]?.status === "qr");
+
+        // Check if device was explicitly unlinked / logged out
+        const isLoggedOut =
+          statusCode === DisconnectReason.loggedOut ||
+          statusCode === 401 ||
+          statusCode === 403 ||
+          statusCode === 405;
+
+        // Update status to disconnected
         updateSessionStatus(sessionId, "disconnected");
 
-        const shouldReconnect =
-          statusCode !== DisconnectReason.loggedOut && 
-          statusCode !== 403 && 
-          statusCode !== 405;
-          
-        if (shouldReconnect) {
-          console.log(`Attempting to reconnect WhatsApp for ${sessionId} in 5 seconds...`);
-          setTimeout(() => connectWhatsApp({
-            sessionId,
-            organizationId: sessions[sessionId]?.organizationId,
-            tenantDbName: sessions[sessionId]?.tenantDbName,
-          }), 5000);
-        } else {
-          console.log(
-            `WhatsApp session ${sessionId} logged out. Cleaning up credentials...`,
-          );
-          logoutWhatsApp(sessionId)
-            .then(() => {
-              console.log(
-                `Credentials cleaned for ${sessionId}. Reinitializing connection to generate new QR code...`,
-              );
-              setTimeout(() => connectWhatsApp({
-                sessionId,
-                organizationId: sessions[sessionId]?.organizationId,
-                tenantDbName: sessions[sessionId]?.tenantDbName,
-              }), 3000);
-            })
-            .catch((err) => console.error("Error during logout:", err));
+        if (isQrExpired) {
+          console.log(`[WhatsApp] QR code expired for ${sessionId}. Stopping auto-reconnect loop until user requests new QR.`);
+          return;
         }
+
+        if (isLoggedOut) {
+          console.log(
+            `[WhatsApp] WhatsApp session ${sessionId} logged out on mobile device. Cleaning up credentials...`,
+          );
+          logoutWhatsApp(sessionId).catch((err) =>
+            console.error("Error during logout:", err),
+          );
+          return;
+        }
+
+        // For temporary network drops, 515 restartRequired, 428 connectionClosed, etc.:
+        console.log(`[WhatsApp] Attempting to reconnect WhatsApp for ${sessionId} in 5 seconds... (Status: ${statusCode})`);
+        setTimeout(() => connectWhatsApp({
+          sessionId,
+          organizationId: sessions[sessionId]?.organizationId,
+          tenantDbName: sessions[sessionId]?.tenantDbName,
+        }), 5000);
       } else if (connection === "open") {
         const userJid = sock?.user?.id || "";
         const phone = normalizePhone(userJid);
@@ -1240,7 +1250,30 @@ export const sendMessageFromCRM = async (
     )?.sock;
   }
   if (!sock) {
-    throw new Error("WhatsApp client is not connected for this organization!");
+    // Check if session has saved credentials in DB
+    const targetSessionId = sessionId || (organizationId ? `org_${organizationId}` : null);
+    if (targetSessionId) {
+      try {
+        const resolvedModels = tenantModels || (await getModelsForSession(targetSessionId));
+        const AuthModel = resolvedModels?.WhatsAppAuthState;
+        const hasCreds = AuthModel
+          ? await AuthModel.findOne({ sessionId: targetSessionId, type: "creds" })
+          : null;
+
+        if (hasCreds) {
+          console.log(`[WhatsApp] Auto-reconnecting session ${targetSessionId} triggered by CRM manual send...`);
+          connectWhatsApp({
+            sessionId: targetSessionId,
+            organizationId,
+          }).catch((e) => console.error("[WhatsApp] Auto-reconnect on send failed:", e));
+
+          throw new Error("WhatsApp connection was sleeping and is reconnecting now. Please retry sending in 5-10 seconds.");
+        }
+      } catch (checkErr) {
+        if (checkErr.message.includes("reconnecting now")) throw checkErr;
+      }
+    }
+    throw new Error("WhatsApp client is not connected for this organization! Please connect your device in WhatsApp Settings.");
   }
 
   const models = tenantModels || (sessionId ? await getModelsForSession(sessionId) : { Lead, Message, Conversation });
@@ -1368,6 +1401,24 @@ export const sendAutomatedFollowup = async (lead, imageUrl, text, context = {}) 
     )?.sock;
   }
   if (!sock) {
+    const targetSessionId = sessionId || (organizationId ? `org_${organizationId}` : null);
+    if (targetSessionId) {
+      try {
+        const resolvedModels = tenantModels || (await getModelsForSession(targetSessionId));
+        const AuthModel = resolvedModels?.WhatsAppAuthState;
+        const hasCreds = AuthModel
+          ? await AuthModel.findOne({ sessionId: targetSessionId, type: "creds" })
+          : null;
+
+        if (hasCreds) {
+          console.log(`[WhatsApp] Auto-reconnecting session ${targetSessionId} triggered by automated follow-up...`);
+          connectWhatsApp({
+            sessionId: targetSessionId,
+            organizationId,
+          }).catch((e) => console.error("[WhatsApp] Auto-reconnect on followup failed:", e));
+        }
+      } catch (checkErr) {}
+    }
     throw new Error("WhatsApp client is not connected for this organization!");
   }
 
@@ -1833,6 +1884,13 @@ export const initAllOrganizationWhatsAppConnections = async () => {
     for (const org of organizations) {
       try {
         const orgId = org._id.toString();
+        const tenantDbName = org.tenantDbName;
+        if (!tenantDbName) {
+          console.log(`[WhatsApp] Organization "${org.name}" has no tenantDbName. Skipping auto-connect.`);
+          continue;
+        }
+
+        const models = getTenantModels(tenantDbName);
         const lineLimit = org.whatsappLineLimit || 1;
         const primarySessionId = `org_${orgId}`;
         const secondarySessionId = `org_${orgId}_device_2`;
@@ -1851,11 +1909,13 @@ export const initAllOrganizationWhatsAppConnections = async () => {
             console.log(
               `[WhatsApp] Found existing credentials for organization "${org.name}" (${cred.sessionId}). Auto-connecting...`
             );
-            await connectWhatsApp({
+            connectWhatsApp({
               sessionId: cred.sessionId,
               organizationId: orgId,
               tenantDbName,
-            });
+            }).catch((err) =>
+              console.error(`[WhatsApp] Failed to auto-connect ${cred.sessionId} for org ${org.name}:`, err)
+            );
           }
         } else {
           console.log(`[WhatsApp] No saved session credentials for organization "${org.name}". Ready for linking.`);
@@ -1871,7 +1931,9 @@ export const initAllOrganizationWhatsAppConnections = async () => {
       const legacyCreds = await WhatsAppAuthStateModel.findOne({ sessionId: "device_1", type: "creds" });
       if (legacyCreds && !sessions["device_1"]) {
         console.log("[WhatsApp] Found legacy credentials for device_1. Auto-connecting...");
-        await connectWhatsApp("device_1");
+        connectWhatsApp("device_1").catch((err) =>
+          console.error("[WhatsApp] Failed to auto-connect legacy device_1:", err)
+        );
       }
     } catch (legacyErr) {
       console.error("[WhatsApp] Error checking legacy session:", legacyErr);
@@ -1880,6 +1942,69 @@ export const initAllOrganizationWhatsAppConnections = async () => {
     console.error("[WhatsApp] Failed to initialize organization WhatsApp connections:", err);
   }
 };
+
+/**
+ * Background Watchdog: runs every 60 seconds to auto-heal disconnected WhatsApp sessions
+ * that have valid saved credentials in their tenant database.
+ */
+export const startWhatsAppWatchdog = () => {
+  console.log("[WhatsApp Watchdog] Starting WhatsApp connection watchdog service (60s interval)...");
+  
+  setInterval(async () => {
+    try {
+      const { Organization } = getMasterModels();
+      const organizations = await Organization.find({ status: { $ne: "suspended" } });
+
+      for (const org of organizations) {
+        try {
+          const orgId = org._id.toString();
+          const tenantDbName = org.tenantDbName;
+          if (!tenantDbName) continue;
+
+          const lineLimit = org.whatsappLineLimit || 1;
+          const primarySessionId = `org_${orgId}`;
+          const secondarySessionId = `org_${orgId}_device_2`;
+          const allowedSessions = lineLimit >= 2
+            ? [primarySessionId, secondarySessionId]
+            : [primarySessionId];
+
+          const models = getTenantModels(tenantDbName);
+          const validCreds = await models.WhatsAppAuthState.find({
+            sessionId: { $in: allowedSessions },
+            type: "creds",
+          });
+
+          if (validCreds && validCreds.length > 0) {
+            for (const cred of validCreds) {
+              const sId = cred.sessionId;
+              const current = sessions[sId];
+              const isLive = current?.sock && current?.status === "connected";
+
+              // If socket is missing or not connected (and not actively in the middle of connecting)
+              if (!isLive && current?.status !== "connecting") {
+                console.log(
+                  `[WhatsApp Watchdog] Session ${sId} ("${org.name}") has saved credentials but is currently ${current?.status || "unloaded"}. Auto-reconnecting...`
+                );
+                connectWhatsApp({
+                  sessionId: sId,
+                  organizationId: orgId,
+                  tenantDbName,
+                }).catch((err) =>
+                  console.error(`[WhatsApp Watchdog] Reconnect failed for ${sId}:`, err)
+                );
+              }
+            }
+          }
+        } catch (orgErr) {
+          // Silent catch per organization to not interrupt the loop
+        }
+      }
+    } catch (err) {
+      console.error("[WhatsApp Watchdog] Error in watchdog cycle:", err);
+    }
+  }, 60000);
+};
+
 
 
 
