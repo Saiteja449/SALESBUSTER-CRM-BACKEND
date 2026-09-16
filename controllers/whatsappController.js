@@ -58,54 +58,77 @@ export const getStatus = async (req, res) => {
         ? req.organization._id.toString()
         : null;
 
-    const memoryStatuses = getWhatsAppStatus(orgId);
-    const targetSessionId = orgId ? `org_${orgId}` : req.query.sessionId || "device_1";
+    if (!orgId) {
+      // Legacy single-tenant fallback
+      const memoryStatuses = getWhatsAppStatus(null);
+      const dbSessions = await WhatsAppSessionModel.find({});
+      const allSessionIds = new Set([
+        ...memoryStatuses.map((m) => m.sessionId),
+        ...dbSessions.map((d) => d.sessionId),
+      ]);
+      const result = Array.from(allSessionIds).map((sId) => {
+        const mem = memoryStatuses.find((m) => m.sessionId === sId);
+        const db = dbSessions.find((d) => d.sessionId === sId);
+        const status = mem?.status || db?.status || "disconnected";
+        return {
+          sessionId: sId,
+          organizationId: null,
+          status,
+          qrCode: status === "qr" ? mem?.qrCode || db?.qrCode || "" : "",
+          connectedPhone: mem?.connectedPhone || db?.connectedPhone || "",
+          connectedName: mem?.connectedName || db?.connectedName || "",
+        };
+      });
+      return res.status(200).json(result);
+    }
 
-    // Query all sessions present in the tenant database (supports primary + secondary devices)
-    const dbSessions = await WhatsAppSessionModel.find(
-      orgId
-        ? {
-            $or: [
-              { sessionId: targetSessionId },
-              { sessionId: new RegExp(`^org_${orgId}`) },
-              { sessionId: "device_1" },
-              { sessionId: "device_2" },
-            ],
-          }
-        : {}
+    // STRICT 2-CONNECTION RULE PER ORGANIZATION:
+    // 1. Primary:   org_<orgId>
+    // 2. Secondary: org_<orgId>_device_2
+    const primarySessionId = `org_${orgId}`;
+    const secondarySessionId = `org_${orgId}_device_2`;
+    const allowedSessionIds = [primarySessionId, secondarySessionId];
+
+    const memoryStatuses = getWhatsAppStatus(orgId).filter((m) =>
+      allowedSessionIds.includes(m.sessionId)
     );
 
-    // Merge in-memory active statuses with database records so all devices are accurately reflected
-    const allSessionIds = new Set([
-      ...memoryStatuses.map((m) => m.sessionId),
-      ...dbSessions.map((d) => d.sessionId),
-    ]);
-
-    let result = Array.from(allSessionIds).map((sId) => {
-      const mem = memoryStatuses.find((m) => m.sessionId === sId);
-      const db = dbSessions.find((d) => d.sessionId === sId);
-      const status = mem?.status || db?.status || "disconnected";
-      return {
-        sessionId: sId,
-        organizationId: mem?.organizationId || orgId,
-        status: status,
-        qrCode: status === "qr" ? mem?.qrCode || db?.qrCode || "" : "",
-        connectedPhone: mem?.connectedPhone || db?.connectedPhone || "",
-        connectedName: mem?.connectedName || db?.connectedName || "",
-      };
+    const dbSessions = await WhatsAppSessionModel.find({
+      sessionId: { $in: allowedSessionIds },
     });
 
-    if (result.length === 0 && orgId) {
-      result = [
-        {
-          sessionId: targetSessionId,
-          organizationId: orgId,
-          status: "disconnected",
-          qrCode: "",
-          connectedPhone: "",
-          connectedName: "",
-        },
-      ];
+    const result = [];
+
+    // 1. Always include Primary Session
+    const primaryMem = memoryStatuses.find((m) => m.sessionId === primarySessionId);
+    const primaryDb = dbSessions.find((d) => d.sessionId === primarySessionId);
+    const primaryStatus = primaryMem?.status || primaryDb?.status || "disconnected";
+    result.push({
+      sessionId: primarySessionId,
+      organizationId: orgId,
+      status: primaryStatus,
+      qrCode: primaryStatus === "qr" ? primaryMem?.qrCode || primaryDb?.qrCode || "" : "",
+      connectedPhone: primaryMem?.connectedPhone || primaryDb?.connectedPhone || "",
+      connectedName: primaryMem?.connectedName || primaryDb?.connectedName || "",
+      isPrimary: true,
+      label: "Device 1 (Primary)",
+    });
+
+    // 2. Include Secondary Session ONLY if it exists in memory or DB
+    const secondaryMem = memoryStatuses.find((m) => m.sessionId === secondarySessionId);
+    const secondaryDb = dbSessions.find((d) => d.sessionId === secondarySessionId);
+    if (secondaryMem || secondaryDb) {
+      const secondaryStatus = secondaryMem?.status || secondaryDb?.status || "disconnected";
+      result.push({
+        sessionId: secondarySessionId,
+        organizationId: orgId,
+        status: secondaryStatus,
+        qrCode: secondaryStatus === "qr" ? secondaryMem?.qrCode || secondaryDb?.qrCode || "" : "",
+        connectedPhone: secondaryMem?.connectedPhone || secondaryDb?.connectedPhone || "",
+        connectedName: secondaryMem?.connectedName || secondaryDb?.connectedName || "",
+        isPrimary: false,
+        label: "Device 2 (Secondary)",
+      });
     }
 
     res.status(200).json(result);

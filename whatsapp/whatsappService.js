@@ -1333,11 +1333,10 @@ export const getWhatsAppStatus = (organizationId = null) => {
 
   if (organizationId) {
     const orgStr = organizationId.toString();
+    const primaryId = `org_${orgStr}`;
+    const secondaryId = `org_${orgStr}_device_2`;
     list = list.filter(
-      (s) =>
-        s.organizationId === orgStr ||
-        s.sessionId === `org_${orgStr}` ||
-        s.sessionId?.startsWith(`org_${orgStr}`)
+      (s) => s.sessionId === primaryId || s.sessionId === secondaryId
     );
   }
 
@@ -1830,21 +1829,23 @@ export const initAllOrganizationWhatsAppConnections = async () => {
     for (const org of organizations) {
       try {
         const orgId = org._id.toString();
-        const defaultSessionId = `org_${orgId}`;
-        const tenantDbName = org.tenantDbName;
-        const models = getTenantModels(tenantDbName);
+        const primarySessionId = `org_${orgId}`;
+        const secondarySessionId = `org_${orgId}_device_2`;
+        const allowedSessions = [primarySessionId, secondarySessionId];
 
-        // Find all saved credentials in this tenant's WhatsAppAuthState (supports multiple connected devices)
-        const allCreds = await models.WhatsAppAuthState.find({ type: "creds" });
+        // Find saved credentials for this organization (strictly capped at primary & secondary)
+        const validCreds = await models.WhatsAppAuthState.find({
+          sessionId: { $in: allowedSessions },
+          type: "creds",
+        });
 
-        if (allCreds && allCreds.length > 0) {
-          for (const cred of allCreds) {
-            const sId = cred.sessionId || defaultSessionId;
+        if (validCreds && validCreds.length > 0) {
+          for (const cred of validCreds) {
             console.log(
-              `[WhatsApp] Found existing credentials for organization "${org.name}" (${sId}). Auto-connecting...`
+              `[WhatsApp] Found existing credentials for organization "${org.name}" (${cred.sessionId}). Auto-connecting...`
             );
             await connectWhatsApp({
-              sessionId: sId,
+              sessionId: cred.sessionId,
               organizationId: orgId,
               tenantDbName,
             });
