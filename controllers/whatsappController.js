@@ -33,7 +33,20 @@ export const connectClient = async (req, res) => {
         ? req.organization._id.toString()
         : req.body.organizationId || null;
     const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
-    const targetSessionId = orgId ? `org_${orgId}` : req.body.sessionId || "device_1";
+    
+    let targetSessionId;
+    if (orgId) {
+      const allowedSessionIds = [`org_${orgId}`, `org_${orgId}_device_2`];
+      if (req.body.sessionId && allowedSessionIds.includes(req.body.sessionId)) {
+        targetSessionId = req.body.sessionId;
+      } else if (req.body.device === 2 || req.body.deviceNumber === 2 || req.body.isSecondary) {
+        targetSessionId = `org_${orgId}_device_2`;
+      } else {
+        targetSessionId = `org_${orgId}`;
+      }
+    } else {
+      targetSessionId = req.body.sessionId || (req.body.device === 2 ? "device_2" : "device_1");
+    }
 
     connectWhatsApp({
       sessionId: targetSessionId,
@@ -59,14 +72,13 @@ export const getStatus = async (req, res) => {
         : null;
 
     if (!orgId) {
-      // Legacy single-tenant fallback
+      // Legacy single-tenant fallback (always return both device slots)
+      const allowedSessionIds = ["device_1", "device_2"];
       const memoryStatuses = getWhatsAppStatus(null);
-      const dbSessions = await WhatsAppSessionModel.find({});
-      const allSessionIds = new Set([
-        ...memoryStatuses.map((m) => m.sessionId),
-        ...dbSessions.map((d) => d.sessionId),
-      ]);
-      const result = Array.from(allSessionIds).map((sId) => {
+      const dbSessions = await WhatsAppSessionModel.find({
+        sessionId: { $in: allowedSessionIds },
+      });
+      const result = allowedSessionIds.map((sId, index) => {
         const mem = memoryStatuses.find((m) => m.sessionId === sId);
         const db = dbSessions.find((d) => d.sessionId === sId);
         const status = mem?.status || db?.status || "disconnected";
@@ -77,6 +89,8 @@ export const getStatus = async (req, res) => {
           qrCode: status === "qr" ? mem?.qrCode || db?.qrCode || "" : "",
           connectedPhone: mem?.connectedPhone || db?.connectedPhone || "",
           connectedName: mem?.connectedName || db?.connectedName || "",
+          isPrimary: index === 0,
+          label: index === 0 ? "Device 1 (Primary)" : "Device 2 (Secondary)",
         };
       });
       return res.status(200).json(result);
@@ -114,22 +128,20 @@ export const getStatus = async (req, res) => {
       label: "Device 1 (Primary)",
     });
 
-    // 2. Include Secondary Session ONLY if it exists in memory or DB
+    // 2. Always include Secondary Session so frontend can display both connection slots
     const secondaryMem = memoryStatuses.find((m) => m.sessionId === secondarySessionId);
     const secondaryDb = dbSessions.find((d) => d.sessionId === secondarySessionId);
-    if (secondaryMem || secondaryDb) {
-      const secondaryStatus = secondaryMem?.status || secondaryDb?.status || "disconnected";
-      result.push({
-        sessionId: secondarySessionId,
-        organizationId: orgId,
-        status: secondaryStatus,
-        qrCode: secondaryStatus === "qr" ? secondaryMem?.qrCode || secondaryDb?.qrCode || "" : "",
-        connectedPhone: secondaryMem?.connectedPhone || secondaryDb?.connectedPhone || "",
-        connectedName: secondaryMem?.connectedName || secondaryDb?.connectedName || "",
-        isPrimary: false,
-        label: "Device 2 (Secondary)",
-      });
-    }
+    const secondaryStatus = secondaryMem?.status || secondaryDb?.status || "disconnected";
+    result.push({
+      sessionId: secondarySessionId,
+      organizationId: orgId,
+      status: secondaryStatus,
+      qrCode: secondaryStatus === "qr" ? secondaryMem?.qrCode || secondaryDb?.qrCode || "" : "",
+      connectedPhone: secondaryMem?.connectedPhone || secondaryDb?.connectedPhone || "",
+      connectedName: secondaryMem?.connectedName || secondaryDb?.connectedName || "",
+      isPrimary: false,
+      label: "Device 2 (Secondary)",
+    });
 
     res.status(200).json(result);
   } catch (error) {
@@ -147,7 +159,21 @@ export const logoutClient = async (req, res) => {
       : req.organization?._id
         ? req.organization._id.toString()
         : null;
-    const targetSessionId = orgId ? `org_${orgId}` : req.body.sessionId || "device_1";
+
+    let targetSessionId;
+    if (orgId) {
+      const allowedSessionIds = [`org_${orgId}`, `org_${orgId}_device_2`];
+      if (req.body.sessionId && allowedSessionIds.includes(req.body.sessionId)) {
+        targetSessionId = req.body.sessionId;
+      } else if (req.body.device === 2 || req.body.deviceNumber === 2 || req.body.isSecondary) {
+        targetSessionId = `org_${orgId}_device_2`;
+      } else {
+        targetSessionId = `org_${orgId}`;
+      }
+    } else {
+      targetSessionId = req.body.sessionId || (req.body.device === 2 ? "device_2" : "device_1");
+    }
+
     await logoutWhatsApp(targetSessionId);
     res
       .status(200)
@@ -168,9 +194,14 @@ export const getQR = async (req, res) => {
         ? req.organization._id.toString()
         : null;
     const statusDataList = getWhatsAppStatus(orgId);
-    const targetSessionId = orgId ? `org_${orgId}` : "device_1";
+    let targetSessionId = req.query.sessionId;
+    if (!targetSessionId) {
+      targetSessionId = req.query.device === "2" || req.query.deviceNumber === "2"
+        ? (orgId ? `org_${orgId}_device_2` : "device_2")
+        : (orgId ? `org_${orgId}` : "device_1");
+    }
     const statusData = statusDataList.find((s) => s.sessionId === targetSessionId) || statusDataList[0] || {};
-    res.status(200).json({ qrCode: statusData.qrCode || "" });
+    res.status(200).json({ qrCode: statusData.qrCode || "", sessionId: targetSessionId });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -263,6 +294,11 @@ export const sendMessage = async (req, res) => {
         ? req.organization._id.toString()
         : null;
 
+    let targetSessionId = req.body.sessionId;
+    if (!targetSessionId && orgId) {
+      targetSessionId = req.body.device === 2 ? `org_${orgId}_device_2` : `org_${orgId}`;
+    }
+
     const messageRecord = await sendMessageFromCRM(
       leadId,
       text,
@@ -270,7 +306,7 @@ export const sendMessage = async (req, res) => {
       {
         organizationId: orgId,
         tenantModels: req.tenantModels,
-        sessionId: orgId ? `org_${orgId}` : null,
+        sessionId: targetSessionId,
       },
     );
     res.status(200).json(messageRecord);
