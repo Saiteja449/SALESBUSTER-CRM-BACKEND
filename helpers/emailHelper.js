@@ -76,26 +76,10 @@ export const sendTenantWelcomeEmail = async ({
   temporaryPassword,
   loginUrl,
 }) => {
-  const formatDate = (date) => {
-    if (!date) return "N/A";
-    return new Date(date).toLocaleDateString("en-IN", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-    });
-  };
-
-  const formattedStartDate = formatDate(organization.subscriptionStartDate);
-  const formattedEndDate = formatDate(organization.subscriptionEndDate);
-  const formattedAmount =
-    organization.amountPaid != null
-      ? `₹${Number(organization.amountPaid).toLocaleString("en-IN")}`
-      : "Paid";
-  const rawPlan = organization.subscriptionPlan || "monthly";
-  const formattedPlan = rawPlan.charAt(0).toUpperCase() + rawPlan.slice(1);
-
   const appLoginUrl =
-    loginUrl || process.env.FRONTEND_URL || "http://localhost:5173/login";
+    loginUrl ||
+    process.env.FRONTEND_URL ||
+    "https://crm.salesbuster.com/login";
 
   const htmlMessage = `
 <!DOCTYPE html>
@@ -121,9 +105,9 @@ export const sendTenantWelcomeEmail = async ({
         Your organization workspace has been successfully provisioned. You can now manage leads, track team activities, and accelerate your sales pipeline.
       </p>
 
-      <!-- Plan Details Box -->
+      <!-- Workspace Details Box -->
       <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-bottom: 24px;">
-        <h3 style="margin: 0 0 14px 0; color: #0ea5e9; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Workspace & Subscription Details</h3>
+        <h3 style="margin: 0 0 14px 0; color: #0ea5e9; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Workspace Details</h3>
         
         <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
           <tr>
@@ -133,14 +117,6 @@ export const sendTenantWelcomeEmail = async ({
           <tr>
             <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Licensed Sales Rep Seats:</td>
             <td style="padding: 6px 0; color: #0f172a; font-weight: 700; text-align: right;">${organization.seats} Representatives</td>
-          </tr>
-          <tr>
-            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Subscription Period:</td>
-            <td style="padding: 6px 0; color: #0f172a; font-weight: 700; text-align: right;">${formattedStartDate} – ${formattedEndDate} (${formattedPlan})</td>
-          </tr>
-          <tr>
-            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Amount Paid:</td>
-            <td style="padding: 6px 0; color: #16a34a; font-weight: 700; text-align: right;">${formattedAmount} (Paid)</td>
           </tr>
         </table>
       </div>
@@ -172,7 +148,7 @@ export const sendTenantWelcomeEmail = async ({
       </div>
 
       <p style="margin: 0 0 12px 0; color: #64748b; font-size: 13px; line-height: 1.5;">
-        Need to add more user seats or have questions about your subscription? Contact our support team anytime at <a href="mailto:info@salesbuster.ai" style="color: #0284c7; font-weight: 600;">info@salesbuster.ai</a>.
+        Need to add more user seats or have questions about your workspace? Contact our support team anytime at <a href="mailto:info@salesbuster.ai" style="color: #0284c7; font-weight: 600;">info@salesbuster.ai</a>.
       </p>
     </div>
 
@@ -190,7 +166,7 @@ export const sendTenantWelcomeEmail = async ({
   return await sendEmail({
     email: ownerEmail,
     subject: `Welcome to SalesBuster! Your ${organization.name} Workspace is Ready`,
-    message: `Welcome to SalesBuster!\n\nYour organization ${organization.name} has been provisioned.\nSeats: ${organization.seats}\nValidity: ${formattedStartDate} to ${formattedEndDate}\nAmount Paid: ${formattedAmount}\n\nLogin URL: ${appLoginUrl}\nEmail: ${ownerEmail}\n Password: ${temporaryPassword}\n\nPlease change your password upon first login.`,
+    message: `Welcome to SalesBuster!\n\nYour organization ${organization.name} has been provisioned.\nSeats: ${organization.seats}\n\nLogin URL: ${appLoginUrl}\nEmail: ${ownerEmail}\nPassword: ${temporaryPassword}\n\nPlease change your password upon first login.`,
     htmlMessage,
   });
 };

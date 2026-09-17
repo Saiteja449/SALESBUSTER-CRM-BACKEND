@@ -54,10 +54,6 @@ async function main() {
     organization: {
       name: "Demo Enterprise",
       seats: 10,
-      subscriptionPlan: "annual",
-      subscriptionStartDate: new Date(),
-      subscriptionEndDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-      amountPaid: 49999,
     },
     ownerEmail: targetEmail,
     temporaryPassword: "DemoPassword#2026",
