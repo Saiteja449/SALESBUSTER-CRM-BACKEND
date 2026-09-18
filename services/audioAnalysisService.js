@@ -256,10 +256,7 @@ If the audio is silent, corrupted, or completely unintelligible:
     const transcription = parsedJson.transcription || "No transcription provided.";
     
     // Construct the markdown string that the frontend expects
-    const markdownAnalysis = `## Call Transcription
-${transcription}
-
-## Short Summary
+    const markdownAnalysis = `## Short Summary
 ${parsedJson.shortSummary || ""}
 
 ## Customer Requirements & Key Points
