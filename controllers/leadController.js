@@ -10,6 +10,7 @@ import AILog from "../models/AILog.js";
 import { getIO } from "../socket/socket.js";
 import fs from "fs";
 import path from "path";
+import { processAudioUpload } from "../utils/audioConverter.js";
 import { analyzeAudioFile } from "../services/audioAnalysisService.js";
 import { sendWelcomeEnquiryMessage } from "../whatsapp/whatsappService.js";
 import { decryptApiKey } from "../utils/encryption.js";
@@ -521,6 +522,7 @@ export const createLead = async (req, res) => {
     }
 
     if (req.file) {
+      await processAudioUpload(req.file);
       const host = req.get("host");
       const basePath = "/uploads/";
       const fileUrl = `${req.protocol}://${host}${basePath}${req.file.filename}`;
@@ -611,6 +613,7 @@ export const updateLead = async (req, res) => {
     }
 
     if (req.file) {
+      await processAudioUpload(req.file);
       const host = req.get("host");
       const basePath = "/uploads/";
       const fileUrl = `${req.protocol}://${host}${basePath}${req.file.filename}`;
@@ -886,6 +889,8 @@ export const uploadRecordingForLead = async (req, res) => {
         message: "No audio file provided. Please attach a recording file.",
       });
     }
+
+    await processAudioUpload(req.file);
 
     const lead = await LeadModel.findById(id);
     if (!lead) {

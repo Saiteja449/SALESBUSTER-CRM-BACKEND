@@ -96,38 +96,89 @@ export const analyzeAudioFile = async (
     const preferredModel = process.env.GEMINI_AUDIO_MODEL || "gemini-3.5-flash-lite";
 
     const prompt = `
-You are an expert AI sales call assistant and transcriber for SalesBuster AI CRM.
-You are analyzing an audio recording of a customer phone call or sales consultation.
+You are a sales call transcription and analysis assistant for SalesBuster AI CRM.
 
-Perform two essential tasks:
-1. Verbatim Call Transcription: Accurately transcribe everything spoken in the audio conversation, attributing dialogue to speakers (e.g., "Sales Rep:" and "Customer:", or "Speaker 1:" / "Speaker 2:").
-2. Sales Coaching & Intelligence Evaluation: Provide executive insights, summary, customer requirements, rating, and actionable coaching suggestions.
+Analyze the attached audio recording.
 
-Format your response EXACTLY using the following markdown sections:
+Your tasks:
 
-## Call Transcription
-[Verbatim transcription of the conversation. Preserve spoken nuances, questions, answers, and objections.]
+1. TRANSCRIPTION
+- Transcribe all clearly audible speech.
+- Identify speakers when possible using "Sales Rep:" and "Customer:".
+- If speakers cannot be reliably identified, use "Speaker 1:" and "Speaker 2:".
+- Preserve meaningful repetitions, questions, answers, objections, and incomplete statements.
+- Do not invent, assume, or reconstruct speech that is not audible.
+- If a section is unclear, use "[inaudible]" instead of guessing.
 
-## Short Summary
-[Maximum 2-3 sentences summarizing the purpose, discussion, and outcome of the call.]
+2. CALL ANALYSIS
+Analyze ONLY information explicitly available in the audio.
 
-## Customer Requirements & Key Points
-- [Product / service interest, specifications, or problem customer is solving]
-- [Timeline, budget, or decision criteria if discussed]
-- [Objections, concerns, or queries raised]
+IMPORTANT:
+- Never invent customer requirements.
+- Never assume product/service interest unless it is actually discussed.
+- Never infer budget, timeline, objections, or intent without evidence.
+- If something was not discussed, write "Not discussed."
+- If this is clearly a test call, greeting-only call, silent call, wrong number, or unintelligible call, identify it accordingly.
+- Do not treat greetings or connection testing as a genuine sales requirement.
 
-## Rating
-**Rating:** [Score out of 5, e.g. 4/5]
-**Reason:** [Clear, concise explanation of the rating in 6-12 words]
+3. CALL RATING
 
-## Suggestions & Action Items
-- [Key actionable coaching tip for the salesperson]
-- [Immediate follow-up task required for this lead]
-- [Strategic recommendation to advance or close this deal]
+Use this rating scale consistently:
 
-Rules:
-- Capture the transcription as thoroughly and accurately as possible from the audio.
-- If the audio is silent, corrupted, or completely unintelligible, output under ## Call Transcription: "Audio could not be transcribed or is silent." and under ## Short Summary: "Audio unintelligible."
+5/5 = Strong substantive sales conversation with clear requirements, engagement, and meaningful next steps.
+4/5 = Good sales conversation with useful requirements and/or clear next steps.
+3/5 = Moderate conversation with some useful information but significant gaps.
+2/5 = Limited sales conversation with very little useful information.
+1/5 = Test call, greeting-only call, silent/unintelligible call, wrong number, or no substantive sales discussion.
+
+The rating must reflect the QUALITY AND SUBSTANCE OF THE CALL, not whether the salesperson successfully closed a deal.
+
+4. ACTION ITEMS
+Provide:
+- One coaching tip for the salesperson.
+- One immediate follow-up action.
+- One strategic recommendation.
+
+If an action is not applicable, write "Not applicable."
+
+Return the result ONLY as valid JSON using exactly this structure:
+
+{
+  "transcription": "Speaker 1: ...\\nSpeaker 2: ...",
+  "shortSummary": "Maximum 2-3 sentences and max 50 words.",
+  "customerRequirements": {
+    "productOrServiceInterest": "Not discussed.",
+    "timelineBudgetDecisionCriteria": "Not discussed.",
+    "objectionsConcernsQueries": "None raised."
+  },
+  "rating": {
+    "score": 1,
+    "reason": "No substantive sales conversation occurred."
+  },
+  "suggestionsAndActionItems": {
+    "salespersonCoachingTip": "...",
+    "immediateFollowUp": "...",
+    "strategicRecommendation": "..."
+  }
+}
+
+Additional rules:
+- rating.score must be an integer from 1 to 5.
+- rating.reason must be 6-12 words.
+- shortSummary must contain no more than 3 sentences and max 50 words.
+- Do not use Markdown.
+- Do not include additional JSON fields.
+- Return valid JSON only.
+
+If the audio is silent, corrupted, or completely unintelligible:
+- transcription = "Audio could not be transcribed or is silent."
+- shortSummary = "Audio unintelligible."
+- customer requirements fields = "Not discussed."
+- rating.score = 1
+- rating.reason = "No usable conversation was available for analysis."
+- salespersonCoachingTip = "Verify the call connection and audio quality."
+- immediateFollowUp = "Check the call recording and connection logs."
+- strategicRecommendation = "Not applicable."
 `;
 
     console.log(
@@ -136,7 +187,10 @@ Rules:
 
     let result = null;
     try {
-      const model = genAI.getGenerativeModel({ model: preferredModel });
+      const model = genAI.getGenerativeModel({ 
+        model: preferredModel,
+        generationConfig: { responseMimeType: "application/json" }
+      });
       result = await model.generateContent([
         {
           fileData: {
@@ -159,6 +213,7 @@ Rules:
         );
         const fallbackModel = genAI.getGenerativeModel({
           model: "gemini-2.5-flash",
+          generationConfig: { responseMimeType: "application/json" }
         });
         result = await fallbackModel.generateContent([
           {
@@ -177,16 +232,50 @@ Rules:
     const fullText = result.response.text();
     console.log(`[AudioAnalysis] Generation complete for ${filePath}`);
 
-    // Extract transcription block
-    let transcription = "";
-    const transMatch = fullText.match(
-      /## Call Transcription\s*([\s\S]*?)(?=\n## Short Summary|\n## Customer Requirements|\n## |$)/i,
-    );
-    if (transMatch && transMatch[1]) {
-      transcription = transMatch[1].trim();
-    } else {
-      transcription = fullText;
+    // Parse the JSON and build markdown equivalent to avoid breaking the frontend
+    let parsedJson = {};
+    try {
+      parsedJson = JSON.parse(fullText);
+    } catch (parseErr) {
+      console.warn("[AudioAnalysis] Failed to parse JSON, attempting manual cleanup:", parseErr.message);
+      try {
+        const cleanedText = fullText.replace(/```json/i, "").replace(/```/g, "").trim();
+        parsedJson = JSON.parse(cleanedText);
+      } catch (fallbackErr) {
+        console.error("[AudioAnalysis] Irrecoverable JSON parse error:", fallbackErr.message);
+        parsedJson = {
+          transcription: "Error parsing AI response. View full output for details.",
+          shortSummary: "Error parsing AI response.",
+          customerRequirements: {},
+          rating: { score: 0, reason: "Parse error" },
+          suggestionsAndActionItems: {}
+        };
+      }
     }
+
+    const transcription = parsedJson.transcription || "No transcription provided.";
+    
+    // Construct the markdown string that the frontend expects
+    const markdownAnalysis = `## Call Transcription
+${transcription}
+
+## Short Summary
+${parsedJson.shortSummary || ""}
+
+## Customer Requirements & Key Points
+- ${parsedJson.customerRequirements?.productOrServiceInterest || "Not discussed"}
+- ${parsedJson.customerRequirements?.timelineBudgetDecisionCriteria || "Not discussed"}
+- ${parsedJson.customerRequirements?.objectionsConcernsQueries || "None raised"}
+
+## Rating
+**Rating:** ${parsedJson.rating?.score || 0}/5
+**Reason:** ${parsedJson.rating?.reason || "Not provided"}
+
+## Suggestions & Action Items
+- ${parsedJson.suggestionsAndActionItems?.salespersonCoachingTip || "None"}
+- ${parsedJson.suggestionsAndActionItems?.immediateFollowUp || "None"}
+- ${parsedJson.suggestionsAndActionItems?.strategicRecommendation || "None"}
+`;
 
     // Cleanup file from Gemini temporary storage to save storage quota
     try {
