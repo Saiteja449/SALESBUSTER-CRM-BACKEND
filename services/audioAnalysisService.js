@@ -291,7 +291,7 @@ ${parsedJson.shortSummary || ""}
 
     return {
       transcription,
-      analysis: fullText,
+      analysis: markdownAnalysis,
       fullText,
     };
   } catch (error) {
