@@ -145,7 +145,7 @@ Return the result ONLY as valid JSON using exactly this structure:
 
 {
   "transcription": "Speaker 1: ...\\nSpeaker 2: ...",
-  "shortSummary": "Maximum 2-3 sentences and max 50 words.",
+  "shortSummary": "Maximum 2-3 sentences and max 80 words.",
   "customerRequirements": {
     "productOrServiceInterest": "Not discussed.",
     "timelineBudgetDecisionCriteria": "Not discussed.",
@@ -165,7 +165,7 @@ Return the result ONLY as valid JSON using exactly this structure:
 Additional rules:
 - rating.score must be an integer from 1 to 5.
 - rating.reason must be 6-12 words.
-- shortSummary must contain no more than 3 sentences and max 50 words.
+- shortSummary must contain no more than 3 sentences and max 80 words.
 - Do not use Markdown.
 - Do not include additional JSON fields.
 - Return valid JSON only.
