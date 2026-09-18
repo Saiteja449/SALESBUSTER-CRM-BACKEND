@@ -523,9 +523,12 @@ export const createLead = async (req, res) => {
 
     if (req.file) {
       await processAudioUpload(req.file);
-      const host = req.get("host");
+      const host = req.get("host") || "";
       const basePath = "/uploads/";
-      const fileUrl = `${req.protocol}://${host}${basePath}${req.file.filename}`;
+      const protocol =
+        req.headers["x-forwarded-proto"] ||
+        (host && !host.includes("localhost") ? "https" : req.protocol);
+      const fileUrl = `${protocol}://${host}${basePath}${req.file.filename}`;
       leadData.recordings = [
         {
           name: req.body.recordingName || req.file.originalname,
@@ -614,9 +617,12 @@ export const updateLead = async (req, res) => {
 
     if (req.file) {
       await processAudioUpload(req.file);
-      const host = req.get("host");
+      const host = req.get("host") || "";
       const basePath = "/uploads/";
-      const fileUrl = `${req.protocol}://${host}${basePath}${req.file.filename}`;
+      const protocol =
+        req.headers["x-forwarded-proto"] ||
+        (host && !host.includes("localhost") ? "https" : req.protocol);
+      const fileUrl = `${protocol}://${host}${basePath}${req.file.filename}`;
       const recordingObj = {
         name: req.body.recordingName || req.file.originalname,
         url: fileUrl,
@@ -900,9 +906,12 @@ export const uploadRecordingForLead = async (req, res) => {
       });
     }
 
-    const host = req.get("host");
+    const host = req.get("host") || "";
     const basePath = "/uploads/";
-    const fileUrl = `${req.protocol}://${host}${basePath}${req.file.filename}`;
+    const protocol =
+      req.headers["x-forwarded-proto"] ||
+      (host && !host.includes("localhost") ? "https" : req.protocol);
+    const fileUrl = `${protocol}://${host}${basePath}${req.file.filename}`;
     const recordingName =
       req.body.recordingName || req.file.originalname || `Recording_${Date.now()}`;
 

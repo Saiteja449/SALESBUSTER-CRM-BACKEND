@@ -46,6 +46,7 @@ dns.lookup("smtp.gmail.com", { all: true }, (err, addresses) => {
 });
 
 const app = express();
+app.set("trust proxy", 1);
 const server = http.createServer(app);
 
 // Initialize Socket.io
