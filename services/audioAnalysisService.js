@@ -14,114 +14,212 @@ if (!apiKey) {
 const genAI = new GoogleGenerativeAI(apiKey);
 const fileManager = new GoogleAIFileManager(apiKey);
 
+import path from "path";
+
 /**
- * Analyzes an audio file using Gemini.
+ * Resolves standard audio MIME type based on file extension or provided MIME.
+ */
+const resolveAudioMimeType = (filePath, fallbackMime) => {
+  if (fallbackMime && fallbackMime !== "application/octet-stream") {
+    if (fallbackMime === "audio/mp3") return "audio/mpeg";
+    return fallbackMime;
+  }
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case ".mp3":
+      return "audio/mpeg";
+    case ".wav":
+      return "audio/wav";
+    case ".m4a":
+      return "audio/mp4";
+    case ".aac":
+      return "audio/aac";
+    case ".ogg":
+      return "audio/ogg";
+    case ".flac":
+      return "audio/flac";
+    case ".webm":
+      return "audio/webm";
+    default:
+      return "audio/mpeg";
+  }
+};
+
+/**
+ * Analyzes and transcribes an audio file using Google Gemini Multimodal API.
  * @param {string} filePath - The local path to the audio file.
  * @param {string} mimeType - The mime type of the audio file.
  * @param {string} customApiKey - Organization-specific Gemini API Key.
- * @returns {Promise<string>} - The generated analysis summary in Markdown format.
+ * @returns {Promise<{ transcription: string, analysis: string, fullText: string }>}
  */
-export const analyzeAudioFile = async (filePath, mimeType, customApiKey = null) => {
-  // Temporarily paused / hidden as requested. Keeping original logic commented out below.
-  console.log(
-    `[AudioAnalysis] analyzeAudioFile is temporarily disabled/hidden for ${filePath}.`,
-  );
-  return null;
-
-  /*
-  const activeKey = customApiKey;
+export const analyzeAudioFile = async (
+  filePath,
+  mimeType,
+  customApiKey = null,
+) => {
+  const activeKey = customApiKey || process.env.GEMINI_API_KEY;
   if (!activeKey) {
     throw new Error(
-      "Organization Google Gemini API Key is missing. Please configure your API key in Organization Profile before running audio analysis.",
+      "Google Gemini API Key is missing. Please configure your API key in Organization Profile or set GEMINI_API_KEY in environment variables.",
     );
   }
-
-  const genAI = new GoogleGenerativeAI(activeKey);
-  const fileManager = new GoogleAIFileManager(activeKey);
 
   if (!fs.existsSync(filePath)) {
     throw new Error(`Audio file not found at path: ${filePath}`);
   }
 
-  try {
-    console.log(`[AudioAnalysis] Uploading file to Gemini: ${filePath}`);
+  const genAI = new GoogleGenerativeAI(activeKey);
+  const fileManager = new GoogleAIFileManager(activeKey);
+  const resolvedMime = resolveAudioMimeType(filePath, mimeType);
 
-    // Upload the file to Gemini's File API
-    const uploadResponse = await fileManager.uploadFile(filePath, {
-      mimeType: mimeType || "audio/mp4",
-      displayName: "Sales Call Recording",
+  let uploadResponse = null;
+
+  try {
+    console.log(
+      `[AudioAnalysis] Uploading audio file to Gemini File API: ${filePath} (${resolvedMime})`,
+    );
+
+    // Upload audio file to Gemini's File API
+    uploadResponse = await fileManager.uploadFile(filePath, {
+      mimeType: resolvedMime,
+      displayName: `Call Recording - ${path.basename(filePath)}`,
     });
 
     console.log(
-      `[AudioAnalysis] Upload complete. File URI: ${uploadResponse.file.uri}`,
+      `[AudioAnalysis] Upload complete. File URI: ${uploadResponse.file.uri}, state: ${uploadResponse.file.state}`,
     );
 
     // Wait briefly to ensure file is processed by Gemini
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // Initialize the model
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    // Initialize Gemini model: defaults to gemini-3.5-flash-lite (high speed, cost-effective multimodal)
+    const preferredModel = process.env.GEMINI_AUDIO_MODEL || "gemini-3.5-flash-lite";
 
-    // Generate the summary
     const prompt = `
-You are an AI sales call analyzer for SalesBuster AI.
+You are an expert AI sales call assistant and transcriber for SalesBuster AI CRM.
+You are analyzing an audio recording of a customer phone call or sales consultation.
 
-The conversation is between a sales representative and a customer regarding elevator solutions, including Passenger Lifts, MRL Lifts, Hydraulic Lifts, Hospital Bed Lifts, Elevator Maintenance & AMC, or Elevator Modernization.
+Perform two essential tasks:
+1. Verbatim Call Transcription: Accurately transcribe everything spoken in the audio conversation, attributing dialogue to speakers (e.g., "Sales Rep:" and "Customer:", or "Speaker 1:" / "Speaker 2:").
+2. Sales Coaching & Intelligence Evaluation: Provide executive insights, summary, customer requirements, rating, and actionable coaching suggestions.
 
-Analyze the audio and return ONLY Markdown in the following format.
+Format your response EXACTLY using the following markdown sections:
+
+## Call Transcription
+[Verbatim transcription of the conversation. Preserve spoken nuances, questions, answers, and objections.]
 
 ## Short Summary
-Maximum 2 sentences.
+[Maximum 2-3 sentences summarizing the purpose, discussion, and outcome of the call.]
+
+## Customer Requirements & Key Points
+- [Product / service interest, specifications, or problem customer is solving]
+- [Timeline, budget, or decision criteria if discussed]
+- [Objections, concerns, or queries raised]
 
 ## Rating
-Give a rating out of 5.
+**Rating:** [Score out of 5, e.g. 4/5]
+**Reason:** [Clear, concise explanation of the rating in 6-12 words]
 
-Reason:
-Explain the rating in exactly 6 words.
-
-## Suggestions
-Provide 3 short bullet points (maximum 8 words each) to help the salesperson improve.
+## Suggestions & Action Items
+- [Key actionable coaching tip for the salesperson]
+- [Immediate follow-up task required for this lead]
+- [Strategic recommendation to advance or close this deal]
 
 Rules:
-- Keep the entire response under 120 words.
-- Be concise.
-- Base the rating on customer interest, elevator specification gathering (floors, capacity, door type), salesperson communication, objection handling, and closing/callback scheduling.
-- If the audio is silent, corrupted, or not understandable, reply:
-"The audio could not be analyzed."
+- Capture the transcription as thoroughly and accurately as possible from the audio.
+- If the audio is silent, corrupted, or completely unintelligible, output under ## Call Transcription: "Audio could not be transcribed or is silent." and under ## Short Summary: "Audio unintelligible."
 `;
 
-    console.log(`[AudioAnalysis] Requesting content generation from Gemini...`);
-    const result = await model.generateContent([
-      {
-        fileData: {
-          mimeType: uploadResponse.file.mimeType,
-          fileUri: uploadResponse.file.uri,
-        },
-      },
-      { text: prompt },
-    ]);
+    console.log(
+      `[AudioAnalysis] Generating transcription and analysis via ${preferredModel}...`,
+    );
 
-    const analysis = result.response.text();
-    console.log(`[AudioAnalysis] Analysis complete for ${filePath}`);
-
-    // Optionally delete the file from Gemini storage to save space,
-    // or let it expire after 48 hours (default behavior).
+    let result = null;
     try {
-      await fileManager.deleteFile(uploadResponse.file.name);
-      console.log(
-        `[AudioAnalysis] Cleaned up file from Gemini storage: ${uploadResponse.file.name}`,
-      );
+      const model = genAI.getGenerativeModel({ model: preferredModel });
+      result = await model.generateContent([
+        {
+          fileData: {
+            mimeType: uploadResponse.file.mimeType,
+            fileUri: uploadResponse.file.uri,
+          },
+        },
+        { text: prompt },
+      ]);
+    } catch (modelErr) {
+      if (
+        preferredModel !== "gemini-2.5-flash" &&
+        (modelErr.message?.toLowerCase().includes("not found") ||
+          modelErr.message?.includes("404") ||
+          modelErr.status === 404)
+      ) {
+        console.warn(
+          `[AudioAnalysis] ${preferredModel} not found or unsupported for this key/region, falling back to gemini-2.5-flash:`,
+          modelErr.message,
+        );
+        const fallbackModel = genAI.getGenerativeModel({
+          model: "gemini-2.5-flash",
+        });
+        result = await fallbackModel.generateContent([
+          {
+            fileData: {
+              mimeType: uploadResponse.file.mimeType,
+              fileUri: uploadResponse.file.uri,
+            },
+          },
+          { text: prompt },
+        ]);
+      } else {
+        throw modelErr;
+      }
+    }
+
+    const fullText = result.response.text();
+    console.log(`[AudioAnalysis] Generation complete for ${filePath}`);
+
+    // Extract transcription block
+    let transcription = "";
+    const transMatch = fullText.match(
+      /## Call Transcription\s*([\s\S]*?)(?=\n## Short Summary|\n## Customer Requirements|\n## |$)/i,
+    );
+    if (transMatch && transMatch[1]) {
+      transcription = transMatch[1].trim();
+    } else {
+      transcription = fullText;
+    }
+
+    // Cleanup file from Gemini temporary storage to save storage quota
+    try {
+      if (uploadResponse?.file?.name) {
+        await fileManager.deleteFile(uploadResponse.file.name);
+        console.log(
+          `[AudioAnalysis] Cleaned up Gemini storage: ${uploadResponse.file.name}`,
+        );
+      }
     } catch (cleanupErr) {
-      console.error(
-        `[AudioAnalysis] Failed to cleanup file ${uploadResponse.file.name}:`,
+      console.warn(
+        `[AudioAnalysis] Non-fatal cleanup warning for ${uploadResponse?.file?.name}:`,
         cleanupErr.message,
       );
     }
 
-    return analysis;
+    return {
+      transcription,
+      analysis: fullText,
+      fullText,
+    };
   } catch (error) {
     console.error("[AudioAnalysis] Error analyzing audio file:", error);
+
+    // Attempt cleanup on failure
+    if (uploadResponse?.file?.name) {
+      try {
+        await fileManager.deleteFile(uploadResponse.file.name);
+      } catch (e) {
+        // Ignored
+      }
+    }
+
     throw error;
   }
-  */
 };

@@ -10,6 +10,7 @@ import {
   deleteLead,
   updateStatusByWebhook,
   analyzeRecording,
+  uploadRecordingForLead,
   importExcelLeads,
 } from "../controllers/leadController.js";
 
@@ -39,6 +40,7 @@ router.route("/paginated").get(getPaginatedLeads);
 router.post("/webhook/status", updateStatusByWebhook);
 
 router.route("/:id").put(upload.single("recording"), updateLead).delete(deleteLead);
+router.post("/:id/recordings", upload.single("recording"), uploadRecordingForLead);
 router.post("/:id/analyze-recording/:recordingId", analyzeRecording);
 
 export default router;

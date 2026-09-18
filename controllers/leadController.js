@@ -16,9 +16,9 @@ import { decryptApiKey } from "../utils/encryption.js";
 import { recordAiUsage } from "../services/aiUsageService.js";
 import * as XLSX from "xlsx";
 
-// Feature toggle to pause AI Call Analysis temporarily
+// Feature toggle for AI Call Analysis & Transcription
 const ENABLE_AI_AUDIO_ANALYSIS =
-  process.env.ENABLE_AI_AUDIO_ANALYSIS === "true"; // Defaults to false (paused)
+  process.env.ENABLE_AI_AUDIO_ANALYSIS !== "false"; // Defaults to true unless explicitly disabled
 
 // Model resolver for multi-tenancy
 const getModels = (req) => ({
@@ -32,7 +32,7 @@ const getModels = (req) => ({
   AILogModel: req?.tenantModels?.AILog || AILog,
 });
 
-// Helper for background audio analysis
+// Helper for background audio transcription & analysis
 const triggerAudioAnalysis = async (
   leadId,
   recordingId,
@@ -44,27 +44,61 @@ const triggerAudioAnalysis = async (
 ) => {
   if (!ENABLE_AI_AUDIO_ANALYSIS) {
     console.log(
-      `[AudioAnalysis] AI Audio Analysis is temporarily paused. Skipping analysis for recording ${recordingId}`,
+      `[AudioAnalysis] AI Audio Analysis is disabled. Skipping analysis for recording ${recordingId}`,
     );
     return;
   }
   try {
     console.log(
-      `[AudioAnalysis] Starting background analysis for lead ${leadId}, recording ${recordingId}`,
+      `[AudioAnalysis] Starting background transcription and analysis for lead ${leadId}, recording ${recordingId}`,
     );
-    const analysis = await analyzeAudioFile(filePath, mimeType, orgApiKey);
+    const result = await analyzeAudioFile(filePath, mimeType, orgApiKey);
+
+    let transcription = "";
+    let analysis = "";
+
+    if (result && typeof result === "object") {
+      transcription = result.transcription || "";
+      analysis = result.analysis || result.fullText || "";
+    } else if (typeof result === "string") {
+      analysis = result;
+      const match = result.match(
+        /## Call Transcription\s*([\s\S]*?)(?=\n## Short Summary|\n## |$)/i,
+      );
+      transcription = match ? match[1].trim() : "";
+    }
+
+    const updateSet = {
+      "recordings.$.analysis": analysis,
+      "recordings.$.transcription": transcription,
+      "recordings.$.analysisStatus": "completed",
+    };
+
     await LeadModel.updateOne(
       { _id: leadId, "recordings._id": recordingId },
-      {
-        $set: {
-          "recordings.$.analysis": analysis,
-          "recordings.$.analysisStatus": "completed",
-        },
-      },
+      { $set: updateSet },
     );
+
     console.log(
-      `[AudioAnalysis] Successfully updated analysis for recording ${recordingId}`,
+      `[AudioAnalysis] Successfully completed transcription & analysis for recording ${recordingId}`,
     );
+
+    // Broadcast real-time update via Socket.IO
+    const io = getIO();
+    if (io) {
+      const payload = {
+        leadId: leadId.toString(),
+        recordingId: recordingId.toString(),
+        transcription,
+        analysis,
+        analysisStatus: "completed",
+      };
+      if (orgId) {
+        io.to(`org_${orgId}`).emit("recording_analyzed", payload);
+      }
+      io.emit("recording_analyzed", payload);
+    }
+
     if (orgId) {
       recordAiUsage(orgId, "audio", 1).catch((err) =>
         console.warn("[AudioAnalysis] Failed recording audio usage:", err.message),
@@ -80,9 +114,24 @@ const triggerAudioAnalysis = async (
       {
         $set: {
           "recordings.$.analysisStatus": "failed",
+          "recordings.$.analysisError": error.message,
         },
       },
     );
+
+    const io = getIO();
+    if (io) {
+      const payload = {
+        leadId: leadId.toString(),
+        recordingId: recordingId.toString(),
+        analysisStatus: "failed",
+        analysisError: error.message,
+      };
+      if (orgId) {
+        io.to(`org_${orgId}`).emit("recording_analyzed", payload);
+      }
+      io.emit("recording_analyzed", payload);
+    }
   }
 };
 
@@ -479,12 +528,30 @@ export const createLead = async (req, res) => {
         {
           name: req.body.recordingName || req.file.originalname,
           url: fileUrl,
+          analysisStatus: ENABLE_AI_AUDIO_ANALYSIS ? "pending" : "paused",
           uploadedAt: new Date(),
         },
       ];
     }
 
     const lead = await LeadModel.create(leadData);
+
+    if (req.file && ENABLE_AI_AUDIO_ANALYSIS && lead.recordings?.length > 0) {
+      const newRecording = lead.recordings[0];
+      const orgApiKey = decryptApiKey(req.organization?.aiSettings?.geminiApiKey);
+      const orgId = req.organization?._id || req.user?.organizationId;
+      triggerAudioAnalysis(
+        lead._id,
+        newRecording._id,
+        req.file.path,
+        req.file.mimetype,
+        LeadModel,
+        orgApiKey,
+        orgId,
+      ).catch((err) =>
+        console.error("[AudioAnalysis] Background analysis error (createLead):", err),
+      );
+    }
 
     // Send automated WhatsApp welcome enquiry message for non-manual entry sources (Call, Email, etc.)
     if (lead.source && lead.source !== "Manual Entry") {
@@ -574,6 +641,8 @@ export const updateLead = async (req, res) => {
           LeadModel,
           orgApiKey,
           req.organization?._id || req.user?.organizationId,
+        ).catch((err) =>
+          console.error("[AudioAnalysis] Background analysis error (updateLead):", err),
         );
       }
     }
@@ -735,7 +804,7 @@ export const analyzeRecording = async (req, res) => {
   if (!ENABLE_AI_AUDIO_ANALYSIS) {
     return res.json({
       success: false,
-      message: "AI Call Analysis is temporarily paused.",
+      message: "AI Call Analysis is temporarily disabled.",
     });
   }
   try {
@@ -783,14 +852,107 @@ export const analyzeRecording = async (req, res) => {
       id,
       recordingId,
       filePath,
-      "audio/mp4",
+      "audio/mpeg",
       LeadModel,
       orgApiKey,
       orgId,
+    ).catch((err) =>
+      console.error("[AudioAnalysis] Background analysis error (analyzeRecording):", err),
     );
 
-    res.json({ success: true, message: "Analysis triggered successfully" });
+    res.json({
+      success: true,
+      message: "Transcription and audio analysis queued successfully.",
+      recording,
+    });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc    Upload an audio recording file directly to a lead
+ * @route   POST /api/leads/:id/recordings
+ * @access  Protected
+ */
+export const uploadRecordingForLead = async (req, res) => {
+  try {
+    const { LeadModel } = getModels(req);
+    const { id } = req.params;
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "No audio file provided. Please attach a recording file.",
+      });
+    }
+
+    const lead = await LeadModel.findById(id);
+    if (!lead) {
+      return res.status(404).json({
+        success: false,
+        message: "Lead not found",
+      });
+    }
+
+    const host = req.get("host");
+    const basePath = "/uploads/";
+    const fileUrl = `${req.protocol}://${host}${basePath}${req.file.filename}`;
+    const recordingName =
+      req.body.recordingName || req.file.originalname || `Recording_${Date.now()}`;
+
+    const recordingObj = {
+      name: recordingName,
+      url: fileUrl,
+      analysisStatus: ENABLE_AI_AUDIO_ANALYSIS ? "pending" : "paused",
+      uploadedAt: new Date(),
+    };
+
+    if (!lead.recordings) {
+      lead.recordings = [];
+    }
+    lead.recordings.push(recordingObj);
+    await lead.save();
+
+    const newRecording = lead.recordings[lead.recordings.length - 1];
+
+    if (ENABLE_AI_AUDIO_ANALYSIS && newRecording) {
+      const orgApiKey = decryptApiKey(req.organization?.aiSettings?.geminiApiKey);
+      const orgId = req.organization?._id || req.user?.organizationId;
+      triggerAudioAnalysis(
+        lead._id,
+        newRecording._id,
+        req.file.path,
+        req.file.mimetype,
+        LeadModel,
+        orgApiKey,
+        orgId,
+      ).catch((err) =>
+        console.error("[AudioAnalysis] Background analysis error (uploadRecordingForLead):", err),
+      );
+    }
+
+    const io = getIO();
+    if (io) {
+      const orgId = req.organization?._id || req.user?.organizationId;
+      const payload = {
+        leadId: lead._id.toString(),
+        recording: newRecording,
+      };
+      if (orgId) {
+        io.to(`org_${orgId}`).emit("recording_uploaded", payload);
+      }
+      io.emit("recording_uploaded", payload);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "Recording uploaded successfully. Transcription & analysis started.",
+      data: newRecording,
+      lead,
+    });
+  } catch (error) {
+    console.error("[UploadRecording] Error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
