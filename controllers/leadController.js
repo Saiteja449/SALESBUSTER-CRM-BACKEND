@@ -1005,6 +1005,13 @@ export const importExcelLeads = async (req, res) => {
       });
     }
 
+    if (rows.length > 300) {
+      return res.status(400).json({
+        success: false,
+        message: `Maximum batch limit exceeded: Only up to 300 leads can be imported at once (found ${rows.length} rows). Please split your file and try again.`,
+      });
+    }
+
     const batchTag =
       req.body.batchTag?.trim() ||
       `Excel-Import-${new Date().toISOString().slice(0, 10)}`;
