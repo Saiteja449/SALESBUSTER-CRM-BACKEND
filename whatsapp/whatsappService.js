@@ -48,7 +48,37 @@ const logWhatsAppEvent = (message) => {
   });
 };
 
+// Timing constants for connection lifecycle and watchdog
+const RECONNECT_DELAY_MS = 5000;    // Wait 5s before reconnecting after transient socket drop (gives socket/server time to settle)
+const WATCHDOG_INTERVAL_MS = 60000; // Run watchdog health check every 60s
+const KEEPALIVE_INTERVAL_MS = 20000;// Send ping every 20s to prevent VPS/NAT firewall from dropping idle socket
+
+// Per-sessionId async mutex: ensures only one connectWhatsApp execution can run at a time per session
+const connectionLocks = new Map(); // sessionId -> Promise
+
+// Tracks active reconnect timeout handles per sessionId to coordinate between close handler and watchdog
+const reconnectTimers = new Map(); // sessionId -> timeoutHandle
+
 const sessions = {}; // map of sessionId -> { sock, status, qrCode, connectedPhone, connectedName, organizationId, tenantDbName }
+
+/**
+ * Schedules a delayed reconnect for a session, coordinating between the close handler and watchdog.
+ * Clears any existing timer so duplicate reconnects are never queued for the same session.
+ */
+const scheduleReconnect = (sessionId, delayMs = RECONNECT_DELAY_MS) => {
+  if (reconnectTimers.has(sessionId)) {
+    clearTimeout(reconnectTimers.get(sessionId));
+  }
+  const timer = setTimeout(() => {
+    reconnectTimers.delete(sessionId);
+    connectWhatsApp({
+      sessionId,
+      organizationId: sessions[sessionId]?.organizationId,
+      tenantDbName: sessions[sessionId]?.tenantDbName,
+    });
+  }, delayMs);
+  reconnectTimers.set(sessionId, timer);
+};
 
 // AI Pause Management — tracks 5-minute snooze timers per lead
 const aiPauseTimers = {}; // leadIdStr -> setTimeout handle
@@ -195,13 +225,21 @@ export const connectWhatsApp = async (param1, param2, param3) => {
     sessionId = "device_1";
   }
 
+  // Clear any pending delayed reconnect timer for this session since connectWhatsApp is now actively running
+  if (reconnectTimers.has(sessionId)) {
+    clearTimeout(reconnectTimers.get(sessionId));
+    reconnectTimers.delete(sessionId);
+  }
+
   if (!sessions[sessionId]) {
     sessions[sessionId] = { status: "disconnected" };
   }
   if (organizationId) sessions[sessionId].organizationId = organizationId;
   if (tenantDbName) sessions[sessionId].tenantDbName = tenantDbName;
 
-  // Prevent duplicate connection attempts for the same active session
+  // Synchronous duplicate guard: if already connected or actively connecting, return immediately.
+  // Setting status = "connecting" synchronously BEFORE any await closes the race window
+  // where multiple concurrent callers pass the guard before auth state loads.
   if (
     sessions[sessionId].status === "connected" ||
     sessions[sessionId].status === "connecting"
@@ -211,165 +249,234 @@ export const connectWhatsApp = async (param1, param2, param3) => {
     );
     return;
   }
-  // Clean up dangling socket before starting a new connection
-  if (sessions[sessionId].sock) {
+
+  // Set status to "connecting" synchronously BEFORE any await to close the race window
+  sessions[sessionId].status = "connecting";
+
+  // Per-session mutex lock: queue execution behind any pending operation for this sessionId
+  const currentLock = connectionLocks.get(sessionId) || Promise.resolve();
+
+  const executeConnect = async () => {
+    // Re-verify status after acquiring lock in case session reached connected state while queued
+    if (sessions[sessionId]?.status === "connected") {
+      console.log(`[DEBUG] WhatsApp session ${sessionId} already connected before lock execution. Skipping.`);
+      return;
+    }
+
+    // Clean up dangling socket before starting a new connection
+    if (sessions[sessionId]?.sock) {
+      try {
+        sessions[sessionId].sock.end();
+      } catch (e) {}
+      sessions[sessionId].sock = null;
+    }
+
     try {
-      sessions[sessionId].sock.end();
-    } catch (e) {}
-    sessions[sessionId].sock = null;
-  }
-
-  try {
-    const models = await getModelsForSession(sessionId);
-    const { state, saveCreds } = await useMongoDBAuthState(sessionId, models.WhatsAppAuthState);
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-
-    console.log(
-      `Initializing WhatsApp connection for ${sessionId} (org: ${sessions[sessionId]?.organizationId || "default"}) via Baileys... (Version: ${version.join(".")})`,
-    );
-    updateSessionStatus(sessionId, "connecting");
-
-    const sock = makeWASocket({
-      auth: state,
-      version,
-      printQRInTerminal: true,
-      logger: pino({ level: "silent" }),
-      keepAliveIntervalMs: 20000, // Send ping every 20s to prevent VPS firewall from dropping the idle socket connection
-      markOnlineOnConnect: true,
-      connectTimeoutMs: 60000,
-    });
-
-    sessions[sessionId].sock = sock;
-
-    sock.ev.on("connection.update", async (update) => {
-      const { connection, lastDisconnect, qr } = update;
+      const models = await getModelsForSession(sessionId);
+      const { state, saveCreds } = await useMongoDBAuthState(sessionId, models.WhatsAppAuthState);
+      const { version, isLatest } = await fetchLatestBaileysVersion();
 
       console.log(
-        `Baileys connection.update [${sessionId}]:`,
-        JSON.stringify({
-          connection,
-          qr: qr ? "[QR data present]" : undefined,
-          lastDisconnect: lastDisconnect?.error?.message,
-        }),
+        `Initializing WhatsApp connection for ${sessionId} (org: ${sessions[sessionId]?.organizationId || "default"}) via Baileys... (Version: ${version.join(".")})`,
       );
+      updateSessionStatus(sessionId, "connecting");
 
-      if (qr) {
-        console.log(`New WhatsApp QR code generated for ${sessionId}. Please scan.`);
-        updateSessionStatus(sessionId, "qr", qr);
-      }
+      // Note: printQRInTerminal is intentionally omitted as it is deprecated in modern Baileys
+      const sock = makeWASocket({
+        auth: state,
+        version,
+        logger: pino({ level: "silent" }),
+        keepAliveIntervalMs: KEEPALIVE_INTERVAL_MS,
+        markOnlineOnConnect: true,
+        connectTimeoutMs: 60000,
+      });
 
-      if (connection === "close") {
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const errMsg = lastDisconnect?.error?.message || "Unknown error";
-        console.log(`WhatsApp connection closed for ${sessionId}. Status code: ${statusCode}, Reason: ${errMsg}`);
-        logWhatsAppEvent(`Session: ${sessionId} | CONNECTION DROPPED | Status: ${statusCode} | Reason: ${errMsg}`);
-        
-        // Clean up socket reference in memory
-        if (sessions[sessionId]) {
-          sessions[sessionId].sock = null;
-        }
+      sessions[sessionId].sock = sock;
 
-        // Check if connection was closed because QR code expired (408 or "QR refs attempts ended")
-        const isQrExpired =
-          statusCode === 408 &&
-          (errMsg.includes("QR refs") || sessions[sessionId]?.status === "qr");
-
-        // Check if device was explicitly unlinked / logged out
-        const isLoggedOut =
-          statusCode === DisconnectReason.loggedOut ||
-          statusCode === 401 ||
-          statusCode === 403 ||
-          statusCode === 405;
-
-        // Update status to disconnected
-        updateSessionStatus(sessionId, "disconnected");
-
-        if (isQrExpired) {
-          console.log(`[WhatsApp] QR code expired for ${sessionId}. Stopping auto-reconnect loop until user requests new QR.`);
+      sock.ev.on("connection.update", async (update) => {
+        // Stale socket guard: ignore events from old/destroyed sockets if a newer socket has been assigned
+        if (sessions[sessionId]?.sock !== sock) {
+          console.log(`[WhatsApp] Ignoring connection.update event from stale socket for ${sessionId}.`);
           return;
         }
 
-        if (isLoggedOut) {
-          console.log(
-            `[WhatsApp] WhatsApp session ${sessionId} logged out on mobile device. Cleaning up credentials...`,
-          );
-          logoutWhatsApp(sessionId).catch((err) =>
-            console.error("Error during logout:", err),
-          );
-          return;
-        }
-
-        // For temporary network drops, 515 restartRequired, 428 connectionClosed, etc.:
-        console.log(`[WhatsApp] Attempting to reconnect WhatsApp for ${sessionId} in 5 seconds... (Status: ${statusCode})`);
-        setTimeout(() => connectWhatsApp({
-          sessionId,
-          organizationId: sessions[sessionId]?.organizationId,
-          tenantDbName: sessions[sessionId]?.tenantDbName,
-        }), 5000);
-      } else if (connection === "open") {
-        const userJid = sock?.user?.id || "";
-        const phone = normalizePhone(userJid);
-        const name = sock?.user?.name || "WhatsApp Business Agent";
+        const { connection, lastDisconnect, qr } = update;
 
         console.log(
-          `WhatsApp is fully connected for ${sessionId}. Active on: ${phone} (${name})`,
+          `Baileys connection.update [${sessionId}]:`,
+          JSON.stringify({
+            connection,
+            qr: qr ? "[QR data present]" : undefined,
+            lastDisconnect: lastDisconnect?.error?.message,
+          }),
         );
-        updateSessionStatus(sessionId, "connected", "", phone, name);
-      }
-    });
 
-    sock.ev.on("creds.update", saveCreds);
-
-    sock.ev.on("messages.upsert", async (m) => {
-      try {
-        console.log(`=== messages.upsert event received for ${sessionId} ===`);
-        console.log("Event type:", m.type);
-        console.log("Number of messages:", m.messages?.length);
-
-        const messagesList = m.messages || [];
-        const eventType = m.type;
-
-        for (const msg of messagesList) {
-          console.log("Message key:", JSON.stringify(msg.key));
-          console.log("Message fromMe:", msg.key.fromMe);
-          console.log("Message type:", Object.keys(msg.message || {}));
-          console.log("Push name:", msg.pushName);
-
-          // Skip WhatsApp stub / system events (e.g. disappearing messages setting toggled, group changes, etc.)
-          if (msg.messageStubType) {
-            console.log(
-              `Skipping system stub message (${msg.messageStubType}) on session ${sessionId}`,
-            );
-            continue;
-          }
-
-          if (eventType === "notify" || eventType === "append") {
-            console.log(
-              `Processing message from: ${msg.key.remoteJid} (fromMe: ${msg.key.fromMe}) on session ${sessionId}`,
-            );
-            await handleIncomingOrOutgoingMessage(
-              msg,
-              sessionId,
-              msg.key.fromMe,
-            );
-          } else {
-            console.log(
-              `Skipping message - fromMe: ${msg.key.fromMe}, type: ${eventType}`,
-            );
-          }
+        if (qr) {
+          console.log(`New WhatsApp QR code generated for ${sessionId}. Please scan.`);
+          updateSessionStatus(sessionId, "qr", qr);
         }
-      } catch (err) {
-        console.error(`Error in messages.upsert handler for ${sessionId}:`, err);
+
+        if (connection === "close") {
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          const errMsg = lastDisconnect?.error?.message || "Unknown error";
+          console.log(`WhatsApp connection closed for ${sessionId}. Status code: ${statusCode}, Reason: ${errMsg}`);
+          logWhatsAppEvent(`Session: ${sessionId} | CONNECTION DROPPED | Status: ${statusCode} | Reason: ${errMsg}`);
+          
+          const wasInQrState = sessions[sessionId]?.status === "qr";
+
+          // Clean up socket reference in memory if it matches this socket
+          if (sessions[sessionId]?.sock === sock) {
+            sessions[sessionId].sock = null;
+          }
+
+          // Check if connection was closed because QR code expired (408 or "QR refs attempts ended")
+          const isQrExpired =
+            statusCode === 408 &&
+            (errMsg.includes("QR refs") || wasInQrState);
+
+          // Check if device was explicitly unlinked / logged out
+          const isLoggedOut =
+            statusCode === DisconnectReason.loggedOut ||
+            statusCode === 401 ||
+            statusCode === 403 ||
+            statusCode === 405;
+
+          // Update status to disconnected
+          updateSessionStatus(sessionId, "disconnected");
+
+          // Guard against QR generation loops:
+          // If the session was waiting for a QR scan or the QR expired, DO NOT auto-reconnect.
+          // Wait for the user to explicitly click "Connect / Show QR" in the frontend.
+          if (isQrExpired || wasInQrState) {
+            console.log(`[WhatsApp] QR code session closed for ${sessionId}. Stopping auto-reconnect loop until user requests new QR.`);
+            return;
+          }
+
+          if (isLoggedOut) {
+            console.log(
+              `[WhatsApp] WhatsApp session ${sessionId} logged out on mobile device. Cleaning up credentials...`,
+            );
+            logoutWhatsApp(sessionId).catch((err) =>
+              console.error("Error during logout:", err),
+            );
+            return;
+          }
+
+          // Only auto-reconnect if this session was already paired (has valid credentials in MongoDB).
+          // Unpaired / initial sessions must never auto-reconnect or flap every 5 seconds.
+          try {
+            const models = await getModelsForSession(sessionId);
+            const AuthModel = models?.WhatsAppAuthState || (await import("../models/WhatsAppAuthState.js")).default;
+            const hasCreds = await AuthModel.findOne({ sessionId, type: "creds" });
+            if (!hasCreds) {
+              console.log(`[WhatsApp] Session ${sessionId} has no saved credentials. Skipping auto-reconnect to prevent QR generation loops.`);
+              return;
+            }
+          } catch (credsErr) {
+            console.error(`[WhatsApp] Error verifying credentials before reconnect for ${sessionId}:`, credsErr);
+            return;
+          }
+
+          // Schedule delayed reconnect for already-paired sessions using the shared reconnect timer
+          console.log(`[WhatsApp] Scheduling reconnect for paired session ${sessionId} in ${RECONNECT_DELAY_MS / 1000}s... (Status: ${statusCode})`);
+          scheduleReconnect(sessionId, RECONNECT_DELAY_MS);
+        } else if (connection === "open") {
+          // Clear any scheduled reconnect timer upon successful connection
+          if (reconnectTimers.has(sessionId)) {
+            clearTimeout(reconnectTimers.get(sessionId));
+            reconnectTimers.delete(sessionId);
+          }
+
+          const userJid = sock?.user?.id || "";
+          const phone = normalizePhone(userJid);
+          const name = sock?.user?.name || "WhatsApp Business Agent";
+
+          console.log(
+            `WhatsApp is fully connected for ${sessionId}. Active on: ${phone} (${name})`,
+          );
+          updateSessionStatus(sessionId, "connected", "", phone, name);
+        }
+      });
+
+      sock.ev.on("creds.update", saveCreds);
+
+      sock.ev.on("messages.upsert", async (m) => {
+        // Stale socket guard: ignore message events from old/closed sockets
+        if (sessions[sessionId]?.sock !== sock) {
+          return;
+        }
+
+        try {
+          console.log(`=== messages.upsert event received for ${sessionId} ===`);
+          console.log("Event type:", m.type);
+          console.log("Number of messages:", m.messages?.length);
+
+          const messagesList = m.messages || [];
+          const eventType = m.type;
+
+          for (const msg of messagesList) {
+            console.log("Message key:", JSON.stringify(msg.key));
+            console.log("Message fromMe:", msg.key.fromMe);
+            console.log("Message type:", Object.keys(msg.message || {}));
+            console.log("Push name:", msg.pushName);
+
+            // Skip WhatsApp stub / system events (e.g. disappearing messages setting toggled, group changes, etc.)
+            if (msg.messageStubType) {
+              console.log(
+                `Skipping system stub message (${msg.messageStubType}) on session ${sessionId}`,
+              );
+              continue;
+            }
+
+            if (eventType === "notify" || eventType === "append") {
+              console.log(
+                `Processing message from: ${msg.key.remoteJid} (fromMe: ${msg.key.fromMe}) on session ${sessionId}`,
+              );
+              await handleIncomingOrOutgoingMessage(
+                msg,
+                sessionId,
+                msg.key.fromMe,
+              );
+            } else {
+              console.log(
+                `Skipping message - fromMe: ${msg.key.fromMe}, type: ${eventType}`,
+              );
+            }
+          }
+        } catch (err) {
+          console.error(`Error in messages.upsert handler for ${sessionId}:`, err);
+        }
+      });
+    } catch (error) {
+      console.error(`Fatal error during WhatsApp initialization for ${sessionId}:`, error);
+      updateSessionStatus(sessionId, "disconnected");
+    }
+  };
+
+  const lockPromise = currentLock
+    .then(executeConnect)
+    .catch((err) => {
+      console.error(`[WhatsApp] Error in connectWhatsApp lock execution for ${sessionId}:`, err);
+    })
+    .finally(() => {
+      // Clean up lock if we are the last in the chain
+      if (connectionLocks.get(sessionId) === lockPromise) {
+        connectionLocks.delete(sessionId);
       }
     });
-  } catch (error) {
-    console.error(`Fatal error during WhatsApp initialization for ${sessionId}:`, error);
-    updateSessionStatus(sessionId, "disconnected");
-  }
+
+  connectionLocks.set(sessionId, lockPromise);
+  return lockPromise;
 };
 
 export const logoutWhatsApp = async (sessionId) => {
   if (!sessionId) return;
+
+  // Clear any pending reconnect timer
+  if (reconnectTimers.has(sessionId)) {
+    clearTimeout(reconnectTimers.get(sessionId));
+    reconnectTimers.delete(sessionId);
+  }
 
   const sock = sessions[sessionId]?.sock;
 
@@ -1948,7 +2055,7 @@ export const initAllOrganizationWhatsAppConnections = async () => {
  * that have valid saved credentials in their tenant database.
  */
 export const startWhatsAppWatchdog = () => {
-  console.log("[WhatsApp Watchdog] Starting WhatsApp connection watchdog service (60s interval)...");
+  console.log(`[WhatsApp Watchdog] Starting WhatsApp connection watchdog service (${WATCHDOG_INTERVAL_MS / 1000}s interval)...`);
   
   setInterval(async () => {
     try {
@@ -1979,9 +2086,12 @@ export const startWhatsAppWatchdog = () => {
               const sId = cred.sessionId;
               const current = sessions[sId];
               const isLive = current?.sock && current?.status === "connected";
+              const isConnecting = current?.status === "connecting";
+              const hasPendingReconnect = reconnectTimers.has(sId);
 
-              // If socket is missing or not connected (and not actively in the middle of connecting)
-              if (!isLive && current?.status !== "connecting") {
+              // Only auto-reconnect if socket is not live, not actively connecting,
+              // and does not already have a pending reconnect timer scheduled by the close handler
+              if (!isLive && !isConnecting && !hasPendingReconnect) {
                 console.log(
                   `[WhatsApp Watchdog] Session ${sId} ("${org.name}") has saved credentials but is currently ${current?.status || "unloaded"}. Auto-reconnecting...`
                 );
@@ -2002,7 +2112,7 @@ export const startWhatsAppWatchdog = () => {
     } catch (err) {
       console.error("[WhatsApp Watchdog] Error in watchdog cycle:", err);
     }
-  }, 60000);
+  }, WATCHDOG_INTERVAL_MS);
 };
 
 
