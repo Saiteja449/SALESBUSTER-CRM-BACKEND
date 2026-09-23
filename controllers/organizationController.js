@@ -874,9 +874,18 @@ export const getMyAISettings = async (req, res) => {
     }
     const aiSettings = org.aiSettings || {};
 
+    const rawGeminiKey = decryptApiKey(aiSettings.geminiApiKey || "");
+    const isGeminiKeyConfigured = Boolean(rawGeminiKey);
+    const maskedGeminiApiKey = rawGeminiKey
+      ? rawGeminiKey.length > 8
+        ? rawGeminiKey.slice(0, 4) + "..." + rawGeminiKey.slice(-4)
+        : "********"
+      : "";
+
     const effective = {
-      geminiApiKey: decryptApiKey(aiSettings.geminiApiKey || ""),
-      isGeminiKeyConfigured: Boolean(decryptApiKey(aiSettings.geminiApiKey || "")),
+      geminiApiKey: maskedGeminiApiKey,
+      maskedGeminiApiKey,
+      isGeminiKeyConfigured,
       isAiConfigured: Boolean(
         aiSettings.isAiConfigured !== undefined
           ? aiSettings.isAiConfigured
@@ -966,6 +975,17 @@ export const getOrganizationSettings = getMyOrganization;
 // @access  Protected (Org Owner / Manager)
 export const updateMyAISettings = async (req, res) => {
   try {
+    const isAuthorized =
+      req.user?.role === "sales manager" ||
+      req.user?.role === "super_admin" ||
+      req.user?.isOrgOwner;
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Manager or Administrator role required.",
+      });
+    }
+
     const orgId = req.user?.organizationId || req.organization?._id;
     if (!orgId) {
       return res.status(404).json({
@@ -1068,8 +1088,11 @@ export const updateMyAISettings = async (req, res) => {
 
     if (geminiApiKey !== undefined) {
       const trimmed = geminiApiKey.trim();
-      org.aiSettings.geminiApiKey = trimmed ? encryptApiKey(trimmed) : "";
-      invalidateVectorStoreForOrg(org);
+      // Only update if not the masked placeholder
+      if (!trimmed.includes("...") && trimmed !== "********") {
+        org.aiSettings.geminiApiKey = trimmed ? encryptApiKey(trimmed) : "";
+        invalidateVectorStoreForOrg(org);
+      }
     }
 
     if (companyName !== undefined) {
@@ -1175,6 +1198,17 @@ export const updateMyAISettings = async (req, res) => {
 // @access  Protected (Org Owner / Manager)
 export const validateGeminiApiKey = async (req, res) => {
   try {
+    const isAuthorized =
+      req.user?.role === "sales manager" ||
+      req.user?.role === "super_admin" ||
+      req.user?.isOrgOwner;
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Manager or Administrator role required.",
+      });
+    }
+
     const orgId = req.user?.organizationId || req.organization?._id;
     let targetKey = req.body?.apiKey ? req.body.apiKey.trim() : null;
 
@@ -1220,6 +1254,20 @@ export const validateGeminiApiKey = async (req, res) => {
 // @access  Protected (Org Owner / Manager)
 export const uploadKnowledgeDoc = async (req, res) => {
   try {
+    const isAuthorized =
+      req.user?.role === "sales manager" ||
+      req.user?.role === "super_admin" ||
+      req.user?.isOrgOwner;
+    if (!isAuthorized) {
+      if (req.file?.path && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Manager or Administrator role required.",
+      });
+    }
+
     const orgId = req.user?.organizationId || req.organization?._id;
     if (!orgId) {
       if (req.file?.path && fs.existsSync(req.file.path))
@@ -1292,6 +1340,17 @@ export const uploadKnowledgeDoc = async (req, res) => {
 // @access  Protected (Org Owner / Manager)
 export const deleteKnowledgeDoc = async (req, res) => {
   try {
+    const isAuthorized =
+      req.user?.role === "sales manager" ||
+      req.user?.role === "super_admin" ||
+      req.user?.isOrgOwner;
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Manager or Administrator role required.",
+      });
+    }
+
     const orgId = req.user?.organizationId || req.organization?._id;
     const { docId } = req.params;
 

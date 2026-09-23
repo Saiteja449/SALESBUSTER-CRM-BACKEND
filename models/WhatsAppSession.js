@@ -24,6 +24,28 @@ const whatsappSessionSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    // Multi-user support: links session to a specific sales rep
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    // Explicit tenant organization association for this session record
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Organization",
+      default: null,
+    },
+    // The phone number the rep is expected to scan (from their profile)
+    expectedPhone: {
+      type: String,
+      default: "",
+    },
+    // Populated when phone verification fails (phone_mismatch error)
+    errorMessage: {
+      type: String,
+      default: "",
+    },
   },
   { timestamps: true }
 );

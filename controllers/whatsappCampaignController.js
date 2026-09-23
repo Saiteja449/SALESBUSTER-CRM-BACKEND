@@ -40,6 +40,12 @@ export const renderRecipientParameters = (mappings = [], lead = {}, org = {}) =>
  */
 export const createCampaign = async (req, res) => {
   try {
+    if (req.user?.role === "sales person" && !req.user?.isOrgOwner) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Manager or Administrator privileges required",
+      });
+    }
     const {
       name,
       templateId,
@@ -223,6 +229,12 @@ export const createCampaign = async (req, res) => {
  */
 export const getCampaigns = async (req, res) => {
   try {
+    if (req.user?.role === "sales person" && !req.user?.isOrgOwner) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Manager or Administrator privileges required",
+      });
+    }
     const { WhatsAppCampaign } = req.tenantModels;
     const { page = 1, limit = 10, status, search } = req.query;
 
@@ -263,6 +275,12 @@ export const getCampaigns = async (req, res) => {
  */
 export const getCampaignById = async (req, res) => {
   try {
+    if (req.user?.role === "sales person" && !req.user?.isOrgOwner) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Manager or Administrator privileges required",
+      });
+    }
     const { id } = req.params;
     const { WhatsAppCampaign } = req.tenantModels;
 
@@ -516,6 +534,12 @@ export const retryFailedRecipients = async (req, res) => {
  */
 export const getCampaignRecipients = async (req, res) => {
   try {
+    if (req.user?.role === "sales person" && !req.user?.isOrgOwner) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Manager or Administrator privileges required",
+      });
+    }
     const { id } = req.params;
     const { WhatsAppCampaignRecipient } = req.tenantModels;
     const { page = 1, limit = 20, status, search } = req.query;
@@ -561,6 +585,12 @@ export const getCampaignRecipients = async (req, res) => {
  */
 export const getCampaignAnalytics = async (req, res) => {
   try {
+    if (req.user?.role === "sales person" && !req.user?.isOrgOwner) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Manager or Administrator privileges required",
+      });
+    }
     const { id } = req.params;
     const { WhatsAppCampaign, WhatsAppCampaignRecipient } = req.tenantModels;
 

@@ -3,6 +3,7 @@ import Lead from "../models/Lead.js";
 import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
 import WhatsAppSession from "../models/WhatsAppSession.js";
+import User from "../models/User.js";
 import {
   connectWhatsApp,
   logoutWhatsApp,
@@ -20,7 +21,23 @@ const getModels = (req) => ({
   MessageModel: req.tenantModels?.Message || Message,
   ConversationModel: req.tenantModels?.Conversation || Conversation,
   WhatsAppSessionModel: req.tenantModels?.WhatsAppSession || WhatsAppSession,
+  UserModel: req.tenantModels?.User || User,
 });
+
+const isLeadAssignedToUser = (lead, user) => {
+  if (!lead || !user) return false;
+  const userIdStr = (user._id || user.id || "").toString();
+  const userName = user.name || "";
+  const assigned = lead.assignedTo;
+  if (!assigned) return false;
+  if (typeof assigned === "object") {
+    const assignedId = (assigned._id || assigned.id || "").toString();
+    const assignedName = assigned.name || "";
+    return (userIdStr && assignedId === userIdStr) || (userName && assignedName === userName);
+  }
+  const assignedStr = assigned.toString();
+  return (userIdStr && assignedStr === userIdStr) || (userName && assignedStr === userName);
+};
 
 // @desc    Connect WhatsApp (starts Baileys client initialization)
 // @route   POST /api/whatsapp/connect
@@ -33,6 +50,38 @@ export const connectClient = async (req, res) => {
         ? req.organization._id.toString()
         : req.body.organizationId || null;
     const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
+
+    // ================================================================
+    // SALES REP PERSONAL SESSION GATE
+    // Sales reps always connect to their own personal session.
+    // They cannot choose a device number or sessionId — it's auto-set.
+    // ================================================================
+    if (req.user?.role === "sales person") {
+      const repUserId = req.user._id.toString();
+      const repPhone = (req.user.phone || "").trim();
+
+      if (!repPhone) {
+        return res.status(400).json({
+          message:
+            "No WhatsApp number is registered in your profile. Please contact your administrator to add your phone number before connecting.",
+        });
+      }
+
+      const targetSessionId = `org_${orgId}_user_${repUserId}`;
+      connectWhatsApp({
+        sessionId: targetSessionId,
+        organizationId: orgId,
+        tenantDbName,
+      });
+      return res.status(200).json({
+        message: "WhatsApp connection started for your personal line. Please scan the QR code when it appears.",
+        sessionId: targetSessionId,
+        expectedPhone: repPhone,
+      });
+    }
+    // ================================================================
+    // END SALES REP GATE — falls through to existing admin logic below
+    // ================================================================
 
     // Determine organization's allowed WhatsApp line limit
     let lineLimit = 2; // default fallback
@@ -91,6 +140,62 @@ export const getStatus = async (req, res) => {
         ? req.organization._id.toString()
         : null;
 
+    const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
+
+    // ================================================================
+    // SALES REP: Return only their personal session status
+    // ================================================================
+    if (req.user?.role === "sales person") {
+      const repUserId = req.user._id.toString();
+      const repSessionId = `org_${orgId}_user_${repUserId}`;
+      const memStatuses = getWhatsAppStatus(orgId);
+      const memSession = memStatuses.find((s) => s.sessionId === repSessionId) || {};
+      const dbSession = await WhatsAppSessionModel.findOne({ sessionId: repSessionId }).lean();
+
+      // Resolve status: prefer active in-memory runtime state.
+      // If there is no in-memory session:
+      // - If DB says "connected", trigger auto-heal and report "connecting".
+      // - Otherwise, any stale "connecting" or "qr" in DB from a previous server run is reset to "disconnected".
+      let status = "disconnected";
+      if (memSession.status) {
+        status = memSession.status;
+      } else if (dbSession?.status === "connected") {
+        status = "connecting";
+        connectWhatsApp({ sessionId: repSessionId, organizationId: orgId, tenantDbName }).catch(() => {});
+      } else {
+        status = "disconnected";
+        if (dbSession?.status === "connecting" || dbSession?.status === "qr") {
+          WhatsAppSessionModel.updateOne(
+            { sessionId: repSessionId },
+            { $set: { status: "disconnected", qrCode: "" } }
+          ).catch(() => {});
+        }
+      }
+
+      return res.status(200).json({
+        sessions: [
+          {
+            sessionId: repSessionId,
+            organizationId: orgId,
+            status,
+            qrCode: status === "qr" ? memSession.qrCode || dbSession?.qrCode || "" : "",
+            connectedPhone: memSession.connectedPhone || dbSession?.connectedPhone || "",
+            connectedName: memSession.connectedName || dbSession?.connectedName || "",
+            isPrimary: true,
+            label: "My WhatsApp Line",
+            isRepSession: true,
+            expectedPhone: req.user.phone || "",
+            errorMessage: dbSession?.errorMessage || "",
+          },
+        ],
+        isRepSession: true,
+        whatsappLineLimit: 1,
+      });
+    }
+    // ================================================================
+    // END SALES REP PATH — falls through to existing admin logic below
+    // ================================================================
+
     if (!orgId) {
       // Legacy single-tenant fallback (always return both device slots)
       const allowedSessionIds = ["device_1", "device_2"];
@@ -145,8 +250,6 @@ export const getStatus = async (req, res) => {
 
     const result = [];
 
-    const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
-
     // 1. Always include Primary Session
     const primaryMem = memoryStatuses.find((m) => m.sessionId === primarySessionId);
     const primaryDb = dbSessions.find((d) => d.sessionId === primarySessionId);
@@ -161,9 +264,20 @@ export const getStatus = async (req, res) => {
       }).catch((e) => console.error(`[WhatsApp] Auto-connect from getStatus failed for ${primarySessionId}:`, e));
     }
 
-    const primaryStatus =
-      primaryMem?.status ||
-      (primaryDb?.status === "connected" ? "connecting" : primaryDb?.status || "disconnected");
+    let primaryStatus = "disconnected";
+    if (primaryMem?.status) {
+      primaryStatus = primaryMem.status;
+    } else if (primaryDb?.status === "connected") {
+      primaryStatus = "connecting";
+    } else {
+      primaryStatus = "disconnected";
+      if (primaryDb?.status === "connecting" || primaryDb?.status === "qr") {
+        WhatsAppSessionModel.updateOne(
+          { sessionId: primarySessionId },
+          { $set: { status: "disconnected", qrCode: "" } }
+        ).catch(() => {});
+      }
+    }
 
     result.push({
       sessionId: primarySessionId,
@@ -190,9 +304,20 @@ export const getStatus = async (req, res) => {
         }).catch((e) => console.error(`[WhatsApp] Auto-connect from getStatus failed for ${secondarySessionId}:`, e));
       }
 
-      const secondaryStatus =
-        secondaryMem?.status ||
-        (secondaryDb?.status === "connected" ? "connecting" : secondaryDb?.status || "disconnected");
+      let secondaryStatus = "disconnected";
+      if (secondaryMem?.status) {
+        secondaryStatus = secondaryMem.status;
+      } else if (secondaryDb?.status === "connected") {
+        secondaryStatus = "connecting";
+      } else {
+        secondaryStatus = "disconnected";
+        if (secondaryDb?.status === "connecting" || secondaryDb?.status === "qr") {
+          WhatsAppSessionModel.updateOne(
+            { sessionId: secondarySessionId },
+            { $set: { status: "disconnected", qrCode: "" } }
+          ).catch(() => {});
+        }
+      }
 
       result.push({
         sessionId: secondarySessionId,
@@ -223,6 +348,20 @@ export const logoutClient = async (req, res) => {
       : req.organization?._id
         ? req.organization._id.toString()
         : null;
+
+    // ================================================================
+    // SALES REP: Only allow logout of their own personal session
+    // ================================================================
+    if (req.user?.role === "sales person") {
+      const repUserId = req.user._id.toString();
+      const targetSessionId = `org_${orgId}_user_${repUserId}`;
+      await logoutWhatsApp(targetSessionId);
+      return res.status(200).json({
+        message: "Your WhatsApp line has been disconnected successfully.",
+        sessionId: targetSessionId,
+      });
+    }
+    // ================================================================
 
     let targetSessionId;
     if (orgId) {
@@ -258,7 +397,7 @@ export const getQR = async (req, res) => {
         ? req.organization._id.toString()
         : null;
     let lineLimit = 1;
-    if (orgId) {
+    if (orgId && mongoose.connection.readyState === 1) {
       try {
         const { Organization } = getMasterModels();
         const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
@@ -267,6 +406,34 @@ export const getQR = async (req, res) => {
     }
 
     let targetSessionId = req.query.sessionId;
+
+    // ================================================================
+    // QR SESSION OWNERSHIP ENFORCEMENT
+    // Sales reps can only access their own session QR code.
+    // Admins can only access organization line QR codes.
+    // ================================================================
+    if (req.user?.role === "sales person") {
+      const repSessionId = orgId
+        ? `org_${orgId}_user_${req.user._id.toString()}`
+        : `user_${req.user._id.toString()}`;
+      if (req.query.sessionId && req.query.sessionId !== repSessionId) {
+        return res.status(403).json({
+          message:
+            "Access denied. Sales representatives can only access their own WhatsApp session QR code.",
+          qrCode: "",
+        });
+      }
+      targetSessionId = repSessionId;
+    } else if (req.user?.role === "sales manager" || req.user?.role === "super_admin") {
+      if (targetSessionId && targetSessionId.includes("_user_")) {
+        return res.status(403).json({
+          message:
+            "Administrators can only generate QR codes for organization lines.",
+          qrCode: "",
+        });
+      }
+    }
+
     const isDevice2 =
       req.query.device === "2" ||
       req.query.deviceNumber === "2" ||
@@ -286,8 +453,23 @@ export const getQR = async (req, res) => {
         ? (orgId ? `org_${orgId}_device_2` : "device_2")
         : (orgId ? `org_${orgId}` : "device_1");
     }
-    const statusData = statusDataList.find((s) => s.sessionId === targetSessionId) || statusDataList[0] || {};
-    res.status(200).json({ qrCode: statusData.qrCode || "", sessionId: targetSessionId });
+    const statusData = statusDataList.find((s) => s.sessionId === targetSessionId) || {};
+    let qrCode = statusData.qrCode || "";
+
+    // Fallback to database persisted QR code if memory QR is not set
+    if (!qrCode && targetSessionId) {
+      try {
+        const { WhatsAppSessionModel } = getModels(req);
+        const dbSession = await WhatsAppSessionModel.findOne({ sessionId: targetSessionId })
+          .select("qrCode status")
+          .lean();
+        if (dbSession?.status === "qr" && dbSession?.qrCode) {
+          qrCode = dbSession.qrCode;
+        }
+      } catch (dbErr) {}
+    }
+
+    res.status(200).json({ qrCode, sessionId: targetSessionId });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -298,27 +480,35 @@ export const getQR = async (req, res) => {
 // @access  Public
 export const getConversations = async (req, res) => {
   try {
-    const { role, name, userId } = req.query;
     const { ConversationModel } = getModels(req);
-
-    const isSalesRep =
-      role === "Sales Representative" ||
-      role === "sales person" ||
-      req.user?.role === "sales person";
-    const effectiveUserId = userId || req.user?._id || req.userTokenData?.id;
+    const userRole = req.user?.role;
+    const isSalesRep = userRole === "sales person";
 
     const populateOptions = { path: "leadId" };
 
-    if (isSalesRep && (effectiveUserId || name)) {
+    if (isSalesRep) {
+      // Security: Strictly enforce authenticated user's ID/name. Ignore req.query overrides.
+      const matchArray = [
+        String(req.user._id),
+        new mongoose.Types.ObjectId(req.user._id),
+      ];
+      if (req.user.name) {
+        matchArray.push(new RegExp("^" + req.user.name.trim() + "$", "i"));
+      }
+      populateOptions.match = {
+        assignedTo: { $in: matchArray },
+      };
+    } else if (req.query.userId || req.query.name) {
+      // Admins and managers can filter by rep
       const matchArray = [];
-      if (effectiveUserId) {
-        matchArray.push(String(effectiveUserId));
-        if (mongoose.Types.ObjectId.isValid(effectiveUserId)) {
-          matchArray.push(new mongoose.Types.ObjectId(effectiveUserId));
+      if (req.query.userId) {
+        matchArray.push(String(req.query.userId));
+        if (mongoose.Types.ObjectId.isValid(req.query.userId)) {
+          matchArray.push(new mongoose.Types.ObjectId(req.query.userId));
         }
       }
-      if (name) {
-        matchArray.push(new RegExp("^" + name + "$", "i"));
+      if (req.query.name) {
+        matchArray.push(new RegExp("^" + req.query.name.trim() + "$", "i"));
       }
       populateOptions.match = {
         assignedTo: matchArray.length === 1 ? matchArray[0] : { $in: matchArray },
@@ -330,7 +520,7 @@ export const getConversations = async (req, res) => {
       .sort({ lastMessageTime: -1 });
 
     // Filter out conversations where leadId is null (due to population match failure)
-    if (isSalesRep && (effectiveUserId || name)) {
+    if (isSalesRep || req.query.userId || req.query.name) {
       conversations = conversations.filter((c) => c.leadId != null);
     }
 
@@ -350,7 +540,26 @@ export const getMessages = async (req, res) => {
       return res.status(400).json({ message: "leadId is required." });
     }
 
-    const { ConversationModel, MessageModel } = getModels(req);
+    const { ConversationModel, MessageModel, LeadModel } = getModels(req);
+
+    // Security: Check lead existence and sales rep assignment
+    const lead = await LeadModel.findById(leadId).select("assignedTo").lean();
+    if (!lead) {
+      return res.status(404).json({ message: "Lead not found." });
+    }
+
+    if (req.user?.role === "sales person") {
+      const repId = req.user._id.toString();
+      const repName = req.user.name;
+      const isAssigned =
+        lead.assignedTo?.toString() === repId ||
+        (repName && lead.assignedTo === repName);
+      if (!isAssigned) {
+        return res.status(403).json({
+          message: "Access denied. You are not assigned to this conversation.",
+        });
+      }
+    }
 
     // Reset unread count for this conversation since the agent is loading it
     await ConversationModel.findOneAndUpdate({ leadId }, { unreadCount: 0 });
@@ -374,14 +583,77 @@ export const sendMessage = async (req, res) => {
         .json({ message: "leadId and text are required fields." });
     }
 
+    const { LeadModel, MessageModel, UserModel } = getModels(req);
+    const lead = await LeadModel.findById(leadId).lean();
+    if (!lead) {
+      return res.status(404).json({ message: "Lead not found." });
+    }
+
+    const senderRole = req.user?.role;
     const orgId = req.user?.organizationId
       ? req.user.organizationId.toString()
       : req.organization?._id
         ? req.organization._id.toString()
         : null;
 
+    // Check if conversation/lead belongs to a sales rep in the database
+    let isRepOwned = false;
+    if (lead.assignedTo && lead.assignedTo !== "Unassigned") {
+      if (mongoose.Types.ObjectId.isValid(lead.assignedTo)) {
+        const assignedUser = await UserModel.findById(lead.assignedTo).select("role").lean();
+        if (assignedUser?.role === "sales person") isRepOwned = true;
+      } else if (typeof lead.assignedTo === "string") {
+        const assignedUser = await UserModel.findOne({ name: lead.assignedTo }).select("role").lean();
+        if (assignedUser?.role === "sales person") isRepOwned = true;
+      }
+    }
+    if (!isRepOwned) {
+      const repMessage = await MessageModel.findOne({
+        leadId,
+        $or: [
+          { salesRepId: { $ne: null } },
+          { sessionId: { $regex: "_user_" } },
+        ],
+      }).select("_id").lean();
+      if (repMessage) isRepOwned = true;
+    }
+
+    // ================================================================
+    // ADMIN VIEW-ONLY ENFORCEMENT
+    // Admins and Sales Managers have strictly VIEW-ONLY access to
+    // sales representative conversations, regardless of request payload.
+    // ================================================================
+    if (senderRole === "sales manager" || senderRole === "super_admin") {
+      if (isRepOwned) {
+        return res.status(403).json({
+          message:
+            "Administrators have View-Only access to sales representative WhatsApp conversations. Only the assigned Sales Representative can send messages.",
+        });
+      }
+    }
+
+    // ================================================================
+    // SALES REP ASSIGNMENT ENFORCEMENT
+    // Sales reps can ONLY send messages to leads assigned to them.
+    // ================================================================
     let targetSessionId = req.body.sessionId;
-    if (orgId) {
+    if (senderRole === "sales person") {
+      const repId = req.user._id.toString();
+      const repName = req.user.name;
+      const isAssigned =
+        lead.assignedTo?.toString() === repId ||
+        (repName && lead.assignedTo === repName);
+
+      if (!isAssigned) {
+        return res.status(403).json({
+          message:
+            "Access denied. You are only authorized to send messages to leads assigned to you.",
+        });
+      }
+
+      // Always route to the sales rep's personal session
+      targetSessionId = orgId ? `org_${orgId}_user_${repId}` : `user_${repId}`;
+    } else if (orgId) {
       let lineLimit = 1;
       try {
         const { Organization } = getMasterModels();
@@ -426,22 +698,25 @@ export const toggleAI = async (req, res) => {
 
     const { LeadModel } = getModels(req);
 
-    // Build update payload
-    const updatePayload = { aiEnabled };
-    // When enabling AI, also clear any active 5-minute pause
-    if (aiEnabled) {
-      updatePayload.aiPausedUntil = null;
-    }
-
-    const lead = await LeadModel.findByIdAndUpdate(
-      leadId,
-      updatePayload,
-      { new: true },
-    );
-
+    const lead = await LeadModel.findById(leadId);
     if (!lead) {
       return res.status(404).json({ message: "Lead not found" });
     }
+
+    // Role-based / lead assignment check: sales reps can only toggle AI for assigned leads
+    if (req.user?.role === "sales person" && !req.user?.isOrgOwner) {
+      if (!isLeadAssignedToUser(lead, req.user)) {
+        return res.status(403).json({
+          message: "Access denied: You are not assigned to this lead.",
+        });
+      }
+    }
+
+    lead.aiEnabled = aiEnabled;
+    if (aiEnabled) {
+      lead.aiPausedUntil = null;
+    }
+    await lead.save();
 
     // Cancel the in-memory pause timer if enabling AI
     if (aiEnabled) {
@@ -467,6 +742,13 @@ export const toggleAI = async (req, res) => {
 // @access  Public
 export const testAI = async (req, res) => {
   try {
+    // Role check: sales reps cannot access test AI or reset leads
+    if (req.user?.role === "sales person" && !req.user?.isOrgOwner) {
+      return res.status(403).json({
+        message: "Access denied: Only managers and administrators can access AI testing.",
+      });
+    }
+
     const { message, leadId, reset } = req.body;
     const { LeadModel, MessageModel } = getModels(req);
 
@@ -477,6 +759,23 @@ export const testAI = async (req, res) => {
     let lead;
     if (leadId) {
       lead = await LeadModel.findById(leadId);
+      if (!lead) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+
+      // Check lead assignment/ownership if caller is sales rep
+      if (req.user?.role === "sales person" && !req.user?.isOrgOwner) {
+        if (!isLeadAssignedToUser(lead, req.user)) {
+          return res.status(403).json({
+            message: "Access denied: You are not assigned to this lead.",
+          });
+        }
+        if (reset) {
+          return res.status(403).json({
+            message: "Access denied: Sales representatives cannot reset lead data.",
+          });
+        }
+      }
     } else {
       // Find or create dummy lead
       lead = await LeadModel.findOne({ phone: "0000000000" });
@@ -572,6 +871,12 @@ export const testAI = async (req, res) => {
 
 export const getTestAIHistory = async (req, res) => {
   try {
+    if (req.user?.role === "sales person" && !req.user?.isOrgOwner) {
+      return res.status(403).json({
+        message: "Access denied: Only managers and administrators can access AI testing.",
+      });
+    }
+
     const { LeadModel, MessageModel } = getModels(req);
     let lead = await LeadModel.findOne({ phone: "0000000000" });
     if (!lead) {
@@ -635,6 +940,13 @@ export const getGlobalSettings = async (req, res) => {
 
 export const updateGlobalSettings = async (req, res) => {
   try {
+    if (req.user?.role === "sales person" && !req.user?.isOrgOwner) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied: Only managers or administrators can update global WhatsApp settings.",
+      });
+    }
+
     const updates = req.body || {};
     const updatedBy = req.user?.name || "Dashboard User";
     const orgId = req.user?.organizationId
@@ -645,6 +957,118 @@ export const updateGlobalSettings = async (req, res) => {
     const settings = await updateSystemSettings(updates, updatedBy, req.tenantModels, orgId);
     res.status(200).json({ success: true, data: settings });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    AI Chat Summarization — analyze and summarize a lead's WhatsApp conversation
+// @route   POST /api/whatsapp/conversation/:leadId/summarize
+// @access  Protected
+export const summarizeConversation = async (req, res) => {
+  try {
+    const { leadId } = req.params;
+    const { forceRefresh } = req.body;
+
+    if (!leadId) {
+      return res.status(400).json({ success: false, message: "leadId is required." });
+    }
+
+    const { ConversationModel, LeadModel } = getModels(req);
+
+    // Security: Check lead existence and sales rep assignment
+    const lead = await LeadModel.findById(leadId).select("assignedTo").lean();
+    if (!lead) {
+      return res.status(404).json({ success: false, message: "Lead not found." });
+    }
+
+    if (req.user?.role === "sales person") {
+      const repId = req.user._id.toString();
+      const repName = req.user.name;
+      const isAssigned =
+        lead.assignedTo?.toString() === repId ||
+        (repName && lead.assignedTo === repName);
+      if (!isAssigned) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You are not authorized to summarize this conversation.",
+        });
+      }
+    }
+
+    // Force refresh: clear any existing cached summary so the service re-generates
+    if (forceRefresh) {
+      await ConversationModel.findOneAndUpdate(
+        { leadId },
+        { $unset: { chatSummary: 1 } }
+      );
+    }
+
+    const { summarizeChatConversation } = await import("../ai/aiService.js");
+    const summary = await summarizeChatConversation({
+      leadId,
+      tenantModels: req.tenantModels,
+      organization: req.organization,
+    });
+
+    res.status(200).json({ success: true, data: summary });
+  } catch (error) {
+    console.error("[WhatsApp] summarizeConversation error:", error.message);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get WhatsApp connection status for all sales reps (Admin/Manager overview)
+// @route   GET /api/whatsapp/team-status
+// @access  Protected (Admin / Sales Manager only)
+export const getTeamWhatsAppStatuses = async (req, res) => {
+  try {
+    // Only admins and managers can access this
+    if (req.user?.role === "sales person") {
+      return res.status(403).json({ success: false, message: "Access denied." });
+    }
+
+    const orgId = req.user?.organizationId?.toString() || req.organization?._id?.toString();
+    if (!orgId) {
+      return res.status(400).json({ success: false, message: "Organization context is required." });
+    }
+
+    const { UserModel, WhatsAppSessionModel } = getModels(req);
+
+    // Fetch all active sales reps
+    const reps = await UserModel.find({ role: "sales person", status: "active" })
+      .select("name phone email _id")
+      .lean();
+
+    const allMemSessions = getWhatsAppStatus(orgId);
+
+    const result = await Promise.all(
+      reps.map(async (rep) => {
+        const repSessionId = `org_${orgId}_user_${rep._id.toString()}`;
+        const memSession = allMemSessions.find((s) => s.sessionId === repSessionId) || {};
+        const dbSession = await WhatsAppSessionModel.findOne({ sessionId: repSessionId })
+          .select("status connectedPhone connectedName updatedAt errorMessage")
+          .lean();
+
+        const status = memSession.status || dbSession?.status || "disconnected";
+
+        return {
+          userId: rep._id,
+          name: rep.name || "Unknown",
+          email: rep.email || "",
+          profilePhone: rep.phone || "",
+          sessionId: repSessionId,
+          status,
+          connectedPhone: memSession.connectedPhone || dbSession?.connectedPhone || "",
+          connectedName: memSession.connectedName || dbSession?.connectedName || "",
+          lastSeen: dbSession?.updatedAt || null,
+          errorMessage: dbSession?.errorMessage || "",
+        };
+      })
+    );
+
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    console.error("[WhatsApp] getTeamWhatsAppStatuses error:", error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };

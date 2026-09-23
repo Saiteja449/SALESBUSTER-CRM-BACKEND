@@ -405,10 +405,9 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
       { upsert: true }
     );
 
-    // Emit live Socket.IO update
+    // Emit live Socket.IO update (deliver new_message ONLY to authorized lead chat room)
     if (io) {
       io.to(lead._id.toString()).emit("new_message", incomingRecord);
-      io.to(`org_${org._id}`).emit("new_message", incomingRecord);
       io.to(`org_${org._id}`).emit("conversation_updated", {
         leadId: lead._id,
         lastMessage: messageText,
@@ -498,7 +497,6 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
 
         if (io) {
           io.to(lead._id.toString()).emit("new_message", outgoingRecord);
-          io.to(`org_${org._id}`).emit("new_message", outgoingRecord);
           io.to(`org_${org._id}`).emit("conversation_updated", {
             leadId: lead._id,
             lastMessage: aiResponseText,

@@ -25,22 +25,22 @@ export const protect = async (req, res, next) => {
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-      // Ensure tenant models are attached
-      const tenantDbName = decoded.tenantDbName || req.tenantDbName;
-      if (tenantDbName && (!req.tenantModels || req.tenantDbName !== tenantDbName)) {
-        req.tenantDbName = tenantDbName;
-        req.tenantModels = getTenantModels(tenantDbName);
-      }
-
-      // Attach organization if available
-      if (decoded.organizationId && !req.organization) {
+      // Ensure tenant scope comes from verified user token, never unauthenticated headers
+      let tenantDbName = decoded.tenantDbName;
+      if (decoded.organizationId) {
         try {
           const { Organization } = getMasterModels();
           req.organization = await Organization.findById(decoded.organizationId);
+          if (!tenantDbName && req.organization?.tenantDbName) {
+            tenantDbName = req.organization.tenantDbName;
+          }
         } catch (orgErr) {
           console.error("Error finding organization in authMiddleware:", orgErr);
         }
       }
+
+      req.tenantDbName = tenantDbName || null;
+      req.tenantModels = tenantDbName ? getTenantModels(tenantDbName) : null;
 
       // Look up user: if super_admin, check Master AuthUser first
       let user = null;
@@ -153,10 +153,8 @@ export const protect = async (req, res, next) => {
  * Also supports x-admin-key header for backward-compatible server-to-server operations.
  */
 export const verifySuperAdmin = async (req, res, next) => {
-  
   const adminApiKey = req.headers["x-admin-key"];
-  const validApiKey =
-    process.env.ADMIN_API_KEY || "salesbuster_super_admin_secret_key_2026";
+  const configuredApiKey = process.env.ADMIN_API_KEY && process.env.ADMIN_API_KEY.trim();
 
   let token = null;
 
@@ -234,8 +232,8 @@ export const verifySuperAdmin = async (req, res, next) => {
     }
   }
 
-  // If no token, check if valid admin API key is provided
-  if (adminApiKey && adminApiKey === validApiKey) {
+  // If no token, check if valid configured admin API key is provided (strictly reject default fallback)
+  if (configuredApiKey && adminApiKey && adminApiKey === configuredApiKey) {
     req.user = {
       role: "super_admin",
       name: "Super Admin (API Key)",
@@ -260,9 +258,8 @@ export const requireSuperAdmin = (req, res, next) => {
   }
 
   const adminApiKey = req.headers["x-admin-key"];
-  const validApiKey =
-    process.env.ADMIN_API_KEY || "salesbuster_super_admin_secret_key_2026";
-  if (adminApiKey && adminApiKey === validApiKey) {
+  const configuredApiKey = process.env.ADMIN_API_KEY && process.env.ADMIN_API_KEY.trim();
+  if (configuredApiKey && adminApiKey && adminApiKey === configuredApiKey) {
     req.user = req.user || {
       role: "super_admin",
       name: "Super Admin (API Key)",

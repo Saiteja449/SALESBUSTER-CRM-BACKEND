@@ -93,6 +93,28 @@ export const normalizePhone = (jid) => {
 };
 
 /**
+ * Strict Phone Number Matching for Sales Rep Verification
+ * Prevents account sharing and cross-country code false matches.
+ */
+export const verifyPhoneNumberMatch = (scannedJidOrPhone, profilePhone) => {
+  if (!scannedJidOrPhone || !profilePhone) return false;
+  const scanned = normalizePhone(scannedJidOrPhone);
+  const rawProfile = String(profilePhone).trim();
+  const profileDigits = rawProfile.replace(/\D/g, "");
+  if (!scanned || !profileDigits) return false;
+
+  // If profile phone was provided with country code (+ or >10 digits): strict full match
+  if (rawProfile.startsWith("+") || profileDigits.length > 10) {
+    return scanned === profileDigits;
+  }
+  // If profile phone is 10 digits without country code, match default '91' prefix or exact digits
+  if (profileDigits.length === 10) {
+    return scanned === `91${profileDigits}` || scanned === profileDigits;
+  }
+  return scanned === profileDigits;
+};
+
+/**
  * Resolves tenant-specific models for a given sessionId
  */
 export const getModelsForSession = async (sessionId) => {
@@ -391,12 +413,146 @@ export const connectWhatsApp = async (param1, param2, param3) => {
           const phone = normalizePhone(userJid);
           const name = sock?.user?.name || "WhatsApp Business Agent";
 
+          // =========================================================
+          // =========================================================
+          // PHONE VERIFICATION GATE — Sales Rep sessions only
+          // Ensures the scanned WhatsApp number strictly matches the rep's
+          // registered profile phone. Fails closed on mismatch or error.
+          // =========================================================
+          if (sessionId.includes("_user_")) {
+            const userMatch = sessionId.match(/_user_([a-fA-F0-9]{24})$/);
+            if (!userMatch) {
+              console.warn(`[WhatsApp] Invalid rep sessionId format: ${sessionId}`);
+              try { sock.end(); } catch (e) {}
+              return;
+            }
+
+            const repUserId = userMatch[1];
+
+            // Helper to cleanly abort session, purge auth keys, update DB, and notify UI
+            const abortRepSession = async (errorMessage, logReason) => {
+              console.warn(`[WhatsApp] ABORTING ${sessionId}: ${logReason}`);
+              logWhatsAppEvent(`Session: ${sessionId} | REJECTED | ${logReason}`);
+
+              try { await sock.logout(); } catch (e) {}
+              try { sock.end(); } catch (e) {}
+              if (sessions[sessionId]) sessions[sessionId].sock = null;
+
+              try {
+                const models = await getModelsForSession(sessionId);
+                const AuthModel =
+                  models?.WhatsAppAuthState ||
+                  (await import("../models/WhatsAppAuthState.js")).default;
+                await AuthModel.deleteMany({ sessionId });
+
+                const SessionModel = models?.WhatsAppSession || WhatsAppSession;
+                await SessionModel.findOneAndUpdate(
+                  { sessionId },
+                  {
+                    status: "disconnected",
+                    errorMessage,
+                    qrCode: "",
+                    connectedPhone: "",
+                    connectedName: "",
+                  },
+                  { upsert: true }
+                );
+              } catch (dbErr) {
+                console.error(`[WhatsApp] Cleanup error for aborted session ${sessionId}:`, dbErr.message);
+              }
+
+              if (sessions[sessionId]) {
+                sessions[sessionId].status = "disconnected";
+                sessions[sessionId].qrCode = "";
+              }
+
+              const io = getIO();
+              if (io && sessions[sessionId]?.organizationId) {
+                io.to(`org_${sessions[sessionId].organizationId}`).emit("whatsapp_status", {
+                  sessionId,
+                  organizationId: sessions[sessionId].organizationId,
+                  status: "disconnected",
+                  error: "phone_mismatch",
+                  errorMessage,
+                  qrCode: "",
+                  connectedPhone: "",
+                  connectedName: "",
+                });
+              }
+            };
+
+            try {
+              const models = await getModelsForSession(sessionId);
+              const UserModel = models?.User || User;
+              const repUser = await UserModel.findById(repUserId).select("phone name").lean();
+
+              // Strict Requirement: Rep record and registered phone MUST exist
+              if (!repUser || !repUser.phone || !repUser.phone.trim()) {
+                await abortRepSession(
+                  "Sales representative profile or registered phone number not found. Access denied.",
+                  `Rep user ${repUserId} missing or has no phone in profile.`
+                );
+                return;
+              }
+
+              const profilePhone = repUser.phone.trim();
+              const isMatch = verifyPhoneNumberMatch(userJid, profilePhone);
+
+              if (!isMatch) {
+                const scannedPhone = normalizePhone(userJid);
+                const mismatchMsg = `Phone number mismatch: You scanned with +${scannedPhone}, but your administrator registered your profile with ${profilePhone.startsWith("+") ? profilePhone : `+${profilePhone}`}. Please connect your authorized number.`;
+                await abortRepSession(
+                  mismatchMsg,
+                  `Phone mismatch: Scanned +${scannedPhone} does not match expected profile ${profilePhone}`
+                );
+                return;
+              }
+
+              // Match passed: persist userId & expectedPhone to session record
+              try {
+                const SessionModel = models?.WhatsAppSession || WhatsAppSession;
+                await SessionModel.findOneAndUpdate(
+                  { sessionId },
+                  {
+                    userId: repUserId,
+                    expectedPhone: profilePhone.replace(/\D/g, ""),
+                    errorMessage: "",
+                  },
+                  { upsert: true }
+                );
+                console.log(
+                  `[WhatsApp] Phone verification PASSED for ${sessionId}. Rep: ${repUser.name}, Phone: ${profilePhone}`
+                );
+              } catch (persistErr) {
+                console.error(
+                  `[WhatsApp] Failed to persist userId to session record for ${sessionId}:`,
+                  persistErr
+                );
+              }
+            } catch (verifyErr) {
+              // Critical: FAIL CLOSED on error to prevent account sharing
+              console.error(
+                `[WhatsApp] Critical error during phone verification for ${sessionId} (FAILING CLOSED):`,
+                verifyErr
+              );
+              await abortRepSession(
+                "Phone verification failed due to internal error. Connection rejected for security.",
+                `Verification exception: ${verifyErr.message}`
+              );
+              return;
+            }
+          }
+          // =========================================================
+          // END PHONE VERIFICATION GATE
+          // =========================================================
+
           console.log(
             `WhatsApp is fully connected for ${sessionId}. Active on: ${phone} (${name})`,
           );
           updateSessionStatus(sessionId, "connected", "", phone, name);
         }
       });
+
 
       sock.ev.on("creds.update", saveCreds);
 
@@ -730,6 +886,11 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
     let isNewLead = false;
     let assignedRepName = "Sales Representative";
 
+    // Detect if this is a rep's personal session — used for direct assignment and message tagging
+    const repUserMatch = sessionId.match(/_user_([a-fA-F0-9]{24})$/);
+    const isRepSession = !!repUserMatch;
+    const repSessionUserId = repUserMatch ? repUserMatch[1] : null;
+
     if (!lead) {
       // Do NOT create a lead if the identifier is a LID (not a real phone number)
       // or if the message is outgoing (sent by us/fromMe) to a non-existent lead
@@ -754,37 +915,53 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
           : `Discovered via WhatsApp message: "${textContent.substring(0, 100)}"`,
       });
 
-      // Round-robin assignment logic for sales agents within tenant DB
-      console.log(`[DEBUG] Assigning lead via round-robin...`);
-      const representatives = await UserModel.find({ role: "sales person" }).sort({
-        _id: 1,
-      });
       let assignedRep = null;
-      if (representatives && representatives.length > 0) {
-        let state = await AssignmentStateModel.findOne({ key: "leadAssignment" });
-        if (!state) {
-          state = await AssignmentStateModel.create({
-            key: "leadAssignment",
-            lastAssignedIndex: -1,
-          });
-        }
 
-        let nextIndex = state.lastAssignedIndex + 1;
-        if (nextIndex >= representatives.length) {
-          nextIndex = 0;
-        }
+      if (isRepSession && repSessionUserId) {
+        // =====================================================
+        // DIRECT ASSIGNMENT — bypass round-robin for rep sessions
+        // Inbound messages on a rep's personal line go straight
+        // to that rep without touching the round-robin counter.
+        // =====================================================
+        lead.assignedTo = repSessionUserId;
+        const repUser = await UserModel.findById(repSessionUserId).select("name").lean();
+        assignedRep = repUser;
+        assignedRepName = repUser?.name || "Sales Representative";
+        console.log(
+          `[DEBUG] Rep-session lead: direct assignment to rep ${repSessionUserId} (${assignedRepName})`
+        );
+      } else {
+        // Standard round-robin assignment for admin/org sessions
+        console.log(`[DEBUG] Assigning lead via round-robin...`);
+        const representatives = await UserModel.find({ role: "sales person" }).sort({
+          _id: 1,
+        });
+        if (representatives && representatives.length > 0) {
+          let state = await AssignmentStateModel.findOne({ key: "leadAssignment" });
+          if (!state) {
+            state = await AssignmentStateModel.create({
+              key: "leadAssignment",
+              lastAssignedIndex: -1,
+            });
+          }
 
-        assignedRep = representatives[nextIndex];
-        lead.assignedTo = assignedRep._id.toString();
-        state.lastAssignedIndex = nextIndex;
-        await state.save();
+          let nextIndex = state.lastAssignedIndex + 1;
+          if (nextIndex >= representatives.length) {
+            nextIndex = 0;
+          }
+
+          assignedRep = representatives[nextIndex];
+          lead.assignedTo = assignedRep._id.toString();
+          state.lastAssignedIndex = nextIndex;
+          await state.save();
+          assignedRepName = assignedRep?.name || "Sales Representative";
+        }
       }
 
       await lead.save();
 
       // Create Lead Notification in tenant DB
       const targetUsers = assignedRep ? [assignedRep._id] : [];
-      assignedRepName = assignedRep?.name || "Sales Representative";
       await NotificationModel.create({
         title: fromMe
           ? "New WhatsApp Outgoing Lead Capture"
@@ -841,7 +1018,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       });
     }
 
-    // 3. Create message record
+    // 3. Create message record — include session traceability fields
     const isFromMe = msg.key.fromMe;
     const messageRecord = await MessageModel.create({
       messageId,
@@ -856,6 +1033,9 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       delivered: true,
       read: false,
       status: isFromMe ? "sent" : "received",
+      // Multi-user session traceability
+      sessionId: sessionId || null,
+      salesRepId: isRepSession && repSessionUserId ? repSessionUserId : null,
     });
 
     // 4. Update Conversation session meta
@@ -882,7 +1062,24 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       // Broadcast to specific lead chat room
       io.to(lead._id.toString()).emit("new_message", messageRecord);
 
-      const convPayload = {
+      // Non-sensitive metadata ONLY to the general organization room (no message text, no contact details)
+      const convMetaPayload = {
+        leadId: lead._id,
+        timestamp: timestamp || new Date(),
+      };
+
+      if (orgId) {
+        io.to(`org_${orgId}`).emit("conversation_updated", convMetaPayload);
+      } else {
+        io.emit("conversation_updated", convMetaPayload);
+      }
+
+      const assignedUserId = lead.assignedTo
+        ? (typeof lead.assignedTo === "object" ? lead.assignedTo._id || lead.assignedTo.id : lead.assignedTo).toString()
+        : null;
+
+      // Rich conversation details sent strictly to leadership and assigned representative
+      const convRichPayload = {
         leadId: lead._id,
         unreadCount: conversation.unreadCount,
         lastMessage: textContent,
@@ -892,13 +1089,13 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       };
 
       if (orgId) {
-        io.to(`org_${orgId}`).emit("new_message", messageRecord);
-        io.to(`org_${orgId}`).emit("conversation_updated", convPayload);
-      } else {
-        io.emit("conversation_updated", convPayload);
+        io.to(`org_${orgId}_admins`).emit("conversation_updated_rich", convRichPayload);
+      }
+      if (assignedUserId) {
+        io.to(`user_${assignedUserId}`).emit("conversation_updated_rich", convRichPayload);
       }
 
-      // Broadcast new lead alert toast event (ONLY for newly discovered WhatsApp leads)
+      // Broadcast new lead alert toast event (ONLY to leadership and assigned representative)
       if (isNewLead) {
         const newLeadAlertPayload = {
           lead: {
@@ -918,9 +1115,10 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
         };
 
         if (orgId) {
-          io.to(`org_${orgId}`).emit("whatsapp_new_lead", newLeadAlertPayload);
-        } else {
-          io.emit("whatsapp_new_lead", newLeadAlertPayload);
+          io.to(`org_${orgId}_admins`).emit("whatsapp_new_lead", newLeadAlertPayload);
+        }
+        if (assignedUserId) {
+          io.to(`user_${assignedUserId}`).emit("whatsapp_new_lead", newLeadAlertPayload);
         }
         console.log(`[DEBUG] Emitted whatsapp_new_lead alert for ${lead.phone} (${lead.name})`);
       }
@@ -1238,10 +1436,11 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
 
     // Send the reply message using Baileys socket for this session
     let sock = sessionId ? sessions[sessionId]?.sock : null;
-    if (!sock && orgId) {
-      sock = Object.values(sessions).find(
-        (s) => s.organizationId === orgId && s.status === "connected",
-      )?.sock;
+    if (!sock && orgId && (!sessionId || sessionId === `org_${orgId}`)) {
+      const orgSession = sessions[`org_${orgId}`];
+      if (orgSession && orgSession.status === "connected") {
+        sock = orgSession.sock;
+      }
     }
     if (!sock && !orgId && sessionId === "device_1") {
       sock = sessions["device_1"]?.sock;
@@ -1291,7 +1490,6 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
             lastMessageTime: outboundTimestamp,
           };
           if (orgId) {
-            io.to(`org_${orgId}`).emit("new_message", replyRecord);
             io.to(`org_${orgId}`).emit("conversation_updated", updatePayload);
           } else {
             io.emit("conversation_updated", updatePayload);
@@ -1344,18 +1542,24 @@ export const sendMessageFromCRM = async (
     sessionId = `org_${organizationId}`;
   }
 
-  // Find socket for this specific session or organization
-  let sock = sessionId ? sessions[sessionId]?.sock : null;
-  if (!sock && organizationId) {
-    sock = Object.values(sessions).find(
-      (s) => s.organizationId === organizationId && s.status === "connected",
-    )?.sock;
+  // Cross-tenant validation: If organizationId is provided, validate sessionId strictly belongs to this organization
+  if (sessionId && organizationId) {
+    const orgPrefix = `org_${organizationId}`;
+    const belongsToOrg = sessionId === orgPrefix || sessionId.startsWith(`${orgPrefix}_`);
+    if (!belongsToOrg) {
+      throw new Error(`Unauthorized: WhatsApp session ${sessionId} does not belong to organization ${organizationId}`);
+    }
   }
-  if (!sock && !organizationId) {
-    sock = Object.values(sessions).find(
-      (s) => s.status === "connected",
-    )?.sock;
+
+  // Find socket strictly for this specific session
+  let sock = null;
+  if (sessionId) {
+    const sessionObj = sessions[sessionId];
+    if (sessionObj && (!organizationId || sessionObj.organizationId?.toString() === organizationId.toString())) {
+      sock = sessionObj.sock;
+    }
   }
+  // Strictly prevent arbitrary cross-tenant or cross-rep session fallback
   if (!sock) {
     // Check if session has saved credentials in DB
     const targetSessionId = sessionId || (organizationId ? `org_${organizationId}` : null);
@@ -1452,7 +1656,6 @@ export const sendMessageFromCRM = async (
       lastMessageTime: timestamp,
     };
     if (organizationId) {
-      io.to(`org_${organizationId}`).emit("new_message", messageRecord);
       io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
     } else {
       io.emit("conversation_updated", updatePayload);
@@ -1477,11 +1680,15 @@ export const getWhatsAppStatus = (organizationId = null) => {
 
   if (organizationId) {
     const orgStr = organizationId.toString();
-    const primaryId = `org_${orgStr}`;
-    const secondaryId = `org_${orgStr}_device_2`;
-    list = list.filter(
-      (s) => s.sessionId === primaryId || s.sessionId === secondaryId
-    );
+    const orgPrefix = `org_${orgStr}`;
+    list = list.filter((s) => {
+      const sOrgId = s.organizationId ? s.organizationId.toString() : null;
+      return (
+        sOrgId === orgStr ||
+        s.sessionId === orgPrefix ||
+        s.sessionId.startsWith(`${orgPrefix}_`)
+      );
+    });
   }
 
   return list;
@@ -1497,15 +1704,11 @@ export const sendAutomatedFollowup = async (lead, imageUrl, text, context = {}) 
   }
 
   let sock = sessionId ? sessions[sessionId]?.sock : null;
-  if (!sock && organizationId) {
-    sock = Object.values(sessions).find(
-      (s) => s.organizationId === organizationId && s.status === "connected",
-    )?.sock;
-  }
-  if (!sock && !organizationId) {
-    sock = Object.values(sessions).find(
-      (s) => s.status === "connected",
-    )?.sock;
+  if (!sock && organizationId && (!sessionId || sessionId === `org_${organizationId}`)) {
+    const orgSession = sessions[`org_${organizationId}`];
+    if (orgSession && orgSession.status === "connected") {
+      sock = orgSession.sock;
+    }
   }
   if (!sock) {
     const targetSessionId = sessionId || (organizationId ? `org_${organizationId}` : null);
@@ -1590,7 +1793,6 @@ export const sendAutomatedFollowup = async (lead, imageUrl, text, context = {}) 
         lastMessageTime: timestamp,
       };
       if (organizationId) {
-        io.to(`org_${organizationId}`).emit("new_message", messageRecord);
         io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
       } else {
         io.emit("conversation_updated", updatePayload);
@@ -1707,17 +1909,13 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
       return null;
     }
 
-    // Find active connected WhatsApp socket for this organization
+    // Find active connected WhatsApp socket for this organization line
     let sock = sessionId ? sessions[sessionId]?.sock : null;
-    if (!sock && organizationId) {
-      sock = Object.values(sessions).find(
-        (s) => s.organizationId === organizationId && s.status === "connected",
-      )?.sock;
-    }
-    if (!sock && !organizationId) {
-      sock = Object.values(sessions).find(
-        (s) => s.status === "connected",
-      )?.sock;
+    if (!sock && organizationId && (!sessionId || sessionId === `org_${organizationId}`)) {
+      const orgSession = sessions[`org_${organizationId}`];
+      if (orgSession && orgSession.status === "connected") {
+        sock = orgSession.sock;
+      }
     }
 
     if (!sock) {
@@ -1850,7 +2048,6 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
           lastMessageTime: timestamp,
         };
         if (organizationId) {
-          io.to(`org_${organizationId}`).emit("new_message", messageRecord);
           io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
         } else {
           io.emit("conversation_updated", updatePayload);
@@ -2027,6 +2224,34 @@ export const initAllOrganizationWhatsAppConnections = async () => {
         } else {
           console.log(`[WhatsApp] No saved session credentials for organization "${org.name}". Ready for linking.`);
         }
+
+        // ================================================================
+        // MULTI-USER: Also reconnect all saved sales rep personal sessions
+        // Regex matches: org_<orgId>_user_<24-char-hex-userId>
+        // ================================================================
+        try {
+          const userSessionCreds = await models.WhatsAppAuthState.find({
+            sessionId: { $regex: `^org_${orgId}_user_[a-fA-F0-9]{24}$` },
+            type: "creds",
+          });
+          if (userSessionCreds && userSessionCreds.length > 0) {
+            console.log(
+              `[WhatsApp] Found ${userSessionCreds.length} rep session credential(s) for org "${org.name}". Auto-connecting...`
+            );
+            for (const cred of userSessionCreds) {
+              connectWhatsApp({
+                sessionId: cred.sessionId,
+                organizationId: orgId,
+                tenantDbName,
+              }).catch((err) =>
+                console.error(`[WhatsApp] Failed to auto-connect rep session ${cred.sessionId}:`, err)
+              );
+            }
+          }
+        } catch (repSessionErr) {
+          console.error(`[WhatsApp] Error checking rep sessions for org ${org.name}:`, repSessionErr);
+        }
+
       } catch (orgErr) {
         console.error(`[WhatsApp] Error initializing connection for org ${org.name}:`, orgErr);
       }
@@ -2105,6 +2330,38 @@ export const startWhatsAppWatchdog = () => {
               }
             }
           }
+
+          // ================================================================
+          // MULTI-USER WATCHDOG: Also heal disconnected rep personal sessions
+          // ================================================================
+          try {
+            const userSessionCreds = await models.WhatsAppAuthState.find({
+              sessionId: { $regex: `^org_${orgId}_user_[a-fA-F0-9]{24}$` },
+              type: "creds",
+            });
+            for (const cred of userSessionCreds) {
+              const sId = cred.sessionId;
+              const current = sessions[sId];
+              const isLive = current?.sock && current?.status === "connected";
+              const isConnecting = current?.status === "connecting";
+              const hasPendingReconnect = reconnectTimers.has(sId);
+              if (!isLive && !isConnecting && !hasPendingReconnect) {
+                console.log(
+                  `[WhatsApp Watchdog] Rep session ${sId} ("${org.name}") is ${current?.status || "unloaded"}. Auto-reconnecting...`
+                );
+                connectWhatsApp({
+                  sessionId: sId,
+                  organizationId: orgId,
+                  tenantDbName,
+                }).catch((err) =>
+                  console.error(`[WhatsApp Watchdog] Rep session reconnect failed for ${sId}:`, err)
+                );
+              }
+            }
+          } catch (repWatchErr) {
+            // Silent catch — do not interrupt main watchdog loop
+          }
+
         } catch (orgErr) {
           // Silent catch per organization to not interrupt the loop
         }

@@ -30,8 +30,9 @@ export const tenantMiddleware = async (req, res, next) => {
       }
     }
 
-    // 2. Check explicit headers or query params
-    if (!tenantDbName) {
+    // 2. Only allow explicit headers or query params if NO authenticated user token is provided
+    // (Genuinely unauthenticated public endpoints like website lead capture or static chat can use this)
+    if (!req.headers.authorization && !tenantDbName) {
       tenantDbName =
         req.headers["x-tenant-db"] ||
         req.headers["x-tenant-id"] ||
@@ -83,9 +84,8 @@ export const checkSubscriptionActive = (req, res, next) => {
   }
 
   const adminApiKey = req.headers["x-admin-key"];
-  const validApiKey =
-    process.env.ADMIN_API_KEY || "salesbuster_super_admin_secret_key_2026";
-  if (adminApiKey && adminApiKey === validApiKey) {
+  const configuredApiKey = process.env.ADMIN_API_KEY && process.env.ADMIN_API_KEY.trim();
+  if (configuredApiKey && adminApiKey && adminApiKey === configuredApiKey) {
     return next();
   }
 

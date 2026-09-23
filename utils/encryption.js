@@ -7,10 +7,7 @@ const IV_LENGTH = 12; // 12 bytes recommended for AES-GCM
  * Derives a consistent 32-byte key for AES-256 using SHA-256
  */
 const getDerivedKey = () => {
-  const secret =
-    process.env.ENCRYPTION_KEY ||
-    process.env.JWT_SECRET ||
-    "salesbuster_gemini_api_key_secret_salt_2026";
+  const secret = process.env.ENCRYPTION_KEY || process.env.JWT_SECRET;
   return crypto.createHash("sha256").update(secret).digest();
 };
 

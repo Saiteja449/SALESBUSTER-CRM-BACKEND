@@ -66,6 +66,19 @@ export const getUsers = async (req, res) => {
 // @route   POST /api/users
 // @access  Protected
 export const addSalesPerson = async (req, res) => {
+  const isAuthorized =
+    req.user?.role === "sales manager" ||
+    req.user?.role === "super_admin" ||
+    req.user?.isOrgOwner;
+
+  if (!isAuthorized) {
+    return res.status(403).json({
+      success: false,
+      message:
+        "Access forbidden: Only sales managers or organization owners can add sales representatives.",
+    });
+  }
+
   const { name, email, phone, mobile, password } = req.body;
   const rawMobile = phone || mobile || "";
 
@@ -246,6 +259,19 @@ export const addSalesPerson = async (req, res) => {
 // @route   DELETE /api/users/:id
 // @access  Protected
 export const deleteSalesPerson = async (req, res) => {
+  const isAuthorized =
+    req.user?.role === "sales manager" ||
+    req.user?.role === "super_admin" ||
+    req.user?.isOrgOwner;
+
+  if (!isAuthorized) {
+    return res.status(403).json({
+      success: false,
+      message:
+        "Access forbidden: Only sales managers or organization owners can delete sales representatives.",
+    });
+  }
+
   const { UserModel } = getModels(req);
 
   try {

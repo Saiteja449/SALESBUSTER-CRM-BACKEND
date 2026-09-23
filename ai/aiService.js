@@ -1051,13 +1051,18 @@ Latest Message: ${incomingText}`;
             timestamp: new Date(),
           };
 
+          const assignedUserId = lead.assignedTo
+            ? (typeof lead.assignedTo === "object" ? lead.assignedTo._id || lead.assignedTo.id : lead.assignedTo).toString()
+            : null;
+
           if (orgId) {
             const cleanOrgId = orgId.replace(/^org_/, "");
-            io.to(`org_${cleanOrgId}`).emit("ai_new_followup", alertPayload);
-          } else {
-            io.emit("ai_new_followup", alertPayload);
+            io.to(`org_${cleanOrgId}_admins`).emit("ai_new_followup", alertPayload);
           }
-          console.log(`[DEBUG] Emitted ai_new_followup alert for lead ${lead.name} (${lead.phone})`);
+          if (assignedUserId) {
+            io.to(`user_${assignedUserId}`).emit("ai_new_followup", alertPayload);
+          }
+          console.log(`[DEBUG] Emitted ai_new_followup alert for lead ${lead.name} (${lead.phone}) to leadership and assigned rep`);
         }
       } catch (socketErr) {
         console.warn("[AI Service] Failed to emit ai_new_followup event:", socketErr.message);
@@ -1084,4 +1089,141 @@ Latest Message: ${incomingText}`;
     console.error("Error in AI Service generateAIResponse:", error);
     return "I'm sorry, but I'm unable to assist with this request right now. I'll connect you with one of our team members, who will continue assisting you shortly.";
   }
+};
+
+// ============================================================
+// AI CHAT SUMMARIZATION
+// Analyzes a lead's full WhatsApp conversation and returns a
+// structured summary: overview, sentiment, key points, next steps.
+// Result is cached on Conversation.chatSummary (invalidated by
+// message count) to avoid repeated Gemini API calls.
+// ============================================================
+
+import Conversation from "../models/Conversation.js";
+
+/**
+ * Summarizes a WhatsApp conversation using Gemini AI.
+ * @param {Object} params
+ * @param {string} params.leadId - The Lead's MongoDB ObjectId string
+ * @param {Object} params.tenantModels - Tenant-scoped Mongoose models
+ * @param {Object} params.organization - Organization document (for Gemini API key)
+ * @returns {Object} chatSummary - { summary, keyPoints, sentiment, nextSteps, generatedAt, messagesAnalyzed }
+ */
+export const summarizeChatConversation = async ({ leadId, tenantModels, organization }) => {
+  const MessageModel = tenantModels?.Message || Message;
+  const ConversationModel = tenantModels?.Conversation || Conversation;
+  const LeadModel = tenantModels?.Lead || Lead;
+
+  // Fetch lead for context
+  const lead = await LeadModel.findById(leadId).lean();
+  if (!lead) throw new Error("Lead not found.");
+
+  // Fetch all messages sorted by timestamp
+  const msgs = await MessageModel.find({ leadId }).sort({ timestamp: 1 }).lean();
+  if (!msgs || msgs.length === 0) {
+    throw new Error("No messages found for this lead. Start a conversation first.");
+  }
+
+  // Return cached summary if message count hasn't changed (no new messages)
+  const conv = await ConversationModel.findOne({ leadId }).lean();
+  if (
+    conv?.chatSummary?.generatedAt &&
+    conv.chatSummary.messagesAnalyzed === msgs.length &&
+    conv.chatSummary.summary
+  ) {
+    console.log(`[AI Summarize] Returning cached summary for lead ${leadId} (${msgs.length} messages).`);
+    return conv.chatSummary;
+  }
+
+  // Build conversation transcript for the LLM
+  const transcript = msgs
+    .map((m) => {
+      const role = m.direction === "incoming" ? "Customer" : "Sales Rep";
+      const time = m.timestamp ? new Date(m.timestamp).toLocaleString("en-IN") : "";
+      const text = m.text || `(${m.messageType || "media"})`;
+      return `[${role} — ${time}]: ${text}`;
+    })
+    .join("\n");
+
+  // Resolve Gemini API key
+  const geminiApiKey = decryptApiKey(organization?.aiSettings?.geminiApiKey);
+  if (!geminiApiKey) {
+    throw new Error(
+      "Gemini API key is not configured for this organization. Please add it in Organization Settings → AI Settings."
+    );
+  }
+
+  const llm = new ChatGoogleGenerativeAI({
+    model: "gemini-1.5-flash",
+    apiKey: geminiApiKey,
+    temperature: 0.3,
+    maxOutputTokens: 1024,
+  });
+
+  const prompt = `You are an expert CRM sales analyst. Analyze the following WhatsApp sales conversation and return ONLY a valid JSON object (no markdown, no code block, no explanation) with exactly these keys:
+
+{
+  "summary": "A concise 2-3 sentence executive overview of what the customer wants and the current status of the deal.",
+  "keyPoints": ["Array of 3-6 key discussion points, questions the customer asked, objections raised, or important details mentioned."],
+  "sentiment": "Exactly one of: High Intent | Warm | Neutral | Cold | Hesitant | Price Sensitive",
+  "nextSteps": ["Array of 2-4 concrete, actionable recommended follow-up actions for the sales representative."]
+}
+
+Lead Name: ${lead.name || "Unknown"}
+Lead Phone: ${lead.phone || ""}
+Lead Service Interest: ${lead.service || "General Enquiry"}
+Lead Status: ${lead.status || ""}
+
+Conversation Transcript:
+${transcript}
+
+Return ONLY the JSON object. Do not include any other text.`;
+
+  console.log(`[AI Summarize] Invoking Gemini for lead ${leadId} (${msgs.length} messages)...`);
+  const response = await llm.invoke(prompt);
+  const rawText = (response.content || "").trim();
+
+  // Parse the response — strip markdown code fences if present
+  let parsed;
+  try {
+    const jsonStr = rawText
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/\s*```$/, "")
+      .trim();
+    parsed = JSON.parse(jsonStr);
+  } catch (parseErr) {
+    console.error("[AI Summarize] Failed to parse Gemini response:", rawText.substring(0, 300));
+    throw new Error(
+      "The AI returned an unexpected format. Please try again. (Parse error: " +
+        parseErr.message + ")"
+    );
+  }
+
+  // Validate and sanitize the parsed result
+  const result = {
+    summary: String(parsed.summary || "No summary generated."),
+    keyPoints: Array.isArray(parsed.keyPoints)
+      ? parsed.keyPoints.map(String).slice(0, 10)
+      : [],
+    sentiment: String(parsed.sentiment || "Neutral"),
+    nextSteps: Array.isArray(parsed.nextSteps)
+      ? parsed.nextSteps.map(String).slice(0, 6)
+      : [],
+    generatedAt: new Date(),
+    messagesAnalyzed: msgs.length,
+  };
+
+  // Persist the result to Conversation.chatSummary
+  await ConversationModel.findOneAndUpdate(
+    { leadId },
+    { $set: { chatSummary: result } },
+    { upsert: true, new: true }
+  );
+
+  console.log(
+    `[AI Summarize] Summary generated and cached for lead ${leadId}. Sentiment: ${result.sentiment}, Messages: ${msgs.length}`
+  );
+
+  return result;
 };

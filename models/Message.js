@@ -76,6 +76,19 @@ const messageSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    // Tracks which Baileys session this message was received/sent on
+    // e.g. "org_<orgId>_user_<userId>" for rep sessions, "org_<orgId>" for admin line
+    sessionId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    // For rep-session messages: links directly to the owning sales rep
+    salesRepId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
   },
   { timestamps: true }
 );

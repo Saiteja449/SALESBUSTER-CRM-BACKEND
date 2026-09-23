@@ -21,6 +21,17 @@ const conversationSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    // AI-generated chat summary — cached here to avoid repeated Gemini calls
+    chatSummary: {
+      summary: { type: String, default: "" },
+      keyPoints: [{ type: String }],
+      // e.g. "High Intent" | "Warm" | "Neutral" | "Cold" | "Hesitant" | "Price Sensitive"
+      sentiment: { type: String, default: "" },
+      nextSteps: [{ type: String }],
+      generatedAt: { type: Date },
+      // Number of messages that were analyzed — used as cache invalidation key
+      messagesAnalyzed: { type: Number, default: 0 },
+    },
   },
   { timestamps: true }
 );

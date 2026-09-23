@@ -56,6 +56,16 @@ export const extractTemplateVariables = (components) => {
  */
 export const getCloudStatus = async (req, res) => {
   try {
+    if (
+      req.user?.role === "sales person" &&
+      !req.user?.isOrgOwner
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Manager or Administrator privileges required",
+      });
+    }
+
     const org = req.organization;
     if (!org) {
       return res.status(404).json({ success: false, message: "Organization not found." });
@@ -63,7 +73,6 @@ export const getCloudStatus = async (req, res) => {
 
     const cloud = org.whatsappCloudSettings || {};
     const orgId = org._id ? org._id.toString() : "";
-    const webhookVerifyToken = cloud.webhookVerifyToken || "salesbuster_whatsapp_cloud_verify_token_2026";
     const webhookCallbackUrl = `https://api.salesbuster.ai/api/whatsapp/cloud/webhook/${orgId}`;
 
     res.status(200).json({
@@ -71,7 +80,6 @@ export const getCloudStatus = async (req, res) => {
       data: {
         orgId,
         webhookCallbackUrl,
-        webhookVerifyToken,
         isConfigured: !!cloud.isConfigured,
         wabaId: cloud.wabaId || "",
         phoneNumberId: cloud.phoneNumberId || "",

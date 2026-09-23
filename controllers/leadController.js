@@ -33,6 +33,17 @@ const getModels = (req) => ({
   AILogModel: req?.tenantModels?.AILog || AILog,
 });
 
+// Helper to verify lead assignment for sales representatives
+const isLeadAssignedToUser = (lead, user) => {
+  if (!lead || !user) return false;
+  const assigned = String(lead.assignedTo || "").trim();
+  const userId = String(user._id || user.id || "").trim();
+  const userName = user.name ? user.name.trim().toLowerCase() : "";
+  if (assigned === userId) return true;
+  if (userName && assigned.toLowerCase() === userName) return true;
+  return false;
+};
+
 // Helper for background audio transcription & analysis
 const triggerAudioAnalysis = async (
   leadId,
@@ -139,7 +150,20 @@ const triggerAudioAnalysis = async (
 export const getLeads = async (req, res) => {
   try {
     const { LeadModel } = getModels(req);
-    const leads = await LeadModel.find({});
+    let query = {};
+    if (req.user?.role === "sales person") {
+      const repId = req.user._id || req.user.id;
+      const repName = req.user.name;
+      const matchArray = [String(repId)];
+      if (mongoose.Types.ObjectId.isValid(repId)) {
+        matchArray.push(new mongoose.Types.ObjectId(repId));
+      }
+      if (repName) {
+        matchArray.push(new RegExp("^" + repName + "$", "i"));
+      }
+      query.assignedTo = { $in: matchArray };
+    }
+    const leads = await LeadModel.find(query);
     res.json({ success: true, data: leads });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -157,9 +181,6 @@ export const getPaginatedLeads = async (req, res) => {
       salespersonId = "",
       status = "All",
       leadTypeTab = "New",
-      currentUserRole = "",
-      currentUserName = "",
-      currentUserId = "",
     } = req.query;
 
     const { LeadModel, UserModel } = getModels(req);
@@ -174,13 +195,13 @@ export const getPaginatedLeads = async (req, res) => {
     const activeSalesRepFilter = salespersonId || (salesperson !== "All" ? salesperson : null);
     let assigneeMatchConditions = null;
 
-    const isSalesRepUser =
-      currentUserRole === "Sales Representative" ||
-      currentUserRole === "sales person" ||
-      req.user?.role === "sales person";
-    const effectiveUserId = currentUserId || req.userTokenData?.id || req.user?._id;
+    // Strict role check: Sales Representatives ONLY see their own assigned leads.
+    // Client-supplied role or user ID overrides are strictly ignored.
+    const isSalesRepUser = req.user?.role === "sales person";
+    const effectiveUserId = req.user?._id || req.userTokenData?.id;
+    const effectiveUserName = req.user?.name;
 
-    if (isSalesRepUser && (effectiveUserId || currentUserName)) {
+    if (isSalesRepUser && (effectiveUserId || effectiveUserName)) {
       const matchArray = [];
       if (effectiveUserId) {
         matchArray.push(String(effectiveUserId));
@@ -188,8 +209,8 @@ export const getPaginatedLeads = async (req, res) => {
           matchArray.push(new mongoose.Types.ObjectId(effectiveUserId));
         }
       }
-      if (currentUserName) {
-        matchArray.push(new RegExp("^" + currentUserName + "$", "i"));
+      if (effectiveUserName) {
+        matchArray.push(new RegExp("^" + effectiveUserName + "$", "i"));
       }
       assigneeMatchConditions = matchArray.length === 1 ? matchArray[0] : { $in: matchArray };
     } else if (activeSalesRepFilter && activeSalesRepFilter !== "All") {
@@ -492,7 +513,9 @@ export const createLead = async (req, res) => {
       }
     }
 
-    if (!leadData.assignedTo || leadData.assignedTo === "Unassigned") {
+    if (req.user?.role === "sales person") {
+      leadData.assignedTo = (req.user._id || req.user.id).toString();
+    } else if (!leadData.assignedTo || leadData.assignedTo === "Unassigned") {
       const reps = await UserModel.find({ role: "sales person" }).sort({
         _id: 1,
       });
@@ -615,6 +638,17 @@ export const updateLead = async (req, res) => {
         .json({ success: false, message: "Lead not found" });
     }
 
+    // Role check: sales reps can only update leads assigned to them and cannot reassign
+    if (req.user?.role === "sales person") {
+      if (!isLeadAssignedToUser(lead, req.user)) {
+        return res.status(403).json({
+          success: false,
+          message: "Access forbidden: You can only update leads assigned to you",
+        });
+      }
+      delete updateData.assignedTo;
+    }
+
     if (req.file) {
       await processAudioUpload(req.file);
       const host = req.get("host") || "";
@@ -684,6 +718,13 @@ export const updateLead = async (req, res) => {
 
 export const deleteLead = async (req, res) => {
   try {
+    if (req.user?.role === "sales person") {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Only sales managers and administrators can delete leads",
+      });
+    }
+
     const { LeadModel } = getModels(req);
     const { id } = req.params;
 
@@ -706,6 +747,24 @@ export const deleteLead = async (req, res) => {
 
 export const updateStatusByWebhook = async (req, res) => {
   try {
+    // Webhook secret verification
+    const configuredSecret =
+      process.env.LEAD_WEBHOOK_SECRET && process.env.LEAD_WEBHOOK_SECRET.trim();
+    const providedSecret =
+      (req.headers && (req.headers["x-webhook-secret"] || req.headers["x-secret-key"])) ||
+      (req.query && req.query.secret);
+
+    if (
+      !configuredSecret ||
+      !providedSecret ||
+      providedSecret !== configuredSecret
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized: Invalid or missing webhook secret.",
+      });
+    }
+
     const { LeadModel, NotificationModel } = getModels(req);
     const { phone, email, event } = req.body;
 
@@ -825,6 +884,14 @@ export const analyzeRecording = async (req, res) => {
         .status(404)
         .json({ success: false, message: "Lead not found" });
 
+    // Role check: sales reps can only trigger analysis for leads assigned to them
+    if (req.user?.role === "sales person" && !isLeadAssignedToUser(lead, req.user)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: You can only analyze recordings for leads assigned to you",
+      });
+    }
+
     const recording = lead.recordings.id(recordingId);
     if (!recording)
       return res
@@ -889,6 +956,22 @@ export const uploadRecordingForLead = async (req, res) => {
     const { LeadModel } = getModels(req);
     const { id } = req.params;
 
+    const lead = await LeadModel.findById(id);
+    if (!lead) {
+      return res.status(404).json({
+        success: false,
+        message: "Lead not found",
+      });
+    }
+
+    // Role check: sales reps can only upload recordings for leads assigned to them
+    if (req.user?.role === "sales person" && !isLeadAssignedToUser(lead, req.user)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: You can only upload recordings for leads assigned to you",
+      });
+    }
+
     if (!req.file) {
       return res.status(400).json({
         success: false,
@@ -897,14 +980,6 @@ export const uploadRecordingForLead = async (req, res) => {
     }
 
     await processAudioUpload(req.file);
-
-    const lead = await LeadModel.findById(id);
-    if (!lead) {
-      return res.status(404).json({
-        success: false,
-        message: "Lead not found",
-      });
-    }
 
     const host = req.get("host") || "";
     const basePath = "/uploads/";
@@ -977,6 +1052,12 @@ export const uploadRecordingForLead = async (req, res) => {
  * @access  Protected / Tenant-scoped
  */
 export const importExcelLeads = async (req, res) => {
+  if (req.user?.role === "sales person") {
+    return res.status(403).json({
+      success: false,
+      message: "Access forbidden: Only sales managers and administrators can bulk import leads",
+    });
+  }
   let uploadedFilePath = null;
   try {
     const { LeadModel, UserModel, AssignmentStateModel } = getModels(req);

@@ -49,22 +49,39 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB max
 });
 
+// Role-based authorization guard for administrative actions
+const requireManagerOrOwner = (req, res, next) => {
+  if (
+    req.user?.role === "sales manager" ||
+    req.user?.role === "super_admin" ||
+    req.user?.isOrgOwner
+  ) {
+    return next();
+  }
+  return res.status(403).json({
+    success: false,
+    message: "Access forbidden: Manager or Administrator privileges required",
+  });
+};
+
 // Organization Owner Profile (Read-only view for current tenant owner)
 router.get("/my-org", protect, getMyOrganization);
 
 // Tenant AI Settings & Knowledge Base (Tenant Owner / Sales Manager)
 router.get("/my-org/ai-settings", protect, getMyAISettings);
-router.put("/my-org/ai-settings", protect, updateMyAISettings);
-router.post("/my-org/validate-gemini-key", protect, validateGeminiApiKey);
+router.put("/my-org/ai-settings", protect, requireManagerOrOwner, updateMyAISettings);
+router.post("/my-org/validate-gemini-key", protect, requireManagerOrOwner, validateGeminiApiKey);
 router.post(
   "/my-org/knowledge-base/upload",
   protect,
+  requireManagerOrOwner,
   upload.single("file"),
   uploadKnowledgeDoc,
 );
 router.delete(
   "/my-org/knowledge-base/:docId",
   protect,
+  requireManagerOrOwner,
   deleteKnowledgeDoc,
 );
 

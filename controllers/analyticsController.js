@@ -10,7 +10,14 @@ const getModels = (req) => ({
 // Logs a single call and increments daily analytics
 export const logCall = async (req, res) => {
   try {
-    const { salesperson, salespersonId, date, duration, callType, status } = req.body;
+    let { salesperson, salespersonId, date, duration, callType, status } = req.body;
+
+    // Strict identity enforcement: if caller is a sales rep, bind to their verified user identity
+    if (req.user?.role === "sales person") {
+      salespersonId = (req.user._id || req.user.id).toString();
+      salesperson = req.user.name || "Sales Representative";
+    }
+
     const repIdentifier = salespersonId || salesperson;
 
     if (!repIdentifier || !date) {
@@ -42,7 +49,10 @@ export const logCall = async (req, res) => {
     if (status === "not-connected") update.$inc.notConnected = 1;
 
     let queryFilter = {};
-    if (mongoose.Types.ObjectId.isValid(repIdentifier)) {
+    if (salespersonId) {
+      queryFilter = { salespersonId, date };
+      update.$setOnInsert = { salesperson: salesperson || "" };
+    } else if (mongoose.Types.ObjectId.isValid(repIdentifier)) {
       queryFilter = { salespersonId: repIdentifier, date };
       update.$setOnInsert = { salesperson: salesperson || "" };
     } else {
@@ -67,6 +77,25 @@ export const getAnalyticsBySalesperson = async (req, res) => {
   try {
     const { salesperson, id, salespersonId } = req.params;
     const target = id || salespersonId || salesperson;
+
+    // Role check: sales reps can only view their own analytics
+    if (req.user?.role === "sales person") {
+      const repId = (req.user._id || req.user.id).toString();
+      const repName = req.user.name ? req.user.name.toLowerCase() : "";
+      const targetStr = String(target).toLowerCase();
+
+      const isOwn =
+        targetStr === repId.toLowerCase() ||
+        (repName && targetStr === repName);
+
+      if (!isOwn) {
+        return res.status(403).json({
+          success: false,
+          message: "Access forbidden: You can only view your own analytics",
+        });
+      }
+    }
+
     const { AnalyticsModel } = getModels(req);
 
     const orConditions = [{ salesperson: target }];
@@ -86,9 +115,16 @@ export const getAnalyticsBySalesperson = async (req, res) => {
   }
 };
 
-// Gets today's analytics for all salespeople
+// Gets today's analytics for all salespeople (restricted to managers and admins)
 export const getTodayAnalyticsForAll = async (req, res) => {
   try {
+    if (req.user?.role === "sales person") {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Team-wide analytics are restricted to managers and administrators",
+      });
+    }
+
     const today = new Date().toISOString().split("T")[0];
     const { AnalyticsModel } = getModels(req);
     const analytics = await AnalyticsModel.find({ date: today });
@@ -120,9 +156,16 @@ export const getAILimits = async (req, res) => {
   }
 };
 
-// Fetches limits from API, saves to MongoDB, and returns them
+// Fetches limits from API, saves to MongoDB, and returns them (restricted to managers and admins)
 export const refreshAILimits = async (req, res) => {
   try {
+    if (req.user?.role === "sales person") {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: AI rate limit refresh is restricted to managers and administrators",
+      });
+    }
+
     const groqApiKey = process.env.GROQ_API_KEY;
     if (!groqApiKey) {
       return res
