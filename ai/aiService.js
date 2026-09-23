@@ -39,7 +39,9 @@ export const invalidateVectorStoreForOrg = (organization) => {
     const collectionName = getOrgCollectionName(organization);
     if (collectionName && vectorStoresMap.has(collectionName)) {
       vectorStoresMap.delete(collectionName);
-      console.log(`[AI Service] Purged vector store cache for collection: ${collectionName}`);
+      console.log(
+        `[AI Service] Purged vector store cache for collection: ${collectionName}`,
+      );
     }
   } catch (err) {
     console.warn("[AI Service] Invalidation warning:", err.message);
@@ -169,7 +171,7 @@ export const formatReplyText = (text) => {
   // If closing sentence/question follows the last list item on the same line, separate it with a blank line
   formatted = formatted.replace(
     /((\b\d+\.|[•\-\*])\s+[^\n.?!]+[.?!])\s+([A-Z\p{Extended_Pictographic}])/gu,
-    "$1\n\n$3"
+    "$1\n\n$3",
   );
 
   return formatted;
@@ -183,9 +185,13 @@ export const buildQualificationSchema = (
   orgName = "",
 ) => {
   const now = new Date();
-  const currentDateStr = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
+  const currentDateStr = now.toLocaleDateString("en-CA", {
+    timeZone: "Asia/Kolkata",
+  }); // YYYY-MM-DD
   const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  const tomorrowDateStr = tomorrow.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const tomorrowDateStr = tomorrow.toLocaleDateString("en-CA", {
+    timeZone: "Asia/Kolkata",
+  });
 
   const shape = {
     city: z
@@ -213,7 +219,9 @@ export const buildQualificationSchema = (
     preferredCallTime: z
       .string()
       .default("")
-      .describe("Preferred callback time (e.g., '7:00 PM', '11:00 AM', 'after 5 PM') ONLY when lead explicitly requested a call time. Leave empty string \"\" if user did not ask for a call."),
+      .describe(
+        "Preferred callback time (e.g., '7:00 PM', '11:00 AM', 'after 5 PM') ONLY when lead explicitly requested a call time. Leave empty string \"\" if user did not ask for a call.",
+      ),
   };
 
   if (configuredFields && configuredFields.length > 0) {
@@ -274,15 +282,21 @@ export const buildQualificationSchema = (
         createFollowUp: z
           .boolean()
           .default(false)
-          .describe("Set true ONLY if the user explicitly asked for a callback/phone call or explicitly agreed to a scheduled call. Must be FALSE for normal inquiries, greetings, property info, or questions."),
+          .describe(
+            "Set true ONLY if the user explicitly asked for a callback/phone call or explicitly agreed to a scheduled call. Must be FALSE for normal inquiries, greetings, property info, or questions.",
+          ),
         followUpNotes: z
           .string()
           .default("")
-          .describe("Notes for the callback. Leave empty string \"\" if no callback was requested."),
+          .describe(
+            'Notes for the callback. Leave empty string "" if no callback was requested.',
+          ),
         followUpDate: z
           .string()
           .default("")
-          .describe(`Date string (YYYY-MM-DD) for follow up. Today is ${currentDateStr}, Tomorrow is ${tomorrowDateStr}. Leave empty string "" unless createFollowUp is true.`),
+          .describe(
+            `Date string (YYYY-MM-DD) for follow up. Today is ${currentDateStr}, Tomorrow is ${tomorrowDateStr}. Leave empty string "" unless createFollowUp is true.`,
+          ),
         addNote: z
           .string()
           .default("")
@@ -322,11 +336,23 @@ export const buildSystemPrompt = ({
   const qualFields = effectiveSettings.qualificationFields || [];
 
   const now = new Date();
-  const currentDateStr = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
-  const currentDayOfWeek = now.toLocaleDateString("en-US", { weekday: "long", timeZone: "Asia/Kolkata" });
-  const currentTimeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "Asia/Kolkata" });
+  const currentDateStr = now.toLocaleDateString("en-CA", {
+    timeZone: "Asia/Kolkata",
+  }); // YYYY-MM-DD
+  const currentDayOfWeek = now.toLocaleDateString("en-US", {
+    weekday: "long",
+    timeZone: "Asia/Kolkata",
+  });
+  const currentTimeStr = now.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  });
   const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  const tomorrowDateStr = tomorrow.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const tomorrowDateStr = tomorrow.toLocaleDateString("en-CA", {
+    timeZone: "Asia/Kolkata",
+  });
 
   let servicesBlock = "";
   if (services.length > 0) {
@@ -691,7 +717,10 @@ Latest Message: ${incomingText}`;
       // Record Chat AI API call usage
       if (organization?._id) {
         recordAiUsage(organization._id, "chat", 1).catch((err) =>
-          console.warn("[AI Service] Failed recording chat usage:", err.message),
+          console.warn(
+            "[AI Service] Failed recording chat usage:",
+            err.message,
+          ),
         );
       }
     } catch (e) {
@@ -750,7 +779,12 @@ Latest Message: ${incomingText}`;
       for (const [key, val] of Object.entries(aiData)) {
         if (val !== undefined && val !== null && val !== "") {
           const strVal = String(val).trim().toLowerCase();
-          if (strVal !== "null" && strVal !== "undefined" && strVal !== "none" && strVal !== "n/a") {
+          if (
+            strVal !== "null" &&
+            strVal !== "undefined" &&
+            strVal !== "none" &&
+            strVal !== "n/a"
+          ) {
             mergedQual[key] = val;
           }
         }
@@ -853,22 +887,30 @@ Latest Message: ${incomingText}`;
 
     // Current real-world date in IST / local time
     const now = new Date();
-    const todayStr = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
+    const todayStr = now.toLocaleDateString("en-CA", {
+      timeZone: "Asia/Kolkata",
+    }); // YYYY-MM-DD
     const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    const tomorrowStr = tomorrow.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+    const tomorrowStr = tomorrow.toLocaleDateString("en-CA", {
+      timeZone: "Asia/Kolkata",
+    });
 
     // Detect if user or conversation specifically requested a phone call / callback
     const userMessageLower = (incomingText || "").toLowerCase();
     const hasCallIntent =
       /\b(call\s*me|call\s*back|callback|call\s*us|ring\s*me|phone\s*me|schedule\s*a?\s*call|book\s*a?\s*call|arrange\s*a?\s*call|reach\s*me\s*at|talk\s*on\s*call|voice\s*call|speak\s*to\s*someone|speak\s*with\s*someone|contact\s*me)\b/i.test(
-        userMessageLower
+        userMessageLower,
       );
 
     const rawPrefTime = cleanText(parsed.qualification?.preferredCallTime);
     const hasExplicitTime = Boolean(rawPrefTime);
     const hasTriggerFollowUp = Boolean(parsed.triggerActions?.createFollowUp);
-    const rawPrefDate = cleanText(parsed.qualification?.preferredCallDate) || cleanText(parsed.triggerActions?.followUpDate);
-    const hasCallbackDateTime = Boolean(cleanText(parsed.qualification?.callbackDateTime));
+    const rawPrefDate =
+      cleanText(parsed.qualification?.preferredCallDate) ||
+      cleanText(parsed.triggerActions?.followUpDate);
+    const hasCallbackDateTime = Boolean(
+      cleanText(parsed.qualification?.callbackDateTime),
+    );
 
     // ONLY schedule follow-up if there is genuine call/callback intent:
     // 1. User explicitly requested a call in their message (e.g. "call me at 7pm", "can someone call me?")
@@ -877,10 +919,14 @@ Latest Message: ${incomingText}`;
     const shouldScheduleFollowUp =
       hasCallIntent ||
       hasExplicitTime ||
-      (hasTriggerFollowUp && (hasCallIntent || hasExplicitTime || hasCallbackDateTime));
+      (hasTriggerFollowUp &&
+        (hasCallIntent || hasExplicitTime || hasCallbackDateTime));
 
     if (shouldScheduleFollowUp) {
-      const mentionsToday = /\btoday\b|\btonight\b|\bthis evening\b|\basap\b|\bimmediate\b|\bright now\b/i.test(userMessageLower);
+      const mentionsToday =
+        /\btoday\b|\btonight\b|\bthis evening\b|\basap\b|\bimmediate\b|\bright now\b/i.test(
+          userMessageLower,
+        );
       const mentionsTomorrow = /\btomorrow\b/i.test(userMessageLower);
       const prefTime = rawPrefTime || (mentionsToday ? "7:00 PM" : "10:00 AM");
       let followUpDate = "";
@@ -891,7 +937,9 @@ Latest Message: ${incomingText}`;
       } else if (rawPrefDate && /^\d{4}-\d{2}-\d{2}$/.test(rawPrefDate)) {
         // Guard against hallucinated past dates (e.g., 2025)
         if (rawPrefDate < todayStr) {
-          console.warn(`[AI Service] Corrected hallucinated past date '${rawPrefDate}' to today '${todayStr}'`);
+          console.warn(
+            `[AI Service] Corrected hallucinated past date '${rawPrefDate}' to today '${todayStr}'`,
+          );
           followUpDate = todayStr;
         } else {
           followUpDate = rawPrefDate;
@@ -918,11 +966,14 @@ Latest Message: ${incomingText}`;
         rawFollowUpNotes ||
         (rawAddNote ? `Follow-up: ${rawAddNote}` : "") ||
         (rawSummary ? `Follow-up: ${rawSummary}` : "") ||
-        (leadService ? `Follow-up scheduled by AI Agent for ${leadService}` : "Follow-up scheduled by AI Agent");
+        (leadService
+          ? `Follow-up scheduled by AI Agent for ${leadService}`
+          : "Follow-up scheduled by AI Agent");
 
       const followUpType =
-        cleanText(parsed.qualification?.intent).toLowerCase().includes("call") ||
-        rawFollowUpNotes.toLowerCase().includes("call")
+        cleanText(parsed.qualification?.intent)
+          .toLowerCase()
+          .includes("call") || rawFollowUpNotes.toLowerCase().includes("call")
           ? "Call"
           : "WhatsApp";
 
@@ -933,16 +984,25 @@ Latest Message: ${incomingText}`;
           const matchingLeads = await LeadModel.find({
             $or: [
               { phone: lead.phone },
-              { phone: new RegExp(String(lead.phone).replace(/\D/g, "").slice(-10) + "$") },
+              {
+                phone: new RegExp(
+                  String(lead.phone).replace(/\D/g, "").slice(-10) + "$",
+                ),
+              },
             ],
           }).select("_id");
           matchingLeads.forEach((ml) => {
-            if (!relatedLeadIds.some((id) => id.toString() === ml._id.toString())) {
+            if (
+              !relatedLeadIds.some((id) => id.toString() === ml._id.toString())
+            ) {
               relatedLeadIds.push(ml._id);
             }
           });
         } catch (err) {
-          console.warn("[AI Service] Error finding related leads by phone:", err.message);
+          console.warn(
+            "[AI Service] Error finding related leads by phone:",
+            err.message,
+          );
         }
       }
 
@@ -989,7 +1049,10 @@ Latest Message: ${incomingText}`;
             author: "AI Agent",
           });
         } catch (cleanupErr) {
-          console.warn("[AI Service] Error cleaning up duplicate followups:", cleanupErr.message);
+          console.warn(
+            "[AI Service] Error cleaning up duplicate followups:",
+            cleanupErr.message,
+          );
         }
       } else {
         targetFollowup = await FollowupModel.create({
@@ -1013,7 +1076,10 @@ Latest Message: ${incomingText}`;
         status: "Follow Up",
       });
 
-      const targetUsers = lead.assignedTo && lead.assignedTo !== "Unassigned" ? [lead.assignedTo] : [];
+      const targetUsers =
+        lead.assignedTo && lead.assignedTo !== "Unassigned"
+          ? [lead.assignedTo]
+          : [];
       await NotificationModel.create({
         title: "Followup Created by AI",
         message: `AI Agent scheduled a follow-up for lead ${lead.name} on ${followUpDate} at ${prefTime}.`,
@@ -1026,10 +1092,13 @@ Latest Message: ${incomingText}`;
       try {
         const io = getIO();
         if (io) {
-          const orgId = organization?._id?.toString() || lead?.organizationId?.toString();
+          const orgId =
+            organization?._id?.toString() || lead?.organizationId?.toString();
           const alertPayload = {
             followup: {
-              id: targetFollowup._id ? targetFollowup._id.toString() : targetFollowup.id,
+              id: targetFollowup._id
+                ? targetFollowup._id.toString()
+                : targetFollowup.id,
               leadId: lead._id.toString(),
               leadName: lead.name,
               type: targetFollowup.type,
@@ -1052,20 +1121,34 @@ Latest Message: ${incomingText}`;
           };
 
           const assignedUserId = lead.assignedTo
-            ? (typeof lead.assignedTo === "object" ? lead.assignedTo._id || lead.assignedTo.id : lead.assignedTo).toString()
+            ? (typeof lead.assignedTo === "object"
+                ? lead.assignedTo._id || lead.assignedTo.id
+                : lead.assignedTo
+              ).toString()
             : null;
 
           if (orgId) {
             const cleanOrgId = orgId.replace(/^org_/, "");
-            io.to(`org_${cleanOrgId}_admins`).emit("ai_new_followup", alertPayload);
+            io.to(`org_${cleanOrgId}_admins`).emit(
+              "ai_new_followup",
+              alertPayload,
+            );
           }
           if (assignedUserId) {
-            io.to(`user_${assignedUserId}`).emit("ai_new_followup", alertPayload);
+            io.to(`user_${assignedUserId}`).emit(
+              "ai_new_followup",
+              alertPayload,
+            );
           }
-          console.log(`[DEBUG] Emitted ai_new_followup alert for lead ${lead.name} (${lead.phone}) to leadership and assigned rep`);
+          console.log(
+            `[DEBUG] Emitted ai_new_followup alert for lead ${lead.name} (${lead.phone}) to leadership and assigned rep`,
+          );
         }
       } catch (socketErr) {
-        console.warn("[AI Service] Failed to emit ai_new_followup event:", socketErr.message);
+        console.warn(
+          "[AI Service] Failed to emit ai_new_followup event:",
+          socketErr.message,
+        );
       }
     }
 
@@ -1109,7 +1192,11 @@ import Conversation from "../models/Conversation.js";
  * @param {Object} params.organization - Organization document (for Gemini API key)
  * @returns {Object} chatSummary - { summary, keyPoints, sentiment, nextSteps, generatedAt, messagesAnalyzed }
  */
-export const summarizeChatConversation = async ({ leadId, tenantModels, organization }) => {
+export const summarizeChatConversation = async ({
+  leadId,
+  tenantModels,
+  organization,
+}) => {
   const MessageModel = tenantModels?.Message || Message;
   const ConversationModel = tenantModels?.Conversation || Conversation;
   const LeadModel = tenantModels?.Lead || Lead;
@@ -1119,9 +1206,13 @@ export const summarizeChatConversation = async ({ leadId, tenantModels, organiza
   if (!lead) throw new Error("Lead not found.");
 
   // Fetch all messages sorted by timestamp
-  const msgs = await MessageModel.find({ leadId }).sort({ timestamp: 1 }).lean();
+  const msgs = await MessageModel.find({ leadId })
+    .sort({ timestamp: 1 })
+    .lean();
   if (!msgs || msgs.length === 0) {
-    throw new Error("No messages found for this lead. Start a conversation first.");
+    throw new Error(
+      "No messages found for this lead. Start a conversation first.",
+    );
   }
 
   // Return cached summary if message count hasn't changed (no new messages)
@@ -1131,7 +1222,9 @@ export const summarizeChatConversation = async ({ leadId, tenantModels, organiza
     conv.chatSummary.messagesAnalyzed === msgs.length &&
     conv.chatSummary.summary
   ) {
-    console.log(`[AI Summarize] Returning cached summary for lead ${leadId} (${msgs.length} messages).`);
+    console.log(
+      `[AI Summarize] Returning cached summary for lead ${leadId} (${msgs.length} messages).`,
+    );
     return conv.chatSummary;
   }
 
@@ -1139,7 +1232,9 @@ export const summarizeChatConversation = async ({ leadId, tenantModels, organiza
   const transcript = msgs
     .map((m) => {
       const role = m.direction === "incoming" ? "Customer" : "Sales Rep";
-      const time = m.timestamp ? new Date(m.timestamp).toLocaleString("en-IN") : "";
+      const time = m.timestamp
+        ? new Date(m.timestamp).toLocaleString("en-IN")
+        : "";
       const text = m.text || `(${m.messageType || "media"})`;
       return `[${role} — ${time}]: ${text}`;
     })
@@ -1149,12 +1244,12 @@ export const summarizeChatConversation = async ({ leadId, tenantModels, organiza
   const geminiApiKey = decryptApiKey(organization?.aiSettings?.geminiApiKey);
   if (!geminiApiKey) {
     throw new Error(
-      "Gemini API key is not configured for this organization. Please add it in Organization Settings → AI Settings."
+      "Gemini API key is not configured for this organization. Please add it in Organization Settings → AI Settings.",
     );
   }
 
   const llm = new ChatGoogleGenerativeAI({
-    model: "gemini-1.5-flash",
+    model: "gemini-3.5-flash-lite",
     apiKey: geminiApiKey,
     temperature: 0.3,
     maxOutputTokens: 1024,
@@ -1179,7 +1274,9 @@ ${transcript}
 
 Return ONLY the JSON object. Do not include any other text.`;
 
-  console.log(`[AI Summarize] Invoking Gemini for lead ${leadId} (${msgs.length} messages)...`);
+  console.log(
+    `[AI Summarize] Invoking Gemini for lead ${leadId} (${msgs.length} messages)...`,
+  );
   const response = await llm.invoke(prompt);
   const rawText = (response.content || "").trim();
 
@@ -1193,10 +1290,14 @@ Return ONLY the JSON object. Do not include any other text.`;
       .trim();
     parsed = JSON.parse(jsonStr);
   } catch (parseErr) {
-    console.error("[AI Summarize] Failed to parse Gemini response:", rawText.substring(0, 300));
+    console.error(
+      "[AI Summarize] Failed to parse Gemini response:",
+      rawText.substring(0, 300),
+    );
     throw new Error(
       "The AI returned an unexpected format. Please try again. (Parse error: " +
-        parseErr.message + ")"
+        parseErr.message +
+        ")",
     );
   }
 
@@ -1218,11 +1319,11 @@ Return ONLY the JSON object. Do not include any other text.`;
   await ConversationModel.findOneAndUpdate(
     { leadId },
     { $set: { chatSummary: result } },
-    { upsert: true, new: true }
+    { upsert: true, new: true },
   );
 
   console.log(
-    `[AI Summarize] Summary generated and cached for lead ${leadId}. Sentiment: ${result.sentiment}, Messages: ${msgs.length}`
+    `[AI Summarize] Summary generated and cached for lead ${leadId}. Sentiment: ${result.sentiment}, Messages: ${msgs.length}`,
   );
 
   return result;
