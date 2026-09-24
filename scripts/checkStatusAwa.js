@@ -16,7 +16,7 @@ const token = jwt.sign(
 );
 
 async function checkStatus() {
-  const url = "https://betaapi.salesbuster.ai/api/whatsapp/status";
+  const url = "https://api.salesbuster.ai/api/whatsapp/status";
   try {
     const res = await fetch(url, {
       headers: {
