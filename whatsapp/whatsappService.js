@@ -192,6 +192,10 @@ const updateSessionStatus = async (
     if (match) sessions[sessionId].organizationId = match[1];
   }
 
+  // For 'pairing' status, persist as 'connecting' in DB (it's an intermediate state)
+  // but keep 'pairing' in memory so frontend can distinguish it
+  const dbStatus = status === "pairing" ? "connecting" : status;
+
   try {
     const models = await getModelsForSession(sessionId);
     const SessionModel = models?.WhatsAppSession || WhatsAppSession;
@@ -199,7 +203,7 @@ const updateSessionStatus = async (
     if (!session) {
       session = new SessionModel({ sessionId });
     }
-    session.status = status;
+    session.status = dbStatus;
     session.qrCode = qr;
     if (phone) session.connectedPhone = phone;
     if (name) session.connectedName = name;
@@ -229,15 +233,19 @@ const updateSessionStatus = async (
 };
 
 export const connectWhatsApp = async (param1, param2, param3) => {
-  let sessionId, organizationId, tenantDbName;
+  let sessionId, organizationId, tenantDbName, usePairingCode, pairingPhone;
   if (typeof param1 === "object" && param1 !== null) {
     sessionId = param1.sessionId;
     organizationId = param1.organizationId;
     tenantDbName = param1.tenantDbName;
+    usePairingCode = param1.usePairingCode || false;
+    pairingPhone = param1.pairingPhone || "";
   } else {
     sessionId = param1;
     organizationId = param2;
     tenantDbName = param3;
+    usePairingCode = false;
+    pairingPhone = "";
   }
 
   if (!sessionId && organizationId) {
@@ -314,6 +322,58 @@ export const connectWhatsApp = async (param1, param2, param3) => {
       });
 
       sessions[sessionId].sock = sock;
+
+      // =========================================================
+      // PAIRING CODE MODE
+      // When usePairingCode=true, we request a pairing code from
+      // Baileys right after socket init (before QR fires).
+      // Baileys will not emit a QR in this mode.
+      // =========================================================
+      if (usePairingCode && pairingPhone && !state.creds.registered) {
+        // Wait briefly for the socket internal state to be ready
+        setTimeout(async () => {
+          try {
+            // Stale socket guard: only proceed if this socket is still the active one
+            if (sessions[sessionId]?.sock !== sock) return;
+
+            const code = await sock.requestPairingCode(pairingPhone);
+            // Format as ABCD-1234
+            const formatted = code?.match(/.{1,4}/g)?.join("-") || code || "";
+
+            console.log(`[WhatsApp] Pairing code for ${sessionId}: ${formatted}`);
+            logWhatsAppEvent(`Session: ${sessionId} | PAIRING CODE ISSUED | Phone: ${pairingPhone} | Code: ${formatted}`);
+
+            if (sessions[sessionId]) {
+              sessions[sessionId].pairingCode = formatted;
+              sessions[sessionId].status = "pairing";
+            }
+
+            // Emit 'pairing' status update + dedicated pairing_code event
+            updateSessionStatus(sessionId, "pairing");
+
+            const io = getIO();
+            if (io) {
+              const pairingPayload = {
+                sessionId,
+                organizationId: sessions[sessionId]?.organizationId,
+                pairingCode: formatted,
+              };
+              if (sessions[sessionId]?.organizationId) {
+                io.to(`org_${sessions[sessionId].organizationId}`).emit("whatsapp_pairing_code", pairingPayload);
+              } else {
+                io.emit("whatsapp_pairing_code", pairingPayload);
+              }
+            }
+          } catch (pairingErr) {
+            console.error(`[WhatsApp] Failed to request pairing code for ${sessionId}:`, pairingErr.message);
+            logWhatsAppEvent(`Session: ${sessionId} | PAIRING CODE FAILED | ${pairingErr.message}`);
+            updateSessionStatus(sessionId, "disconnected");
+          }
+        }, 3000);
+      }
+      // =========================================================
+      // END PAIRING CODE MODE
+      // =========================================================
 
       sock.ev.on("connection.update", async (update) => {
         // Stale socket guard: ignore events from old/destroyed sockets if a newer socket has been assigned

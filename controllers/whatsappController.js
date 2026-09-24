@@ -68,6 +68,16 @@ export const connectClient = async (req, res) => {
       }
 
       const targetSessionId = `org_${orgId}_user_${repUserId}`;
+      try {
+        const SessionModel = req.tenantModels?.WhatsAppSession || WhatsAppSessionModel;
+        if (SessionModel) {
+          await SessionModel.updateOne(
+            { sessionId: targetSessionId },
+            { $set: { errorMessage: "" } }
+          );
+        }
+      } catch (e) {}
+
       connectWhatsApp({
         sessionId: targetSessionId,
         organizationId: orgId,
@@ -172,6 +182,13 @@ export const getStatus = async (req, res) => {
         }
       }
 
+      if ((status === "connected" || status === "qr" || status === "connecting") && dbSession?.errorMessage) {
+        WhatsAppSessionModel.updateOne(
+          { sessionId: repSessionId },
+          { $set: { errorMessage: "" } }
+        ).catch(() => {});
+      }
+
       return res.status(200).json({
         sessions: [
           {
@@ -185,7 +202,10 @@ export const getStatus = async (req, res) => {
             label: "My WhatsApp Line",
             isRepSession: true,
             expectedPhone: req.user.phone || "",
-            errorMessage: dbSession?.errorMessage || "",
+            errorMessage:
+              status === "connected" || status === "qr" || status === "connecting"
+                ? ""
+                : dbSession?.errorMessage || "",
           },
         ],
         isRepSession: true,
@@ -1072,3 +1092,124 @@ export const getTeamWhatsAppStatuses = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// @desc    Request WhatsApp pairing code (phone-number linking — alternative to QR scan)
+// @route   POST /api/whatsapp/pairing-code
+// @access  Protected
+export const requestPairingCode = async (req, res) => {
+  try {
+    const { phoneNumber, device, isSecondary, sessionId: bodySessionId } = req.body;
+
+    // Validate phone: digits only with country code, 10–15 digits total
+    if (!phoneNumber) {
+      return res.status(400).json({
+        message: "A phone number is required to generate a pairing code.",
+      });
+    }
+    const cleanPhone = String(phoneNumber).replace(/\D/g, "");
+    if (cleanPhone.length < 10 || cleanPhone.length > 15) {
+      return res.status(400).json({
+        message:
+          "Please enter a valid phone number with country code (e.g. 919876543210). Must be 10–15 digits.",
+      });
+    }
+
+    const orgId = req.user?.organizationId
+      ? req.user.organizationId.toString()
+      : req.organization?._id
+        ? req.organization._id.toString()
+        : null;
+    const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
+
+    let targetSessionId;
+
+    // ================================================================
+    // SALES REP: Verify phone matches their profile, use personal session
+    // ================================================================
+    if (req.user?.role === "sales person") {
+      const repUserId = req.user._id.toString();
+      const repPhone = (req.user.phone || "").replace(/\D/g, "");
+
+      if (!repPhone) {
+        return res.status(400).json({
+          message:
+            "No WhatsApp number is registered in your profile. Please contact your administrator before connecting.",
+        });
+      }
+
+      // Enforce: entered phone must match the profile number (last 10 digits comparison)
+      const enteredLast10 = cleanPhone.slice(-10);
+      const profileLast10 = repPhone.slice(-10);
+      if (enteredLast10 !== profileLast10) {
+        return res.status(400).json({
+          message: `The phone number you entered (+${cleanPhone}) does not match your registered profile number (+${repPhone}). You must pair with your authorized number.`,
+        });
+      }
+
+      targetSessionId = `org_${orgId}_user_${repUserId}`;
+
+      // Clear any previous error messages for clean retry
+      try {
+        const SessionModel = req.tenantModels?.WhatsAppSession;
+        if (SessionModel) {
+          await SessionModel.updateOne(
+            { sessionId: targetSessionId },
+            { $set: { errorMessage: "" } }
+          );
+        }
+      } catch (e) {}
+    } else {
+      // ================================================================
+      // ADMIN / MANAGER: Use org session
+      // ================================================================
+      if (!orgId) {
+        return res.status(400).json({ message: "Organization context is required." });
+      }
+
+      // Determine device: default to primary
+      const isDevice2 = device === 2 || isSecondary === true;
+
+      // Check line limit for secondary device
+      if (isDevice2) {
+        try {
+          const { Organization } = getMasterModels();
+          const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
+          if (!org || (org.whatsappLineLimit || 1) < 2) {
+            return res.status(403).json({
+              message:
+                "This organization is restricted to a Single WhatsApp Line. Upgrade to Dual Lines to connect a second device.",
+            });
+          }
+        } catch (e) {}
+      }
+
+      if (bodySessionId) {
+        const allowed = [`org_${orgId}`, `org_${orgId}_device_2`];
+        targetSessionId = allowed.includes(bodySessionId)
+          ? bodySessionId
+          : `org_${orgId}`;
+      } else {
+        targetSessionId = isDevice2 ? `org_${orgId}_device_2` : `org_${orgId}`;
+      }
+    }
+
+    // Fire connection in pairing code mode (non-blocking)
+    connectWhatsApp({
+      sessionId: targetSessionId,
+      organizationId: orgId,
+      tenantDbName,
+      usePairingCode: true,
+      pairingPhone: cleanPhone,
+    });
+
+    return res.status(200).json({
+      message:
+        "Pairing code is being generated. It will appear on-screen within a few seconds.",
+      sessionId: targetSessionId,
+    });
+  } catch (error) {
+    console.error("[WhatsApp] requestPairingCode error:", error.message);
+    res.status(500).json({ message: error.message });
+  }
+};
+

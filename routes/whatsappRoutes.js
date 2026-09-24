@@ -14,6 +14,7 @@ import {
   getTestAIHistory,
   summarizeConversation,
   getTeamWhatsAppStatuses,
+  requestPairingCode,
 } from "../controllers/whatsappController.js";
 import { protect } from "../middleware/authMiddleware.js";
 
@@ -46,6 +47,7 @@ router.post("/connect", connectClient);
 router.get("/status", getStatus);
 router.post("/logout", logoutClient);
 router.get("/qr", getQR);
+router.post("/pairing-code", requestPairingCode);
 
 // Chats and Messages
 router.get("/conversations", getConversations);
