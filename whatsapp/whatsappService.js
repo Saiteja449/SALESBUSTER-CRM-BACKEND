@@ -2066,7 +2066,7 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
 
     try {
       const sendResult = await sock.sendMessage(targetJid, { text: welcomeText });
-      const messageId = sendResult.key.id;
+      const messageId = sendResult?.key?.id || `msg_${Date.now()}`;
       const timestamp = new Date();
 
       // Create message record in tenant DB

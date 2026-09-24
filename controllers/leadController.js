@@ -956,7 +956,28 @@ export const uploadRecordingForLead = async (req, res) => {
     const { LeadModel } = getModels(req);
     const { id } = req.params;
 
-    const lead = await LeadModel.findById(id);
+    let lead = null;
+    if (id && mongoose.Types.ObjectId.isValid(id)) {
+      lead = await LeadModel.findById(id);
+    }
+
+    // Fallback: If id is a temp ID (e.g. temp-...) or invalid, try finding by phone from req.body or filename
+    if (!lead && req.body?.phone) {
+      const cleanPhone = String(req.body.phone).replace(/\D/g, "");
+      const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
+      if (phoneSuffix.length >= 7) {
+        lead = await LeadModel.findOne({ phone: { $regex: phoneSuffix + "$" } }).sort({ createdAt: -1 });
+      }
+    }
+
+    if (!lead && req.file?.originalname) {
+      const fileDigits = req.file.originalname.replace(/\D/g, "");
+      if (fileDigits.length >= 10) {
+        const potentialPhone = fileDigits.slice(-10);
+        lead = await LeadModel.findOne({ phone: { $regex: potentialPhone + "$" } }).sort({ createdAt: -1 });
+      }
+    }
+
     if (!lead) {
       return res.status(404).json({
         success: false,
