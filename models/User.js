@@ -39,6 +39,26 @@ const userSchema = mongoose.Schema(
       enum: ["active", "inactive"],
       default: "active",
     },
+    telephony: {
+      telecmiUserId: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      telecmiPassword: {
+        type: String,
+        default: "",
+      },
+      telecmiExtension: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      isActive: {
+        type: Boolean,
+        default: true,
+      },
+    },
   },
   {
     timestamps: true,

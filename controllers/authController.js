@@ -114,6 +114,11 @@ export const login = async (req, res) => {
           status: org.status,
           isExpired,
           isOrgOwner: !!user.isOrgOwner,
+          telephony: {
+            isAddonEnabled: Boolean(org.telephony?.isAddonEnabled),
+            isConfigured: Boolean(org.telephony?.isConfigured),
+            virtualNumber: org.telephony?.virtualNumber || "",
+          },
         };
       }
     }

@@ -309,6 +309,55 @@ const organizationSchema = new mongoose.Schema(
         default: null,
       },
     },
+    telephony: {
+      isAddonEnabled: {
+        type: Boolean,
+        default: false,
+        index: true,
+      },
+      addonStartDate: {
+        type: Date,
+        default: null,
+      },
+      addonEndDate: {
+        type: Date,
+        default: null,
+      },
+      isConfigured: {
+        type: Boolean,
+        default: false,
+      },
+      telecmiAppId: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      telecmiSecret: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      sbcUri: {
+        type: String,
+        default: "sbcind.telecmi.com",
+        trim: true,
+      },
+      virtualNumber: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      webhookSecret: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      recordingStorageType: {
+        type: String,
+        enum: ["local", "s3", "gcs"],
+        default: "local",
+      },
+    },
   },
   {
     timestamps: true,

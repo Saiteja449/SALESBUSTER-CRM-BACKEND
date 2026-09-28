@@ -4,6 +4,7 @@ import Lead from "../models/Lead.js";
 import Notification from "../models/Notification.js";
 import { getMasterModels, generateSecurePassword } from "../services/tenantManager.js";
 import { sendSalesPersonWelcomeEmail } from "../helpers/emailHelper.js";
+import { provisionTelecmiUser } from "../services/telephonyService.js";
 
 // Helper to resolve models
 const getModels = (req) => {
@@ -191,6 +192,51 @@ export const addSalesPerson = async (req, res) => {
       isOrgOwner: false,
       status: "active",
     });
+
+    // 7.5. Auto-provision TeleCMI extension if Telephony Add-on is active and configured
+    if (
+      req.organization?.telephony?.isAddonEnabled &&
+      req.organization?.telephony?.isConfigured
+    ) {
+      try {
+        let ext = req.body.telecmiExtension;
+        if (!ext) {
+          const existingExts = await UserModel.find({
+            "telephony.telecmiExtension": { $exists: true, $ne: "" },
+          }).select("telephony.telecmiExtension");
+          const exts = existingExts
+            .map((u) => parseInt(u.telephony?.telecmiExtension, 10))
+            .filter((n) => !isNaN(n));
+          ext = exts.length > 0 ? Math.max(...exts) + 1 : 101;
+        }
+
+        const telecmiResult = await provisionTelecmiUser({
+          name: cleanName,
+          phone: cleanMobile,
+          password: temporaryPassword,
+          extension: ext,
+          organization: req.organization,
+        });
+
+        if (telecmiResult) {
+          user.telephony = {
+            telecmiUserId: telecmiResult.telecmiUserId,
+            telecmiPassword: telecmiResult.telecmiPassword,
+            telecmiExtension: telecmiResult.telecmiExtension,
+            isActive: true,
+          };
+          await user.save();
+          console.log(
+            `[UserController] TeleCMI extension ${telecmiResult.telecmiExtension} auto-assigned to ${user.name}`
+          );
+        }
+      } catch (telecmiErr) {
+        console.warn(
+          "[UserController] TeleCMI auto-provisioning warning:",
+          telecmiErr.message
+        );
+      }
+    }
 
     // 8. Create notification in tenant
     try {

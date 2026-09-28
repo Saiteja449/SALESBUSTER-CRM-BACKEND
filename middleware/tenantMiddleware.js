@@ -99,6 +99,7 @@ export const checkSubscriptionActive = (req, res, next) => {
     path.startsWith("/api/whatsapp/cloud/webhook") ||
     path.startsWith("/api/meta/webhook") ||
     path.startsWith("/api/webhooks/meta") ||
+    path.startsWith("/api/telephony/webhook") ||
     path === "/" ||
     path === "/health"
   ) {

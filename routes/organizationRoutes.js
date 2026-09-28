@@ -23,6 +23,7 @@ import {
   deleteOrgKnowledgeDoc,
   getOrganizationServices,
   getOrganizationSettings,
+  toggleOrganizationTelephonyAddon,
 } from "../controllers/organizationController.js";
 import { protect, verifySuperAdmin } from "../middleware/authMiddleware.js";
 
@@ -100,6 +101,7 @@ router.put("/:id/renew", verifySuperAdmin, renewSubscription);
 router.patch("/:id/status", verifySuperAdmin, toggleStatus);
 router.post("/:id/resend-welcome", verifySuperAdmin, resendWelcomeEmail);
 router.put("/:id/whatsapp-limit", verifySuperAdmin, updateOrganizationWhatsAppLimit);
+router.put("/:id/telephony-addon", verifySuperAdmin, toggleOrganizationTelephonyAddon);
 
 // Super Admin AI Settings & Knowledge Base APIs
 router.get("/:id/ai-settings", verifySuperAdmin, getOrgAISettings);

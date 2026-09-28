@@ -73,7 +73,7 @@ export const getCloudStatus = async (req, res) => {
 
     const cloud = org.whatsappCloudSettings || {};
     const orgId = org._id ? org._id.toString() : "";
-    const webhookCallbackUrl = `https://api.salesbuster.ai/api/whatsapp/cloud/webhook/${orgId}`;
+    const webhookCallbackUrl = `https://betaapi.salesbuster.ai/api/whatsapp/cloud/webhook/${orgId}`;
 
     res.status(200).json({
       success: true,

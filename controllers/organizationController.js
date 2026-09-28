@@ -196,6 +196,21 @@ export const provisionOrganization = async (req, res) => {
         return 1;
       })(),
       aiSettings: getDefaultAISettings(name.trim()),
+      telephony: {
+        isAddonEnabled: Boolean(
+          req.body.isTelephonyEnabled ||
+            req.body.telephonyAddon ||
+            req.body.telephony?.isAddonEnabled
+        ),
+        isConfigured: Boolean(
+          (req.body.telecmiAppId || req.body.telephony?.telecmiAppId) &&
+            (req.body.telecmiSecret || req.body.telephony?.telecmiSecret)
+        ),
+        telecmiAppId: req.body.telecmiAppId || req.body.telephony?.telecmiAppId || "",
+        telecmiSecret: req.body.telecmiSecret || req.body.telephony?.telecmiSecret || "",
+        virtualNumber: req.body.virtualNumber || req.body.telephony?.virtualNumber || "",
+        sbcUri: req.body.sbcUri || req.body.telephony?.sbcUri || "sbcind.telecmi.com",
+      },
       createdBy: req.user?._id || null,
     });
 
@@ -1626,3 +1641,41 @@ export const deleteOrgKnowledgeDoc = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Super Admin: Toggle Telephony Add-on for an Organization
+ * PUT /api/organizations/:id/telephony-addon
+ */
+export const toggleOrganizationTelephonyAddon = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isAddonEnabled, addonStartDate, addonEndDate } = req.body;
+    const { Organization } = getMasterModels();
+
+    const org = await Organization.findById(id);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found." });
+    }
+
+    if (!org.telephony) {
+      org.telephony = {};
+    }
+
+    org.telephony.isAddonEnabled =
+      isAddonEnabled !== undefined ? Boolean(isAddonEnabled) : !org.telephony.isAddonEnabled;
+    if (addonStartDate) org.telephony.addonStartDate = new Date(addonStartDate);
+    if (addonEndDate) org.telephony.addonEndDate = new Date(addonEndDate);
+
+    await org.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Telephony add-on ${org.telephony.isAddonEnabled ? "enabled" : "disabled"} for ${org.name}.`,
+      data: org.telephony,
+    });
+  } catch (error) {
+    console.error("Error toggling telephony addon:", error);
+    res.status(500).json({ success: false, message: "Server error toggling telephony add-on." });
+  }
+};
+
