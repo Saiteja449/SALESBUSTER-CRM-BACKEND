@@ -12,7 +12,7 @@ import fs from "fs";
 import path from "path";
 import { processAudioUpload } from "../utils/audioConverter.js";
 import { analyzeAudioFile } from "../services/audioAnalysisService.js";
-import { sendWelcomeEnquiryMessage } from "../whatsapp/whatsappService.js";
+import { sendWelcomeEnquiryMessage, sendMessageFromCRM } from "../whatsapp/whatsappService.js";
 import { decryptApiKey } from "../utils/encryption.js";
 import { recordAiUsage } from "../services/aiUsageService.js";
 import * as XLSX from "xlsx";
@@ -1356,5 +1356,227 @@ export const importExcelLeads = async (req, res) => {
         // Ignored
       }
     }
+  }
+};
+
+// @desc    Process missed call automatically in background (puts into Today's Follow-up & dispatches WhatsApp welcome message)
+// @route   POST /api/leads/missed-call
+// @access  Protected
+export const handleMissedCall = async (req, res) => {
+  try {
+    const {
+      phone,
+      name,
+      callTimestamp,
+      durationSeconds = 0,
+      customMessage,
+      sendWhatsApp = true,
+      service = "General Enquiry",
+    } = req.body;
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number is required for missed call processing.",
+      });
+    }
+
+    const {
+      LeadModel,
+      FollowupModel,
+      MessageModel,
+      UserModel,
+    } = getModels(req);
+
+    const orgId = req.user?.organizationId
+      ? req.user.organizationId.toString()
+      : req.organization?._id
+        ? req.organization._id.toString()
+        : null;
+
+    // Clean and normalize phone number
+    const rawPhone = String(phone).trim();
+    const cleanDigits = rawPhone.replace(/\D/g, "");
+    const last10Digits =
+      cleanDigits.length >= 10 ? cleanDigits.slice(-10) : cleanDigits;
+    let normalizedPhone = cleanDigits;
+    if (normalizedPhone.length > 10 && normalizedPhone.startsWith("91")) {
+      normalizedPhone = normalizedPhone.substring(2);
+    }
+
+    // Build flexible phone query matching
+    const orConditions = [];
+    if (rawPhone) orConditions.push({ phone: rawPhone });
+    if (cleanDigits) orConditions.push({ phone: cleanDigits });
+    if (cleanDigits && !cleanDigits.startsWith("+")) orConditions.push({ phone: `+${cleanDigits}` });
+    if (normalizedPhone) orConditions.push({ phone: normalizedPhone });
+    if (last10Digits.length >= 7) {
+      orConditions.push({ phone: new RegExp(last10Digits + "$") });
+    }
+
+    const todayStr = new Date().toISOString().split("T")[0];
+    const missedTime = callTimestamp ? new Date(callTimestamp) : new Date();
+    const timeFormatted = missedTime.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    let lead = await LeadModel.findOne({ $or: orConditions });
+    let isNewLead = false;
+
+    const assignedUserId = (req.user?._id || req.user?.id || "").toString();
+
+    if (lead) {
+      // Existing Lead: Update status to Follow Up and scheduled for today
+      lead.status = "Follow Up";
+      lead.nextFollowUp = todayStr;
+      lead.followupTime = timeFormatted;
+      lead.preferredContactMethod = "WhatsApp";
+
+      // If lead is unassigned, assign to current user
+      if (!lead.assignedTo || lead.assignedTo === "Unassigned") {
+        lead.assignedTo = assignedUserId;
+      }
+
+      const missedNote = `[Missed Call] Received on ${missedTime.toLocaleDateString()} at ${timeFormatted}. Scheduled for today's follow-up.`;
+      lead.notes = lead.notes ? `${missedNote}\n${lead.notes}` : missedNote;
+      await lead.save();
+    } else {
+      // New Lead: Create fresh lead directly into Today's Follow-up
+      isNewLead = true;
+      const callerName = name && name.trim() ? name.trim() : `Caller ${last10Digits.slice(-4)}`;
+
+      lead = await LeadModel.create({
+        name: callerName,
+        phone: rawPhone.startsWith("+") ? rawPhone : `+91${last10Digits}`,
+        source: "Call",
+        service: service || "General Enquiry",
+        status: "Follow Up",
+        nextFollowUp: todayStr,
+        followupTime: timeFormatted,
+        preferredContactMethod: "WhatsApp",
+        priority: "High",
+        assignedTo: assignedUserId || "Unassigned",
+        joinedAt: missedTime,
+        notes: `New lead created from missed call received on ${missedTime.toLocaleDateString()} at ${timeFormatted}. Scheduled for today's follow-up.`,
+      });
+    }
+
+    // Upsert Followup record in Followup collection for Today's Followups
+    try {
+      await FollowupModel.create({
+        leadId: lead._id,
+        leadName: lead.name,
+        type: "WhatsApp",
+        date: todayStr,
+        time: timeFormatted,
+        priority: "High",
+        notes: `Missed call received. Automatically scheduled for today's follow-up.`,
+        author: req.user?.name || "Mobile App",
+        done: false,
+      });
+    } catch (fErr) {
+      console.warn("[Missed Call] Note creating Followup entry:", fErr.message);
+    }
+
+    // Broadcast lead update via Socket.IO
+    const io = getIO();
+    if (io) {
+      const room = orgId ? `org_${orgId}` : null;
+      if (room) {
+        io.to(room).emit("lead_updated", { leadId: lead._id, lead });
+      }
+    }
+
+    // Automated Background WhatsApp Welcome Message Dispatch
+    let whatsappSent = false;
+    let whatsappError = null;
+
+    if (sendWhatsApp) {
+      try {
+        // Anti-spam guard: Check if an outgoing WhatsApp message was sent to this lead within the last 5 minutes
+        const recentMessage = await MessageModel.findOne({
+          leadId: lead._id,
+          direction: "outgoing",
+          timestamp: { $gte: new Date(Date.now() - 5 * 60 * 1000) },
+        });
+
+        if (recentMessage) {
+          console.log(
+            `[Missed Call] Outgoing message was already sent to lead ${lead._id} in the last 5 minutes. Skipping duplicate WhatsApp welcome.`
+          );
+        } else {
+          const welcomeText =
+            customMessage && customMessage.trim()
+              ? customMessage.trim()
+              : `Hello! 👋 We have received your call, but we couldn't connect. We will call you back shortly. In the meantime, if you have any questions, you can ask right here! 💬`;
+
+          const senderName = req.user?.name || "Sales Team";
+
+          // Try rep's personal session first; fallback to organization primary line
+          let targetSessionId = null;
+          if (req.user?.role === "sales person") {
+            targetSessionId = orgId ? `org_${orgId}_user_${req.user._id}` : `user_${req.user._id}`;
+          } else if (orgId) {
+            targetSessionId = `org_${orgId}`;
+          }
+
+          try {
+            await sendMessageFromCRM(
+              lead._id,
+              welcomeText,
+              senderName,
+              {
+                organizationId: orgId,
+                tenantModels: req.tenantModels,
+                sessionId: targetSessionId,
+              }
+            );
+            whatsappSent = true;
+          } catch (sessionErr) {
+            // If rep's personal session is offline, fallback to org primary line
+            if (targetSessionId && orgId && targetSessionId !== `org_${orgId}`) {
+              console.log(
+                `[Missed Call] Rep session ${targetSessionId} offline. Attempting fallback to organization line org_${orgId}...`
+              );
+              await sendMessageFromCRM(
+                lead._id,
+                welcomeText,
+                senderName,
+                {
+                  organizationId: orgId,
+                  tenantModels: req.tenantModels,
+                  sessionId: `org_${orgId}`,
+                }
+              );
+              whatsappSent = true;
+            } else {
+              throw sessionErr;
+            }
+          }
+        }
+      } catch (waErr) {
+        console.warn(`[Missed Call] WhatsApp automated dispatch error:`, waErr.message);
+        whatsappError = waErr.message;
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Missed call processed successfully. Lead is scheduled in Today's Follow-up.",
+      data: {
+        lead,
+        isNewLead,
+        todayFollowupDate: todayStr,
+        whatsappSent,
+        whatsappError,
+      },
+    });
+  } catch (error) {
+    console.error("[Missed Call] Error processing missed call:", error);
+    return res.status(500).json({
+      success: false,
+      message: `Failed to process missed call: ${error.message}`,
+    });
   }
 };

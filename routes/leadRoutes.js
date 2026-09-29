@@ -12,6 +12,7 @@ import {
   analyzeRecording,
   uploadRecordingForLead,
   importExcelLeads,
+  handleMissedCall,
 } from "../controllers/leadController.js";
 import { protect } from "../middleware/authMiddleware.js";
 
@@ -106,7 +107,10 @@ router.route("/paginated").get(protect, getPaginatedLeads);
 // 4. External status webhook (Public integration endpoint, protected by secret verification)
 router.post("/webhook/status", updateStatusByWebhook);
 
-// 5. Individual lead management & recording operations (Protected)
+// 5. Missed Call Background Handler (Protected - Auto-schedules in Today's Follow-up & sends WhatsApp)
+router.post("/missed-call", protect, handleMissedCall);
+
+// 6. Individual lead management & recording operations (Protected)
 router
   .route("/:id")
   .put(protect, handleRecordingUpload, updateLead)

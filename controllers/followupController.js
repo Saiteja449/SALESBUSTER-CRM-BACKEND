@@ -2,12 +2,14 @@ import mongoose from "mongoose";
 import Followup from "../models/Followup.js";
 import Notification from "../models/Notification.js";
 import Lead from "../models/Lead.js";
+import User from "../models/User.js";
 import { getIO } from "../socket/socket.js";
 
 const getModels = (req) => ({
   FollowupModel: req.tenantModels?.Followup || Followup,
   NotificationModel: req.tenantModels?.Notification || Notification,
   LeadModel: req.tenantModels?.Lead || Lead,
+  UserModel: req.tenantModels?.User || User,
 });
 
 const isLeadAssignedToUser = (lead, user) => {
@@ -271,3 +273,220 @@ export const updateFollowup = async (req, res) => {
     res.status(400).json({ success: false, message: error.message });
   }
 };
+
+// @desc    Get pending AI Follow-ups with joined Lead details (Optimized for Mobile & Web)
+// @route   GET /api/followups/ai
+// @access  Protected
+export const getAIFollowups = async (req, res) => {
+  try {
+    const { FollowupModel, LeadModel, UserModel } = getModels(req);
+    let leadFilter = {};
+
+    // 1. Role-based scoping: Sales representatives see ONLY their assigned leads
+    if (req.user?.role === "sales person") {
+      const repId = req.user._id || req.user.id;
+      const repName = req.user.name;
+      const repConditions = [String(repId)];
+      if (mongoose.Types.ObjectId.isValid(repId)) {
+        repConditions.push(new mongoose.Types.ObjectId(repId));
+      }
+      if (repName) {
+        repConditions.push(new RegExp("^" + repName + "$", "i"));
+      }
+      leadFilter.assignedTo = { $in: repConditions };
+    }
+
+    // 2. Fetch leads in scope
+    const leads = await LeadModel.find(leadFilter).lean();
+    if (!leads || leads.length === 0) {
+      return res.json({ success: true, count: 0, data: [] });
+    }
+
+    const leadMap = new Map();
+    const repIdsToLookup = new Set();
+    leads.forEach((l) => {
+      const idStr = l._id ? l._id.toString() : String(l.id);
+      leadMap.set(idStr, l);
+      if (
+        l.assignedTo &&
+        typeof l.assignedTo === "string" &&
+        mongoose.Types.ObjectId.isValid(l.assignedTo)
+      ) {
+        repIdsToLookup.add(l.assignedTo);
+      }
+    });
+
+    // Lookup rep names for managers if UserModel exists
+    let repNameMap = new Map();
+    if (repIdsToLookup.size > 0 && UserModel) {
+      try {
+        const users = await UserModel.find({
+          _id: { $in: Array.from(repIdsToLookup) },
+        })
+          .select("name")
+          .lean();
+        users.forEach((u) => repNameMap.set(u._id.toString(), u.name));
+      } catch (uErr) {}
+    }
+
+    // 3. Find active AI followups for these leads
+    const leadIds = Array.from(leadMap.keys());
+    const query = {
+      leadId: { $in: leadIds },
+      author: "AI Agent",
+      done: false,
+    };
+
+    const followups = await FollowupModel.find(query)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // 4. Deduplicate so only the latest active immediate action per lead is returned
+    const seenLeads = new Set();
+    const result = [];
+
+    for (const f of followups) {
+      const lId = f.leadId ? f.leadId.toString() : "";
+      if (!seenLeads.has(lId) && leadMap.has(lId)) {
+        seenLeads.add(lId);
+        const lead = leadMap.get(lId);
+
+        let assignedRepName = "Unassigned";
+        if (lead.assignedTo) {
+          const assignedStr = String(lead.assignedTo);
+          assignedRepName = repNameMap.get(assignedStr) || lead.assignedTo;
+        }
+
+        result.push({
+          id: f._id ? f._id.toString() : f.id,
+          leadId: lId,
+          type: f.type || "WhatsApp",
+          date: f.date,
+          time: f.time || "",
+          priority: f.priority || "Medium",
+          notes: f.notes || "",
+          author: f.author || "AI Agent",
+          done: f.done || false,
+          createdAt: f.createdAt,
+          lead: {
+            id: lId,
+            name: lead.name || "Customer",
+            phone: lead.phone || "",
+            email: lead.email || "",
+            service:
+              lead.service ||
+              (Array.isArray(lead.services)
+                ? lead.services.join(", ")
+                : "General Enquiry"),
+            status: lead.status || "New",
+            city: lead.city || lead.aiQualification?.city || "",
+            assignedTo: lead.assignedTo || "Unassigned",
+            assignedRepName,
+            aiQualification: lead.aiQualification || null,
+            createdAt: lead.createdAt,
+          },
+        });
+      }
+    }
+
+    // 5. Optional search filtering by customer name, phone, notes, city, or service
+    const search = req.query?.search
+      ? String(req.query.search).trim().toLowerCase()
+      : "";
+    const filteredResult = search
+      ? result.filter(
+          (item) =>
+            item.lead.name?.toLowerCase().includes(search) ||
+            item.lead.phone?.includes(search) ||
+            item.lead.service?.toLowerCase().includes(search) ||
+            item.lead.city?.toLowerCase().includes(search) ||
+            item.notes?.toLowerCase().includes(search),
+        )
+      : result;
+
+    res.json({
+      success: true,
+      count: filteredResult.length,
+      data: filteredResult,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Mark an AI follow-up as handled and resolve active AI actions for the lead
+// @route   PUT /api/followups/ai/:id/handle
+// @access  Protected
+export const handleAIFollowup = async (req, res) => {
+  try {
+    const { FollowupModel, LeadModel } = getModels(req);
+    const followup = await FollowupModel.findById(req.params.id);
+
+    if (!followup) {
+      return res
+        .status(404)
+        .json({ success: false, message: "AI Follow-up not found" });
+    }
+
+    // Role check: sales reps can only resolve followups for leads assigned to them
+    if (req.user?.role === "sales person" && followup.leadId && LeadModel) {
+      const lead = await LeadModel.findById(followup.leadId);
+      if (lead && !isLeadAssignedToUser(lead, req.user)) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Access forbidden: You can only resolve follow-ups for leads assigned to you",
+        });
+      }
+    }
+
+    // Mark current followup as done
+    followup.done = true;
+    await followup.save();
+
+    // Also mark any other pending AI followups for this lead as done to prevent stale cards
+    if (followup.leadId) {
+      await FollowupModel.updateMany(
+        {
+          leadId: followup.leadId,
+          author: "AI Agent",
+          done: false,
+        },
+        { $set: { done: true } },
+      );
+    }
+
+    // Real-time socket broadcast
+    try {
+      const io = getIO();
+      if (io) {
+        const payload = {
+          followupId: followup._id.toString(),
+          leadId: followup.leadId ? followup.leadId.toString() : "",
+          handledBy: req.user?.name || "Representative",
+          done: true,
+        };
+        const orgId = req.user?.organizationId || req.organizationId;
+        if (orgId) {
+          const cleanOrgId = String(orgId).replace(/^org_/, "");
+          io.to(`org_${cleanOrgId}`).emit("ai_followup_resolved", payload);
+        }
+        io.emit("ai_followup_resolved", payload);
+      }
+    } catch (socketErr) {
+      console.warn(
+        "[Followup Controller] Socket emit error:",
+        socketErr.message,
+      );
+    }
+
+    res.json({
+      success: true,
+      message: "AI follow-up marked as handled successfully",
+      data: { id: followup._id.toString(), done: true },
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+

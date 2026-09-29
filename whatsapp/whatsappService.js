@@ -474,10 +474,9 @@ export const connectWhatsApp = async (param1, param2, param3) => {
           const name = sock?.user?.name || "WhatsApp Business Agent";
 
           // =========================================================
-          // =========================================================
-          // PHONE VERIFICATION GATE — Sales Rep sessions only
-          // Ensures the scanned WhatsApp number strictly matches the rep's
-          // registered profile phone. Fails closed on mismatch or error.
+          // SALES REP SESSION LINKING
+          // Binds the active session to the salesperson's user ID
+          // for multi-user direct routing and messaging ownership.
           // =========================================================
           if (sessionId.includes("_user_")) {
             const userMatch = sessionId.match(/_user_([a-fA-F0-9]{24})$/);
@@ -489,121 +488,29 @@ export const connectWhatsApp = async (param1, param2, param3) => {
 
             const repUserId = userMatch[1];
 
-            // Helper to cleanly abort session, purge auth keys, update DB, and notify UI
-            const abortRepSession = async (errorMessage, logReason) => {
-              console.warn(`[WhatsApp] ABORTING ${sessionId}: ${logReason}`);
-              logWhatsAppEvent(`Session: ${sessionId} | REJECTED | ${logReason}`);
-
-              try { await sock.logout(); } catch (e) {}
-              try { sock.end(); } catch (e) {}
-              if (sessions[sessionId]) sessions[sessionId].sock = null;
-
-              try {
-                const models = await getModelsForSession(sessionId);
-                const AuthModel =
-                  models?.WhatsAppAuthState ||
-                  (await import("../models/WhatsAppAuthState.js")).default;
-                await AuthModel.deleteMany({ sessionId });
-
-                const SessionModel = models?.WhatsAppSession || WhatsAppSession;
-                await SessionModel.findOneAndUpdate(
-                  { sessionId },
-                  {
-                    status: "disconnected",
-                    errorMessage,
-                    qrCode: "",
-                    connectedPhone: "",
-                    connectedName: "",
-                  },
-                  { upsert: true }
-                );
-              } catch (dbErr) {
-                console.error(`[WhatsApp] Cleanup error for aborted session ${sessionId}:`, dbErr.message);
-              }
-
-              if (sessions[sessionId]) {
-                sessions[sessionId].status = "disconnected";
-                sessions[sessionId].qrCode = "";
-              }
-
-              const io = getIO();
-              if (io && sessions[sessionId]?.organizationId) {
-                io.to(`org_${sessions[sessionId].organizationId}`).emit("whatsapp_status", {
-                  sessionId,
-                  organizationId: sessions[sessionId].organizationId,
-                  status: "disconnected",
-                  error: "phone_mismatch",
-                  errorMessage,
-                  qrCode: "",
-                  connectedPhone: "",
-                  connectedName: "",
-                });
-              }
-            };
-
             try {
               const models = await getModelsForSession(sessionId);
-              const UserModel = models?.User || User;
-              const repUser = await UserModel.findById(repUserId).select("phone name").lean();
-
-              // Strict Requirement: Rep record and registered phone MUST exist
-              if (!repUser || !repUser.phone || !repUser.phone.trim()) {
-                await abortRepSession(
-                  "Sales representative profile or registered phone number not found. Access denied.",
-                  `Rep user ${repUserId} missing or has no phone in profile.`
-                );
-                return;
-              }
-
-              const profilePhone = repUser.phone.trim();
-              const isMatch = verifyPhoneNumberMatch(userJid, profilePhone);
-
-              if (!isMatch) {
-                const scannedPhone = normalizePhone(userJid);
-                const mismatchMsg = `Phone number mismatch: You scanned with +${scannedPhone}, but your administrator registered your profile with ${profilePhone.startsWith("+") ? profilePhone : `+${profilePhone}`}. Please connect your authorized number.`;
-                await abortRepSession(
-                  mismatchMsg,
-                  `Phone mismatch: Scanned +${scannedPhone} does not match expected profile ${profilePhone}`
-                );
-                return;
-              }
-
-              // Match passed: persist userId & expectedPhone to session record
-              try {
-                const SessionModel = models?.WhatsAppSession || WhatsAppSession;
-                await SessionModel.findOneAndUpdate(
-                  { sessionId },
-                  {
-                    userId: repUserId,
-                    expectedPhone: profilePhone.replace(/\D/g, ""),
-                    errorMessage: "",
-                  },
-                  { upsert: true }
-                );
-                console.log(
-                  `[WhatsApp] Phone verification PASSED for ${sessionId}. Rep: ${repUser.name}, Phone: ${profilePhone}`
-                );
-              } catch (persistErr) {
-                console.error(
-                  `[WhatsApp] Failed to persist userId to session record for ${sessionId}:`,
-                  persistErr
-                );
-              }
-            } catch (verifyErr) {
-              // Critical: FAIL CLOSED on error to prevent account sharing
+              const SessionModel = models?.WhatsAppSession || WhatsAppSession;
+              await SessionModel.findOneAndUpdate(
+                { sessionId },
+                {
+                  userId: repUserId,
+                  errorMessage: "",
+                },
+                { upsert: true }
+              );
+              console.log(
+                `[WhatsApp] Rep session linked successfully for ${sessionId}. Rep User ID: ${repUserId}`
+              );
+            } catch (persistErr) {
               console.error(
-                `[WhatsApp] Critical error during phone verification for ${sessionId} (FAILING CLOSED):`,
-                verifyErr
+                `[WhatsApp] Failed to persist userId to session record for ${sessionId}:`,
+                persistErr
               );
-              await abortRepSession(
-                "Phone verification failed due to internal error. Connection rejected for security.",
-                `Verification exception: ${verifyErr.message}`
-              );
-              return;
             }
           }
           // =========================================================
-          // END PHONE VERIFICATION GATE
+          // END SALES REP SESSION LINKING
           // =========================================================
 
           console.log(
