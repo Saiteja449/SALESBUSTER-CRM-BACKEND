@@ -1243,8 +1243,38 @@ export const validateGeminiApiKey = async (req, res) => {
     }
 
     const genAI = new GoogleGenerativeAI(targetKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-    await model.countTokens("SalesBuster health check");
+    const candidateModels = [
+      "gemini-3.8-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-3.1-flash-lite",
+      "gemini-2.5-flash",
+    ];
+
+    let validated = false;
+    let lastError = null;
+
+    for (const modelName of candidateModels) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName });
+        await model.countTokens("SalesBuster health check");
+        validated = true;
+        break;
+      } catch (err) {
+        lastError = err;
+        const errMsg = err.message?.toLowerCase() || "";
+        if (
+          errMsg.includes("api key not valid") ||
+          errMsg.includes("api_key_invalid") ||
+          errMsg.includes("unauthenticated")
+        ) {
+          throw err;
+        }
+      }
+    }
+
+    if (!validated && lastError) {
+      throw lastError;
+    }
 
     res.status(200).json({
       success: true,

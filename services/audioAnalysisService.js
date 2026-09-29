@@ -92,8 +92,8 @@ export const analyzeAudioFile = async (
     // Wait briefly to ensure file is processed by Gemini
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // Initialize Gemini model: gemini-2.5-flash for best multilingual Indian language audio accuracy
-    const preferredModel = process.env.GEMINI_AUDIO_MODEL || "gemini-2.5-flash";
+    // Initialize Gemini model: gemini-3.5-flash-lite / gemini-3.8-flash for best multilingual Indian language audio accuracy
+    const preferredModel = process.env.GEMINI_AUDIO_MODEL || "gemini-3.5-flash-lite";
 
     const prompt = `
 You are a sales call transcription and analysis assistant for SalesBuster AI CRM.
@@ -219,17 +219,17 @@ If and ONLY IF the audio is completely silent, corrupted with no detectable spee
       ]);
     } catch (modelErr) {
       if (
-        preferredModel !== "gemini-2.5-flash-lite" &&
+        preferredModel !== "gemini-3.5-flash-lite" &&
         (modelErr.message?.toLowerCase().includes("not found") ||
           modelErr.message?.includes("404") ||
           modelErr.status === 404)
       ) {
         console.warn(
-          `[AudioAnalysis] ${preferredModel} not found or unsupported for this key/region, falling back to gemini-2.5-flash-lite:`,
+          `[AudioAnalysis] ${preferredModel} not found or unsupported for this key/region, falling back to gemini-3.5-flash-lite:`,
           modelErr.message,
         );
         const fallbackModel = genAI.getGenerativeModel({
-          model: "gemini-2.5-flash-lite",
+          model: "gemini-3.5-flash-lite",
           generationConfig: { responseMimeType: "application/json" }
         });
         result = await fallbackModel.generateContent([
