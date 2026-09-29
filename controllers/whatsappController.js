@@ -58,15 +58,6 @@ export const connectClient = async (req, res) => {
     // ================================================================
     if (req.user?.role === "sales person") {
       const repUserId = req.user._id.toString();
-      const repPhone = (req.user.phone || "").trim();
-
-      if (!repPhone) {
-        return res.status(400).json({
-          message:
-            "No WhatsApp number is registered in your profile. Please contact your administrator to add your phone number before connecting.",
-        });
-      }
-
       const targetSessionId = `org_${orgId}_user_${repUserId}`;
       try {
         const SessionModel = req.tenantModels?.WhatsAppSession || WhatsAppSessionModel;
@@ -86,7 +77,6 @@ export const connectClient = async (req, res) => {
       return res.status(200).json({
         message: "WhatsApp connection started for your personal line. Please scan the QR code when it appears.",
         sessionId: targetSessionId,
-        expectedPhone: repPhone,
       });
     }
     // ================================================================
@@ -1124,28 +1114,10 @@ export const requestPairingCode = async (req, res) => {
     let targetSessionId;
 
     // ================================================================
-    // SALES REP: Verify phone matches their profile, use personal session
+    // SALES REP: Use personal session
     // ================================================================
     if (req.user?.role === "sales person") {
       const repUserId = req.user._id.toString();
-      const repPhone = (req.user.phone || "").replace(/\D/g, "");
-
-      if (!repPhone) {
-        return res.status(400).json({
-          message:
-            "No WhatsApp number is registered in your profile. Please contact your administrator before connecting.",
-        });
-      }
-
-      // Enforce: entered phone must match the profile number (last 10 digits comparison)
-      const enteredLast10 = cleanPhone.slice(-10);
-      const profileLast10 = repPhone.slice(-10);
-      if (enteredLast10 !== profileLast10) {
-        return res.status(400).json({
-          message: `The phone number you entered (+${cleanPhone}) does not match your registered profile number (+${repPhone}). You must pair with your authorized number.`,
-        });
-      }
-
       targetSessionId = `org_${orgId}_user_${repUserId}`;
 
       // Clear any previous error messages for clean retry

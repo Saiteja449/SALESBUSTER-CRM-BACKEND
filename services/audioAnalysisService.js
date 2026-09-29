@@ -92,23 +92,40 @@ export const analyzeAudioFile = async (
     // Wait briefly to ensure file is processed by Gemini
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // Initialize Gemini model: defaults to gemini-3.5-flash-lite (high speed, cost-effective multimodal)
-    const preferredModel = process.env.GEMINI_AUDIO_MODEL || "gemini-3.5-flash-lite";
+    // Initialize Gemini model: gemini-2.5-flash for best multilingual Indian language audio accuracy
+    const preferredModel = process.env.GEMINI_AUDIO_MODEL || "gemini-2.5-flash";
 
     const prompt = `
 You are a sales call transcription and analysis assistant for SalesBuster AI CRM.
 
 Analyze the attached audio recording.
 
-Your tasks:
+=== CRITICAL LANGUAGE INSTRUCTIONS (Read carefully before transcribing) ===
+
+This recording is from an Indian sales team. The conversation WILL likely be in one or more of:
+- Telugu
+- Hindi
+- English
+- A natural mix of all three within a single sentence (code-switching)
+
+RULES FOR TRANSCRIPTION:
+1. Transcribe speech in WHATEVER LANGUAGE IS SPOKEN — Telugu, Hindi, English, or mixed.
+2. For Telugu or Hindi speech, write it in Roman transliteration. Example:
+   - Telugu: "Meeru mini cow teesukovalanukuntunnara?" (Are you looking to take a mini cow?)
+   - Hindi: "Haan, mujhe interest hai." (Yes, I am interested.)
+3. After a non-English line, optionally add an English translation in parentheses.
+4. NEVER use [inaudible] for Indian language words you do not recognise — transliterate them.
+5. NEVER use [inaudible] for accented speech, background noise, or low volume.
+6. Only use [inaudible] if there is literally NO speech — e.g., dead silence, severe distortion, or a completely garbled section that has zero intelligible sound.
+7. If you are only 70% certain of exact words, transcribe your BEST interpretation — that is always more useful than [inaudible].
+
+=== TASKS ===
 
 1. TRANSCRIPTION
-- Transcribe all clearly audible speech.
-- Identify speakers when possible using "Sales Rep:" and "Customer:".
-- If speakers cannot be reliably identified, use "Speaker 1:" and "Speaker 2:".
-- Preserve meaningful repetitions, questions, answers, objections, and incomplete statements.
-- Do not invent, assume, or reconstruct speech that is not audible.
-- If a section is unclear, use "[inaudible]" instead of guessing.
+- Transcribe ALL audible speech using the rules above.
+- Label speakers as "Sales Rep:" and "Customer:" where identifiable, otherwise "Speaker 1:" and "Speaker 2:".
+- Preserve repetitions, pauses, objections, and incomplete sentences — they are meaningful.
+- Do not skip, summarise, or replace any part of the conversation.
 
 2. CALL ANALYSIS
 Analyze ONLY information explicitly available in the audio.
@@ -144,7 +161,7 @@ If an action is not applicable, write "Not applicable."
 Return the result ONLY as valid JSON using exactly this structure:
 
 {
-  "transcription": "Speaker 1: ...\\nSpeaker 2: ...",
+  "transcription": "Sales Rep: ...\\nCustomer: ...",
   "shortSummary": "Maximum 2-3 sentences and max 80 words.",
   "customerRequirements": {
     "productOrServiceInterest": "Not discussed.",
@@ -170,7 +187,7 @@ Additional rules:
 - Do not include additional JSON fields.
 - Return valid JSON only.
 
-If the audio is silent, corrupted, or completely unintelligible:
+If and ONLY IF the audio is completely silent, corrupted with no detectable speech whatsoever:
 - transcription = "Audio could not be transcribed or is silent."
 - shortSummary = "Audio unintelligible."
 - customer requirements fields = "Not discussed."
@@ -202,17 +219,17 @@ If the audio is silent, corrupted, or completely unintelligible:
       ]);
     } catch (modelErr) {
       if (
-        preferredModel !== "gemini-2.5-flash" &&
+        preferredModel !== "gemini-2.5-flash-lite" &&
         (modelErr.message?.toLowerCase().includes("not found") ||
           modelErr.message?.includes("404") ||
           modelErr.status === 404)
       ) {
         console.warn(
-          `[AudioAnalysis] ${preferredModel} not found or unsupported for this key/region, falling back to gemini-2.5-flash:`,
+          `[AudioAnalysis] ${preferredModel} not found or unsupported for this key/region, falling back to gemini-2.5-flash-lite:`,
           modelErr.message,
         );
         const fallbackModel = genAI.getGenerativeModel({
-          model: "gemini-2.5-flash",
+          model: "gemini-2.5-flash-lite",
           generationConfig: { responseMimeType: "application/json" }
         });
         result = await fallbackModel.generateContent([
