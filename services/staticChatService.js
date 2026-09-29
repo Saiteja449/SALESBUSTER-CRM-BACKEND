@@ -485,9 +485,9 @@ Visitor Message: ${trimmedMessage}`;
   try {
     rawOutput = await invokeGemini("gemini-3.1-flash-lite");
   } catch (err) {
-    console.warn("[StaticChat] gemini-3.1-flash-lite failed, falling back to gemini-2.5-flash:", err.message);
+    console.warn("[StaticChat] gemini-3.1-flash-lite failed, falling back to gemini-3.5-flash-lite:", err.message);
     try {
-      rawOutput = await invokeGemini("gemini-2.5-flash");
+      rawOutput = await invokeGemini("gemini-3.5-flash-lite");
     } catch (fallbackErr) {
       console.error("[StaticChat] Gemini fallback failed:", fallbackErr.message);
       rawOutput = JSON.stringify({
