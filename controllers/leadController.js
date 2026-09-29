@@ -1431,6 +1431,13 @@ export const handleMissedCall = async (req, res) => {
       minute: "2-digit",
     });
 
+    // Schedule follow-up 30 minutes after the missed call
+    const followupDate = new Date(missedTime.getTime() + 30 * 60 * 1000);
+    const followupTimeFormatted = followupDate.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
     let lead = await LeadModel.findOne({ $or: orConditions });
     let isNewLead = false;
 
@@ -1440,7 +1447,7 @@ export const handleMissedCall = async (req, res) => {
       // Existing Lead: Update status to Follow Up and scheduled for today
       lead.status = "Follow Up";
       lead.nextFollowUp = todayStr;
-      lead.followupTime = timeFormatted;
+      lead.followupTime = followupTimeFormatted;
       lead.preferredContactMethod = "WhatsApp";
 
       // If lead is unassigned, assign to current user
@@ -1448,7 +1455,7 @@ export const handleMissedCall = async (req, res) => {
         lead.assignedTo = assignedUserId;
       }
 
-      const missedNote = `[Missed Call] Received on ${missedTime.toLocaleDateString()} at ${timeFormatted}. Scheduled for today's follow-up.`;
+      const missedNote = `[Missed Call] Received on ${missedTime.toLocaleDateString()} at ${timeFormatted}. Scheduled for today's follow-up at ${followupTimeFormatted}.`;
       lead.notes = lead.notes ? `${missedNote}\n${lead.notes}` : missedNote;
       await lead.save();
     } else {
@@ -1463,12 +1470,12 @@ export const handleMissedCall = async (req, res) => {
         service: service || "General Enquiry",
         status: "Follow Up",
         nextFollowUp: todayStr,
-        followupTime: timeFormatted,
+        followupTime: followupTimeFormatted,
         preferredContactMethod: "WhatsApp",
         priority: "High",
         assignedTo: assignedUserId || "Unassigned",
         joinedAt: missedTime,
-        notes: `New lead created from missed call received on ${missedTime.toLocaleDateString()} at ${timeFormatted}. Scheduled for today's follow-up.`,
+        notes: `New lead created from missed call received on ${missedTime.toLocaleDateString()} at ${timeFormatted}. Scheduled for today's follow-up at ${followupTimeFormatted}.`,
       });
     }
 
@@ -1479,9 +1486,9 @@ export const handleMissedCall = async (req, res) => {
         leadName: lead.name,
         type: "WhatsApp",
         date: todayStr,
-        time: timeFormatted,
+        time: followupTimeFormatted,
         priority: "High",
-        notes: `Missed call received. Automatically scheduled for today's follow-up.`,
+        notes: `Missed call received at ${timeFormatted}. Automatically scheduled for today's follow-up at ${followupTimeFormatted}.`,
         author: req.user?.name || "Mobile App",
         done: false,
       });
