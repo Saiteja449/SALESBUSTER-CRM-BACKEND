@@ -649,6 +649,16 @@ export const updateLead = async (req, res) => {
       delete updateData.assignedTo;
     }
 
+    // Handle name field: optional. If non-empty, update it. If empty ("" or whitespace) or null, keep previous name.
+    if (updateData.name !== undefined) {
+      const trimmedName = String(updateData.name || "").trim();
+      if (trimmedName) {
+        updateData.name = trimmedName;
+      } else {
+        delete updateData.name;
+      }
+    }
+
     if (req.file) {
       await processAudioUpload(req.file);
       const host = req.get("host") || "";
@@ -693,7 +703,7 @@ export const updateLead = async (req, res) => {
     if (updateData.status) {
       await NotificationModel.create({
         title: "Lead Status Updated",
-        message: `Lead ${lead.name} status updated to ${lead.status}.`,
+        message: `Lead ${lead.name || lead.phone || "Lead"} status updated to ${lead.status}.`,
         type: "lead_update",
         targetRoles: ["sales manager"],
       });

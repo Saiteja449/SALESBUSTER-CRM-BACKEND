@@ -4,7 +4,8 @@ const leadSchema = new mongoose.Schema(
   {
     name: {
       type: String,
-      required: true,
+      trim: true,
+      default: "",
     },
     phone: {
       type: String,
