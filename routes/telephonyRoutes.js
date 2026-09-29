@@ -5,6 +5,7 @@ import {
   getCallLogs,
   getTelephonyAnalytics,
   updateCallDisposition,
+  recordManualCallLog,
   updateOrganizationTelephonySettings,
   updateUserTelephonySettings,
   autoProvisionAgentExtension,
@@ -27,6 +28,7 @@ router.get("/agent-credentials", protect, getAgentCredentials);
 router.get("/call-logs", protect, requireTelephonyAddon, getCallLogs);
 router.get("/analytics", protect, requireTelephonyAddon, getTelephonyAnalytics);
 router.post("/call-disposition", protect, requireTelephonyAddon, updateCallDisposition);
+router.post("/manual-call-log", protect, recordManualCallLog);
 
 // -------------------------------------------------------------
 // Admin Settings Configuration Endpoints

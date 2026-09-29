@@ -41,6 +41,12 @@ export const callLogSchema = new mongoose.Schema(
       index: true,
       trim: true,
     },
+    callSource: {
+      type: String,
+      enum: ["cloud_telecmi", "manual"],
+      default: "cloud_telecmi",
+      index: true,
+    },
     callType: {
       type: String,
       enum: ["incoming", "outgoing"],

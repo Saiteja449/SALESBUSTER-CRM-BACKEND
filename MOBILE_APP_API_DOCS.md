@@ -31,6 +31,13 @@ export const API_ENDPOINTS = {
   ANALYTICS: {
     LOG_CALL: `${BASE_URL}/analytics/log-call`,
   },
+  TELEPHONY: {
+    CREDENTIALS: `${BASE_URL}/telephony/agent-credentials`,
+    MANUAL_CALL_LOG: `${BASE_URL}/telephony/manual-call-log`,
+    CALL_DISPOSITION: `${BASE_URL}/telephony/call-disposition`,
+    CALL_LOGS: `${BASE_URL}/telephony/call-logs`,
+    ANALYTICS: `${BASE_URL}/telephony/analytics`,
+  },
   ORGANIZATION: {
     SERVICES: `${BASE_URL}/organization/services`,
     SETTINGS: `${BASE_URL}/organization/settings`,
@@ -819,7 +826,251 @@ curl -X GET https://api.salesbuster.ai/api/organization/settings \
 
 ---
 
-## 8. Summary Quick-Reference Table
+## 8. Telephony & Calling Endpoints (Cloud VoIP & Normal Phone)
+
+SalesBuster CRM supports a **hybrid calling system**:
+1. **Cloud Telecallers (TeleCMI VoIP)**: WebRTC calling via `@telecmi/piopiyjs`, permanent MP3 call recordings, and automated CDR webhooks.
+2. **Normal Salespersons (Cellular Phone)**: Dialed via device phone dialer (`tel:`), with manual post-call logging.
+
+```
+                   [ Mobile App: User Taps Call Lead ]
+                                    │
+                                    ▼
+                GET /api/telephony/agent-credentials
+                                    │
+          ┌─────────────────────────┴─────────────────────────┐
+          │                                                   │
+          ▼                                                   ▼
+[ Mode A: Cloud Telecaller ]                         [ Mode B: Normal Caller ]
+• isCloudEnabled: true                              • isCloudEnabled: false
+• callingMode: "cloud"                              • callingMode: "normal"
+          │                                                   │
+1. piopiy.login(user, pass, sbcUri)                 1. Linking.openURL(`tel:${phone}`)
+2. piopiy.call(leadPhone, { extra_param })          2. Normal call made via SIM card
+3. TeleCMI auto-records to MP3                      3. Rep returns to app
+4. In-call screen (Mute/Speaker/Hangup)             4. Mandatory disposition modal appears
+5. POST /api/telephony/call-disposition             5. POST /api/telephony/manual-call-log
+```
+
+### 8.1 Check Agent Calling Mode & SIP Credentials (`GET /telephony/agent-credentials`)
+Called on app startup or before placing a call to check whether the representative uses Cloud VoIP or Normal Calling.
+
+#### cURL Request:
+```bash
+curl -X GET https://api.salesbuster.ai/api/telephony/agent-credentials \
+  -H "Authorization: Bearer <TOKEN>"
+```
+
+#### Success Response (Cloud VoIP Telecaller):
+```json
+{
+  "success": true,
+  "data": {
+    "isCloudEnabled": true,
+    "callingMode": "cloud",
+    "telephonyAddonEnabled": true,
+    "appId": "44321908",
+    "sbcUri": "sbcind.telecmi.com",
+    "virtualNumber": "+918045678901",
+    "telecmiUserId": "101_44321908",
+    "telecmiPassword": "SecretSipPassword#123",
+    "telecmiExtension": "101",
+    "isConfigured": true
+  }
+}
+```
+
+#### Success Response (Normal Phone Caller):
+```json
+{
+  "success": true,
+  "data": {
+    "isCloudEnabled": false,
+    "callingMode": "normal",
+    "telephonyAddonEnabled": true,
+    "appId": "",
+    "sbcUri": "sbcind.telecmi.com",
+    "virtualNumber": "+918045678901",
+    "telecmiUserId": "",
+    "telecmiPassword": "",
+    "telecmiExtension": "",
+    "isConfigured": false
+  }
+}
+```
+
+---
+
+### 8.2 Log Normal Phone Call (`POST /telephony/manual-call-log`)
+Called when a representative finishes a normal call from the phone dialer. Creates a `CallLog` with `callSource: "manual"`, increments daily analytics, updates the lead, and fires socket events.
+
+#### cURL Request:
+```bash
+curl -X POST https://api.salesbuster.ai/api/telephony/manual-call-log \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "leadId": "66dd0a1b2c3d4e5f6a7b8c91",
+    "leadPhone": "+919876543210",
+    "leadName": "Kranthi Kumar",
+    "status": "connected",
+    "duration": 145,
+    "disposition": "Interested",
+    "notes": "Discussed product catalog. Customer wants pricing quotation by Friday.",
+    "nextFollowUp": "2026-10-02",
+    "followupTime": "11:00 AM"
+  }'
+```
+
+#### Success Response (`201 Created`):
+```json
+{
+  "success": true,
+  "message": "Normal phone call logged successfully.",
+  "data": {
+    "_id": "66f81a2b3c4d5e6f7a8b9c01",
+    "salespersonName": "Rahul Sharma",
+    "leadName": "Kranthi Kumar",
+    "leadPhone": "+919876543210",
+    "cmiuid": "manual_1727602345000_k8x2n9",
+    "callSource": "manual",
+    "callType": "outgoing",
+    "status": "connected",
+    "duration": 145,
+    "talkTime": 145,
+    "disposition": "Interested",
+    "notes": "Discussed product catalog. Customer wants pricing quotation by Friday.",
+    "timestamp": "2026-09-29T06:35:45.000Z"
+  }
+}
+```
+
+---
+
+### 8.3 Submit Post-Call Disposition for Cloud Calls (`POST /telephony/call-disposition`)
+Used by Cloud VoIP callers to record final outcome and notes after a call ends.
+
+#### cURL Request:
+```bash
+curl -X POST https://api.salesbuster.ai/api/telephony/call-disposition \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "callLogId": "66f81a2b3c4d5e6f7a8b9c01",
+    "leadId": "66dd0a1b2c3d4e5f6a7b8c91",
+    "disposition": "Callback Requested",
+    "notes": "Customer requested callback tomorrow at 3 PM.",
+    "nextFollowUp": "2026-09-30",
+    "followupTime": "03:00 PM"
+  }'
+```
+
+#### Success Response (`200 OK`):
+```json
+{
+  "success": true,
+  "message": "Call disposition and lead updated successfully."
+}
+```
+
+---
+
+### 8.4 Fetch Call History & Recordings (`GET /telephony/call-logs`)
+Fetches past call logs for a specific lead or agent, including MP3 recording URLs for Cloud calls.
+
+#### cURL Request:
+```bash
+curl -X GET "https://api.salesbuster.ai/api/telephony/call-logs?leadId=66dd0a1b2c3d4e5f6a7b8c91&page=1&limit=20" \
+  -H "Authorization: Bearer <TOKEN>"
+```
+
+#### Success Response (`200 OK`):
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "_id": "66f81e3a4d5e6f7a8b9c0d12",
+      "leadName": "Kranthi Kumar",
+      "leadPhone": "+919876543210",
+      "salespersonName": "Rahul Sharma",
+      "callSource": "cloud_telecmi",
+      "status": "connected",
+      "duration": 182,
+      "talkTime": 175,
+      "recordingUrl": "https://api.salesbuster.ai/uploads/recordings/org/cmi_98721634_8819.mp3",
+      "disposition": "Interested",
+      "notes": "Client requested follow-up proposal.",
+      "timestamp": "2026-09-29T06:15:00.000Z"
+    },
+    {
+      "_id": "66f81a2b3c4d5e6f7a8b9c01",
+      "leadName": "Kranthi Kumar",
+      "leadPhone": "+919876543210",
+      "salespersonName": "Rahul Sharma",
+      "callSource": "manual",
+      "status": "connected",
+      "duration": 90,
+      "talkTime": 90,
+      "recordingUrl": "",
+      "disposition": "Follow-up",
+      "notes": "Spoke briefly from car, requested evening callback.",
+      "timestamp": "2026-09-29T05:30:00.000Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 2,
+    "totalPages": 1
+  }
+}
+```
+
+---
+
+### 8.5 Fetch Calling Analytics & KPIs (`GET /telephony/analytics`)
+Returns representative daily call volume, cloud vs normal breakdown, talk time, and AHT.
+
+#### cURL Request:
+```bash
+curl -X GET "https://api.salesbuster.ai/api/telephony/analytics?startDate=2026-09-01&endDate=2026-09-29" \
+  -H "Authorization: Bearer <TOKEN>"
+```
+
+#### Success Response (`200 OK`):
+```json
+{
+  "success": true,
+  "data": {
+    "kpis": {
+      "totalCalls": 64,
+      "cloudCalls": 48,
+      "manualCalls": 16,
+      "connectedCalls": 51,
+      "missedCalls": 13,
+      "connectionRate": 80,
+      "totalTalkTime": 7240,
+      "totalDuration": 7890,
+      "averageHandleTime": 141
+    },
+    "hourlyTrend": [
+      { "hour": "09:00", "calls": 8 },
+      { "hour": "10:00", "calls": 14 },
+      { "hour": "11:00", "calls": 19 }
+    ],
+    "dispositionChart": [
+      { "name": "Interested", "value": 28 },
+      { "name": "Callback Requested", "value": 15 },
+      { "name": "Not Reachable", "value": 8 }
+    ]
+  }
+}
+```
+
+---
+
+## 9. Summary Quick-Reference Table
 
 | Group | Key | HTTP Method | Endpoint Path | Auth Required | Description |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -835,6 +1086,11 @@ curl -X GET https://api.salesbuster.ai/api/organization/settings \
 | **FOLLOWUPS** | `BASE` | `GET` | `/followups` | ✅ Bearer JWT | List all follow-ups |
 | | | `POST` | `/followups` | ✅ Bearer JWT | Schedule a new follow-up |
 | | | `PUT` | `/followups/:id` | ✅ Bearer JWT | Mark done / update follow-up |
+| **TELEPHONY**| `CREDENTIALS` | `GET` | `/telephony/agent-credentials` | ✅ Bearer JWT | Get calling mode (cloud vs normal) & SIP keys |
+| | `MANUAL_CALL_LOG` | `POST` | `/telephony/manual-call-log` | ✅ Bearer JWT | Log normal phone call after hanging up |
+| | `CALL_DISPOSITION`| `POST` | `/telephony/call-disposition` | ✅ Bearer JWT | Save disposition notes & followups |
+| | `CALL_LOGS` | `GET` | `/telephony/call-logs` | ✅ Bearer JWT | Paginated call logs & MP3 audio links |
+| | `ANALYTICS` | `GET` | `/telephony/analytics` | ✅ Bearer JWT | Call metrics (cloud vs normal calls, AHT) |
 | **ANALYTICS**| `LOG_CALL` | `POST` | `/analytics/log-call` | ✅ Bearer JWT | Telecaller call log tracker |
 | | | `GET` | `/analytics/:salespersonId` | ✅ Bearer JWT | 7-day daily call history |
 | **ORGANIZATION**| `SERVICES`| `GET` | `/organization/services` | ✅ Bearer JWT | Catalog of active services |

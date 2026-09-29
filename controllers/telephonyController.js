@@ -22,24 +22,27 @@ export const getAgentCredentials = async (req, res) => {
       });
     }
 
-    if (!org.telephony?.isAddonEnabled) {
-      return res.status(403).json({
-        success: false,
-        code: "TELEPHONY_ADDON_REQUIRED",
-        message: "Cloud Telephony add-on is not enabled for your organization.",
-      });
-    }
+    const isAddonEnabled = Boolean(org.telephony?.isAddonEnabled);
+    const isUserCloudEnabled = Boolean(
+      isAddonEnabled &&
+      user.telephony?.isCloudEnabled &&
+      user.telephony?.telecmiUserId &&
+      org.telephony?.isConfigured
+    );
 
     res.status(200).json({
       success: true,
       data: {
-        appId: org.telephony.telecmiAppId || "",
-        sbcUri: org.telephony.sbcUri || "sbcind.telecmi.com",
-        virtualNumber: org.telephony.virtualNumber || "",
+        isCloudEnabled: isUserCloudEnabled,
+        callingMode: isUserCloudEnabled ? "cloud" : "normal",
+        telephonyAddonEnabled: isAddonEnabled,
+        appId: org.telephony?.telecmiAppId || "",
+        sbcUri: org.telephony?.sbcUri || "sbcind.telecmi.com",
+        virtualNumber: org.telephony?.virtualNumber || "",
         telecmiUserId: user.telephony?.telecmiUserId || "",
         telecmiPassword: user.telephony?.telecmiPassword || "",
         telecmiExtension: user.telephony?.telecmiExtension || "",
-        isConfigured: Boolean(org.telephony.isConfigured),
+        isConfigured: Boolean(org.telephony?.isConfigured),
       },
     });
   } catch (error) {
@@ -209,6 +212,7 @@ export const handleCDRWebhook = async (req, res) => {
       leadPhone: to || from || "",
       leadName: leadDoc ? leadDoc.name : "Direct Call",
       cmiuid,
+      callSource: "cloud_telecmi",
       callType: "outgoing",
       status: callStatus,
       duration: durationSec,
@@ -319,6 +323,7 @@ export const getCallLogs = async (req, res) => {
       leadId,
       salespersonId,
       status,
+      callSource,
       startDate,
       endDate,
       search,
@@ -329,6 +334,7 @@ export const getCallLogs = async (req, res) => {
     if (leadId) query.leadId = leadId;
     if (salespersonId) query.salespersonId = salespersonId;
     if (status) query.status = status;
+    if (callSource && callSource !== "all") query.callSource = callSource;
 
     if (startDate || endDate) {
       query.timestamp = {};
@@ -383,7 +389,7 @@ export const getCallLogs = async (req, res) => {
 export const getTelephonyAnalytics = async (req, res) => {
   try {
     const { CallLog, TelecallerAnalytics, User } = req.tenantModels;
-    const { startDate, endDate, salespersonId } = req.query;
+    const { startDate, endDate, salespersonId, callSource } = req.query;
 
     const dateQuery = {};
     if (startDate || endDate) {
@@ -400,12 +406,18 @@ export const getTelephonyAnalytics = async (req, res) => {
       dateQuery.salespersonId = salespersonId;
     }
 
+    if (callSource && callSource !== "all") {
+      dateQuery.callSource = callSource;
+    }
+
     // 1. Overall KPIs
     const callLogs = await CallLog.find(dateQuery).lean();
     const totalCalls = callLogs.length;
     let connectedCalls = 0;
     let totalTalkTime = 0;
     let totalDuration = 0;
+    let cloudCalls = 0;
+    let manualCalls = 0;
 
     const dispositionCounts = {};
     const hourlyCounts = Array(24).fill(0);
@@ -415,6 +427,12 @@ export const getTelephonyAnalytics = async (req, res) => {
       totalDuration += log.duration || 0;
       totalTalkTime += log.talkTime || 0;
       if (log.status === "connected") connectedCalls++;
+
+      if (log.callSource === "manual") {
+        manualCalls++;
+      } else {
+        cloudCalls++;
+      }
 
       // Dispositions
       const disp = log.disposition || (log.status === "connected" ? "Answered (No disposition)" : "Not Answered");
@@ -471,6 +489,8 @@ export const getTelephonyAnalytics = async (req, res) => {
       data: {
         kpis: {
           totalCalls,
+          cloudCalls,
+          manualCalls,
           connectedCalls,
           missedCalls: totalCalls - connectedCalls,
           connectionRate,
@@ -540,6 +560,144 @@ export const updateCallDisposition = async (req, res) => {
 };
 
 /**
+ * 5.5. POST /api/telephony/manual-call-log
+ * Records a call made by a salesperson using their normal phone dialer.
+ * Automatically creates a CallLog with callSource='manual', increments
+ * TelecallerAnalytics, updates Lead status & tags, and broadcasts via socket.
+ */
+export const recordManualCallLog = async (req, res) => {
+  try {
+    const user = req.user;
+    const org = req.organization;
+    const { CallLog, Lead, TelecallerAnalytics } = req.tenantModels;
+
+    const {
+      leadId,
+      leadPhone,
+      leadName,
+      status = "connected", // "connected", "not-connected", "missed", "rejected", "busy"
+      duration = 0, // duration in seconds
+      disposition,
+      notes,
+      timestamp,
+      nextFollowUp,
+      followupTime,
+    } = req.body;
+
+    if (!leadPhone && !leadId) {
+      return res.status(400).json({
+        success: false,
+        message: "leadId or leadPhone is required.",
+      });
+    }
+
+    let leadDoc = null;
+    if (leadId) {
+      leadDoc = await Lead.findById(leadId);
+    }
+    if (!leadDoc && leadPhone) {
+      const cleanPhone = String(leadPhone).replace(/\D/g, "");
+      const searchTail = cleanPhone.slice(-10);
+      leadDoc = await Lead.findOne({
+        phone: { $regex: new RegExp(searchTail + "$") },
+      });
+    }
+
+    const durationSec = parseInt(duration) || 0;
+    const isConnected = status === "connected" && durationSec > 0;
+    const callTimestamp = timestamp ? new Date(timestamp) : new Date();
+    const manualUid = `manual_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+    // 1. Create CallLog entry
+    const callLogDoc = await CallLog.create({
+      organizationId: org?._id || user.organizationId,
+      salespersonId: user._id,
+      salespersonName: user.name || "Sales Representative",
+      leadId: leadDoc ? leadDoc._id : leadId || null,
+      leadPhone: leadPhone || (leadDoc ? leadDoc.phone : ""),
+      leadName: leadName || (leadDoc ? leadDoc.name : "Direct Call"),
+      cmiuid: manualUid,
+      callSource: "manual",
+      callType: "outgoing",
+      status: status || "connected",
+      duration: durationSec,
+      talkTime: durationSec,
+      disposition: disposition || "",
+      notes: notes || "",
+      recordingFilename: "",
+      recordingUrl: "",
+      recordingSize: 0,
+      timestamp: callTimestamp,
+    });
+
+    // 2. Update Daily TelecallerAnalytics
+    const dateStr = callTimestamp.toISOString().slice(0, 10);
+    await TelecallerAnalytics.findOneAndUpdate(
+      { salespersonId: user._id, date: dateStr },
+      {
+        $setOnInsert: {
+          salesperson: user.name,
+          salespersonId: user._id,
+          date: dateStr,
+        },
+        $inc: {
+          totalCalls: 1,
+          outgoing: 1,
+          talkTime: durationSec,
+          connected: isConnected ? 1 : 0,
+          notConnected: isConnected ? 0 : 1,
+        },
+        $max: { longestCall: durationSec },
+      },
+      { upsert: true }
+    );
+
+    // 3. Update Lead
+    if (leadDoc) {
+      const leadUpdate = {
+        lastContactedAt: callTimestamp,
+        lastActivity: callTimestamp,
+        $inc: { followUpCount: 1 },
+      };
+      if (notes) leadUpdate.notes = notes;
+      if (nextFollowUp) leadUpdate.nextFollowUp = nextFollowUp;
+      if (followupTime) leadUpdate.followupTime = followupTime;
+      if (disposition) {
+        leadUpdate.$addToSet = { tags: disposition };
+      }
+      await Lead.findByIdAndUpdate(leadDoc._id, leadUpdate);
+    }
+
+    // 4. Socket Broadcast
+    const io = getIO();
+    const orgTargetId = (org?._id || user.organizationId)?.toString();
+    if (io && orgTargetId) {
+      io.to(orgTargetId).emit("call_completed", {
+        callLog: callLogDoc,
+        leadId: leadDoc?._id || leadId,
+        salespersonId: user._id,
+        status,
+        duration: durationSec,
+        talkTime: durationSec,
+        callSource: "manual",
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "Normal phone call logged successfully.",
+      data: callLogDoc,
+    });
+  } catch (error) {
+    console.error("Error logging manual call:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error while recording manual call log.",
+    });
+  }
+};
+
+/**
  * 6. PUT /api/telephony/settings/organization
  * Allows Org Admin to configure TeleCMI keys, Virtual Number, and SBC settings.
  */
@@ -598,12 +756,12 @@ export const updateOrganizationTelephonySettings = async (req, res) => {
 
 /**
  * 7. PUT /api/telephony/settings/agent/:userId
- * Allows Org Admin to assign a TeleCMI SIP User ID and Password to an agent.
+ * Allows Org Admin to assign a TeleCMI SIP User ID, Password, and toggle Cloud vs Normal calling mode.
  */
 export const updateUserTelephonySettings = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { telecmiUserId, telecmiPassword, telecmiExtension, isActive } = req.body;
+    const { telecmiUserId, telecmiPassword, telecmiExtension, isActive, isCloudEnabled } = req.body;
     const { User } = req.tenantModels;
 
     const user = await User.findById(userId);
@@ -618,7 +776,8 @@ export const updateUserTelephonySettings = async (req, res) => {
       telecmiUserId: telecmiUserId !== undefined ? telecmiUserId : user.telephony?.telecmiUserId || "",
       telecmiPassword: telecmiPassword !== undefined ? telecmiPassword : user.telephony?.telecmiPassword || "",
       telecmiExtension: telecmiExtension !== undefined ? telecmiExtension : user.telephony?.telecmiExtension || "",
-      isActive: isActive !== undefined ? isActive : true,
+      isActive: isActive !== undefined ? isActive : (user.telephony?.isActive ?? true),
+      isCloudEnabled: isCloudEnabled !== undefined ? Boolean(isCloudEnabled) : (user.telephony?.isCloudEnabled ?? false),
     };
 
     await user.save();
@@ -704,6 +863,7 @@ export const autoProvisionAgentExtension = async (req, res) => {
       telecmiPassword: telecmiResult.telecmiPassword,
       telecmiExtension: telecmiResult.telecmiExtension,
       isActive: true,
+      isCloudEnabled: true,
     };
     await user.save();
 

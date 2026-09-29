@@ -193,11 +193,14 @@ export const addSalesPerson = async (req, res) => {
       status: "active",
     });
 
-    // 7.5. Auto-provision TeleCMI extension if Telephony Add-on is active and configured
-    if (
+    // 7.5. Selective Provisioning: only provision TeleCMI extension if explicitly requested (isCloudEnabled = true)
+    const shouldEnableCloud = Boolean(
+      req.body.isCloudEnabled &&
       req.organization?.telephony?.isAddonEnabled &&
       req.organization?.telephony?.isConfigured
-    ) {
+    );
+
+    if (shouldEnableCloud) {
       try {
         let ext = req.body.telecmiExtension;
         if (!ext) {
@@ -224,10 +227,11 @@ export const addSalesPerson = async (req, res) => {
             telecmiPassword: telecmiResult.telecmiPassword,
             telecmiExtension: telecmiResult.telecmiExtension,
             isActive: true,
+            isCloudEnabled: true,
           };
           await user.save();
           console.log(
-            `[UserController] TeleCMI extension ${telecmiResult.telecmiExtension} auto-assigned to ${user.name}`
+            `[UserController] Cloud Telephony (TeleCMI) extension ${telecmiResult.telecmiExtension} auto-assigned to ${user.name}`
           );
         }
       } catch (telecmiErr) {
@@ -236,6 +240,15 @@ export const addSalesPerson = async (req, res) => {
           telecmiErr.message
         );
       }
+    } else {
+      user.telephony = {
+        telecmiUserId: "",
+        telecmiPassword: "",
+        telecmiExtension: "",
+        isActive: true,
+        isCloudEnabled: false,
+      };
+      await user.save();
     }
 
     // 8. Create notification in tenant
@@ -285,6 +298,7 @@ export const addSalesPerson = async (req, res) => {
         email: user.email,
         phone: user.phone,
         role: user.role,
+        telephony: user.telephony,
       },
       seats: {
         totalSeats: totalCapacity,

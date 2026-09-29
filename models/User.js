@@ -58,6 +58,10 @@ const userSchema = mongoose.Schema(
         type: Boolean,
         default: true,
       },
+      isCloudEnabled: {
+        type: Boolean,
+        default: false,
+      },
     },
   },
   {
