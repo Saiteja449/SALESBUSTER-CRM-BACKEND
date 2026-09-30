@@ -65,22 +65,27 @@ export const handleCDRWebhook = async (req, res) => {
 
   try {
     const payload = req.body || {};
-    const {
-      cmiuid,
-      duration = 0,
-      billedsec = 0,
-      filename,
-      record,
-      from,
-      to,
-      agent,
-      time,
-      extra_param,
-      status: rawStatus,
-    } = payload;
+    console.log("[TelephonyWebhook] Received payload from TeleCMI:", JSON.stringify(payload));
+
+    const cmiuid =
+      payload.cmiuid ||
+      payload.cmiuuid ||
+      payload.call_id ||
+      payload.request_id;
+    const duration = Number(payload.duration || payload.billedsec || 0);
+    const billedsec = Number(payload.billedsec || payload.duration || 0);
+    const filename = payload.filename || payload.file || null;
+    const record = payload.record || (filename ? "true" : "false");
+    const from = payload.from || payload.virtual_number || null;
+    const to = payload.to || null;
+    const agent = payload.agent || payload.user || null;
+    const time = payload.time || payload.start_time || Date.now();
+    const extra_param =
+      payload.extra_param || payload.extra_params || payload.custom || null;
+    const rawStatus = payload.status || (duration > 0 ? "answered" : "missed");
 
     if (!cmiuid) {
-      console.warn("[TelephonyWebhook] CDR received without cmiuid. Skipping.");
+      console.warn("[TelephonyWebhook] CDR received without valid identifier (cmiuid/cmiuuid/call_id). Skipping.");
       return;
     }
 

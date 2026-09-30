@@ -21,38 +21,67 @@ export const downloadAndArchiveRecording = async (
   if (!filename) return null;
 
   try {
-    // Primary: TeleCMI v3 API Endpoint
-    const telecmiUrlV3 = `https://rest.telecmi.com/v3/piopiy/play?appid=${encodeURIComponent(
+    // Primary: TeleCMI official v2 Play Audio endpoint (GET https://rest.telecmi.com/v2/play)
+    const telecmiUrlV2 = `https://rest.telecmi.com/v2/play?appid=${encodeURIComponent(
       appId || ""
     )}&secret=${encodeURIComponent(secret || "")}&file=${encodeURIComponent(
       filename
     )}`;
 
-    console.log(`[TelephonyService] Downloading recording for call ${cmiuid} via v3 endpoint...`);
+    console.log(`[TelephonyService] Downloading recording for call ${cmiuid} via v2/play endpoint...`);
 
-    let response = await fetch(telecmiUrlV3);
-    let chosenUrl = telecmiUrlV3;
+    let response = await fetch(telecmiUrlV2);
+    let chosenUrl = telecmiUrlV2;
+    let isAudio = false;
+    let buffer = null;
 
-    // Fallback to v2 if v3 returns 404 or fails
-    if (!response.ok) {
+    if (response.ok) {
+      const contentType = response.headers.get("content-type") || "";
+      const arrayBuffer = await response.arrayBuffer();
+      const tempBuf = Buffer.from(arrayBuffer);
+
+      // Check if response is error JSON or HTML rather than real audio
+      if (
+        contentType.includes("application/json") ||
+        contentType.includes("text/html") ||
+        (tempBuf.length < 300 && tempBuf.toString().includes("error"))
+      ) {
+        console.warn(
+          `[TelephonyService] TeleCMI v2/play returned non-audio response:`,
+          tempBuf.toString("utf8")
+        );
+      } else if (tempBuf.length > 200) {
+        isAudio = true;
+        buffer = tempBuf;
+      }
+    }
+
+    // Secondary fallback to v3/piopiy/play if v2 did not return valid audio
+    if (!isAudio) {
       console.warn(
-        `[TelephonyService] TeleCMI v3 recording fetch returned status ${response.status}. Attempting v2 fallback...`
+        `[TelephonyService] TeleCMI v2/play did not yield audio (status ${response?.status}). Attempting v3 fallback...`
       );
-      const telecmiUrlV2 = `https://rest.telecmi.com/v2/piopiy/play?appid=${encodeURIComponent(
+      const telecmiUrlV3 = `https://rest.telecmi.com/v3/piopiy/play?appid=${encodeURIComponent(
         appId || ""
       )}&secret=${encodeURIComponent(secret || "")}&file=${encodeURIComponent(
         filename
       )}`;
-      const v2Response = await fetch(telecmiUrlV2).catch(() => null);
-      if (v2Response && v2Response.ok) {
-        response = v2Response;
-        chosenUrl = telecmiUrlV2;
+      const v3Response = await fetch(telecmiUrlV3).catch(() => null);
+      if (v3Response && v3Response.ok) {
+        const contentType = v3Response.headers.get("content-type") || "";
+        const arrayBuffer = await v3Response.arrayBuffer();
+        const tempBuf = Buffer.from(arrayBuffer);
+        if (!contentType.includes("application/json") && !contentType.includes("text/html") && tempBuf.length > 200) {
+          isAudio = true;
+          buffer = tempBuf;
+          chosenUrl = telecmiUrlV3;
+        }
       }
     }
 
-    if (!response.ok) {
+    if (!isAudio || !buffer) {
       console.warn(
-        `[TelephonyService] TeleCMI recording fetch returned status ${response.status}. Using direct URL fallback.`
+        `[TelephonyService] TeleCMI recording fetch failed for ${filename}. Using direct URL fallback.`
       );
       return {
         publicUrl: chosenUrl,
@@ -60,9 +89,6 @@ export const downloadAndArchiveRecording = async (
         fileSize: 0,
       };
     }
-
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
 
     // Save locally under uploads/recordings/:orgId/:cmiuid.mp3
     const recordingsDir = path.join(
@@ -93,7 +119,7 @@ export const downloadAndArchiveRecording = async (
     };
   } catch (error) {
     console.error("[TelephonyService] Error archiving recording:", error.message);
-    const fallbackUrl = `https://rest.telecmi.com/v3/piopiy/play?appid=${encodeURIComponent(
+    const fallbackUrl = `https://rest.telecmi.com/v2/play?appid=${encodeURIComponent(
       appId || ""
     )}&secret=${encodeURIComponent(secret || "")}&file=${encodeURIComponent(
       filename
@@ -212,7 +238,7 @@ export const provisionTelecmiUser = async ({
     const ext = parseInt(extension) || 101;
 
     console.log(
-      `[TelephonyService] Auto-provisioning TeleCMI user ${name} with extension ${ext} via v3 API...`
+      `[TelephonyService] Auto-provisioning TeleCMI user ${name} with extension ${ext} via v2 API...`
     );
 
     const payload = {
@@ -227,8 +253,8 @@ export const provisionTelecmiUser = async ({
       sms_alert: false,
     };
 
-    // Primary: v3 endpoint
-    let response = await fetch("https://rest.telecmi.com/v3/user/add", {
+    // Primary: TeleCMI official v2 User Operations endpoint
+    let response = await fetch("https://rest.telecmi.com/v2/user/add", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -236,12 +262,12 @@ export const provisionTelecmiUser = async ({
       body: JSON.stringify(payload),
     }).catch(() => null);
 
-    // Fallback to v2 if v3 is unavailable or returns an error status
+    // Fallback to v3 if v2 fails
     if (!response || !response.ok) {
       console.warn(
-        `[TelephonyService] TeleCMI v3 user/add returned ${response?.status || "network failure"}. Trying v2 endpoint...`
+        `[TelephonyService] TeleCMI v2 user/add returned ${response?.status || "network failure"}. Trying v3 fallback...`
       );
-      const v2Response = await fetch("https://rest.telecmi.com/v2/user/add", {
+      const v3Response = await fetch("https://rest.telecmi.com/v3/user/add", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -249,8 +275,8 @@ export const provisionTelecmiUser = async ({
         body: JSON.stringify(payload),
       }).catch(() => null);
 
-      if (v2Response) {
-        response = v2Response;
+      if (v3Response) {
+        response = v3Response;
       }
     }
 
