@@ -188,3 +188,31 @@ test("summarizeCallLog returns 400 when call has no recordingUrl", async () => {
   assert.match(jsonSent.message, /audio recording/i);
 });
 
+test("handleCDRWebhook acknowledges immediately with 200 received", async () => {
+  const { handleCDRWebhook } = await import("../controllers/telephonyController.js");
+  let statusSent = null;
+  let jsonSent = null;
+  const req = {
+    body: {
+      leg: "a",
+      call_id: "test_leg_a_call",
+      status: "answered",
+    },
+  };
+  const res = {
+    status: (s) => {
+      statusSent = s;
+      return {
+        json: (j) => {
+          jsonSent = j;
+        },
+      };
+    },
+  };
+
+  await handleCDRWebhook(req, res);
+  assert.equal(statusSent, 200);
+  assert.equal(jsonSent?.status, "received");
+});
+
+

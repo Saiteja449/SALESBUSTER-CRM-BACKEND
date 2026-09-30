@@ -71,13 +71,36 @@ export const handleCDRWebhook = async (req, res) => {
     const payload = req.body || {};
     console.log("[TelephonyWebhook] Received payload from TeleCMI:", JSON.stringify(payload));
 
+    const leg = (payload.leg || "").toString().toLowerCase().trim();
+    // In TeleCMI 2-leg outbound calls (click2call), Leg A is the internal connection to the agent.
+    // Leg B is the actual customer conversation with recording. Ignore Leg A to prevent duplicate call logs and double-counting analytics.
+    if (leg === "a") {
+      console.log(
+        `[TelephonyWebhook] Skipping Leg A (agent leg) for call ${payload.call_id || payload.cmiuuid || payload.cmiuid}`
+      );
+      return;
+    }
+
     const cmiuid =
       payload.cmiuid ||
       payload.cmiuuid ||
       payload.call_id ||
       payload.request_id;
-    const duration = Number(payload.duration || payload.billedsec || 0);
-    const billedsec = Number(payload.billedsec || payload.duration || 0);
+    // TeleCMI Webhook CDR uses 'answeredsec' for answered talk time duration
+    const answeredsec = Number(
+      payload.answeredsec ??
+      payload.answered_sec ??
+      payload.billedsec ??
+      payload.duration ??
+      0
+    );
+    const duration = Number(
+      payload.duration ??
+      payload.answeredsec ??
+      payload.billedsec ??
+      0
+    );
+    const billedsec = answeredsec;
     const filename = payload.filename || payload.file || null;
     const record = payload.record || (filename ? "true" : "false");
     const from = payload.from || payload.virtual_number || null;
@@ -86,7 +109,7 @@ export const handleCDRWebhook = async (req, res) => {
     const time = payload.time || payload.start_time || Date.now();
     const extra_param =
       payload.extra_param || payload.extra_params || payload.custom || null;
-    const rawStatus = payload.status || (duration > 0 ? "answered" : "missed");
+    const rawStatus = (payload.status || "").toString().toLowerCase().trim();
 
     if (!cmiuid) {
       console.warn("[TelephonyWebhook] CDR received without valid identifier (cmiuid/cmiuuid/call_id). Skipping.");
@@ -199,16 +222,23 @@ export const handleCDRWebhook = async (req, res) => {
       );
     }
 
-    const durationSec = parseInt(duration) || 0;
     const billedSec = parseInt(billedsec) || 0;
-    const isConnected = billedSec > 0;
-    const callStatus = isConnected
+    const durationSec = Math.max(parseInt(duration) || 0, billedSec);
+    const hasRecording = Boolean(filename && filename !== "null" && filename !== "undefined");
+    const isAnswered =
+      rawStatus === "answered" ||
+      rawStatus === "connected" ||
+      billedSec > 0 ||
+      hasRecording;
+
+    const callStatus = isAnswered
       ? "connected"
-      : rawStatus?.toLowerCase() === "busy"
+      : rawStatus === "busy"
       ? "busy"
-      : rawStatus?.toLowerCase() === "rejected"
+      : rawStatus === "rejected" || rawStatus === "sent_reject"
       ? "rejected"
       : "not-connected";
+    const isConnected = callStatus === "connected";
 
     // 7. Save or Upsert CallLog in Tenant DB
     const callTimestamp = time ? new Date(parseInt(time)) : new Date();
@@ -222,7 +252,7 @@ export const handleCDRWebhook = async (req, res) => {
       leadName: leadDoc ? leadDoc.name : "Direct Call",
       cmiuid,
       callSource: "cloud_telecmi",
-      callType: "outgoing",
+      callType: (payload.direction || "").toLowerCase() === "inbound" ? "incoming" : "outgoing",
       status: callStatus,
       duration: durationSec,
       talkTime: billedSec,
