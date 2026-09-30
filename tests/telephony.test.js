@@ -125,3 +125,66 @@ test("downloadAndArchiveRecording returns null when no filename provided", async
   const result = await downloadAndArchiveRecording("appid", "secret", null);
   assert.equal(result, null);
 });
+
+test("getLeadCallLogs returns 404 when lead does not exist", async () => {
+  const { getLeadCallLogs } = await import("../controllers/telephonyController.js");
+  const req = {
+    params: { leadId: new mongoose.Types.ObjectId().toString() },
+    tenantModels: {
+      Lead: {
+        findById: () => ({
+          lean: async () => null,
+        }),
+      },
+      CallLog: {},
+    },
+  };
+  let statusSent = null;
+  let jsonSent = null;
+  const res = {
+    status: (s) => {
+      statusSent = s;
+      return {
+        json: (j) => {
+          jsonSent = j;
+        },
+      };
+    },
+  };
+
+  await getLeadCallLogs(req, res);
+  assert.equal(statusSent, 404);
+  assert.equal(jsonSent.success, false);
+});
+
+test("summarizeCallLog returns 400 when call has no recordingUrl", async () => {
+  const { summarizeCallLog } = await import("../controllers/telephonyController.js");
+  const req = {
+    params: { callLogId: "call_log_123" },
+    tenantModels: {
+      CallLog: {
+        findById: async () => ({
+          _id: "call_log_123",
+          recordingUrl: "",
+        }),
+      },
+    },
+  };
+  let statusSent = null;
+  let jsonSent = null;
+  const res = {
+    status: (s) => {
+      statusSent = s;
+      return {
+        json: (j) => {
+          jsonSent = j;
+        },
+      };
+    },
+  };
+
+  await summarizeCallLog(req, res);
+  assert.equal(statusSent, 400);
+  assert.match(jsonSent.message, /audio recording/i);
+});
+

@@ -1,9 +1,13 @@
+import path from "path";
+import fs from "fs";
 import { getMasterModels, getTenantModels } from "../services/tenantManager.js";
 import {
   downloadAndArchiveRecording,
   triggerCallAiAnalysis,
   provisionTelecmiUser,
 } from "../services/telephonyService.js";
+import { analyzeAudioFile } from "../services/audioAnalysisService.js";
+import { decryptApiKey } from "../utils/encryption.js";
 import { getIO } from "../socket/socket.js";
 
 /**
@@ -225,6 +229,8 @@ export const handleCDRWebhook = async (req, res) => {
       recordingFilename: filename || "",
       recordingUrl: archived?.publicUrl || "",
       recordingSize: archived?.fileSize || 0,
+      aiAnalysisStatus: "none",
+      aiSummary: "",
       timestamp: callTimestamp,
     };
 
@@ -273,24 +279,13 @@ export const handleCDRWebhook = async (req, res) => {
             url: archived.publicUrl,
             duration: billedSec || durationSec,
             uploadedAt: callTimestamp,
-            analysisStatus: "pending",
+            analysisStatus: "none",
           },
         };
       }
 
       await Lead.findByIdAndUpdate(leadDoc._id, updateLeadDoc);
-
-      // Trigger Gemini AI Audio Analysis if recording exists
-      if (archived?.localPath) {
-        triggerCallAiAnalysis({
-          localPath: archived.localPath,
-          publicUrl: archived.publicUrl,
-          leadId: leadDoc._id,
-          callLogId: callLogDoc._id,
-          organization,
-          tenantModels,
-        });
-      }
+      // NOTE: On-demand AI Summarization is triggered explicitly by the user in Lead Details to avoid unnecessary token consumption.
     }
 
     // 10. Broadcast Real-Time Socket Event to Organization
@@ -912,3 +907,279 @@ export const autoProvisionAgentExtension = async (req, res) => {
     });
   }
 };
+
+/**
+ * 10. GET /api/telephony/lead-calls/:leadId
+ * Retrieves all call logs (Cloud TeleCMI + Normal manual) for a specific lead,
+ * with aggregated sales representative call counts and metrics.
+ */
+export const getLeadCallLogs = async (req, res) => {
+  try {
+    const { leadId } = req.params;
+    const { CallLog, Lead } = req.tenantModels;
+
+    if (!leadId) {
+      return res.status(400).json({ success: false, message: "leadId is required." });
+    }
+
+    const leadDoc = await Lead.findById(leadId).lean();
+    if (!leadDoc) {
+      return res.status(404).json({ success: false, message: "Lead not found." });
+    }
+
+    // Build matching criteria: match by leadId OR by phone (last 10 digits)
+    const orConditions = [{ leadId: leadDoc._id }];
+    const cleanLeadPhone = leadDoc.phone ? String(leadDoc.phone).replace(/\D/g, "") : "";
+    if (cleanLeadPhone.length >= 6) {
+      const searchTail = cleanLeadPhone.slice(-10);
+      orConditions.push({ leadPhone: { $regex: new RegExp(searchTail + "$") } });
+    }
+
+    const callLogs = await CallLog.find({ $or: orConditions })
+      .sort({ timestamp: -1, createdAt: -1 })
+      .lean();
+
+    const backendBase = (
+      process.env.BACKEND_URL ||
+      process.env.API_URL ||
+      "https://betaapi.salesbuster.ai"
+    ).replace(/\/+$/, "");
+
+    // Calculate aggregated sales representative breakdown
+    const repStats = {};
+    let totalConnected = 0;
+    let totalNotConnected = 0;
+    let totalTalkTime = 0;
+    let cloudCallsCount = 0;
+    let manualCallsCount = 0;
+
+    const formattedLogs = callLogs.map((log) => {
+      const repName = log.salespersonName || "Sales Representative";
+      const isConnected = log.status === "connected";
+      const talkSec = log.talkTime || log.duration || 0;
+
+      if (!repStats[repName]) {
+        repStats[repName] = {
+          name: repName,
+          salespersonId: log.salespersonId || null,
+          totalCalls: 0,
+          connected: 0,
+          notConnected: 0,
+          totalTalkTime: 0,
+        };
+      }
+
+      repStats[repName].totalCalls += 1;
+      if (isConnected) {
+        repStats[repName].connected += 1;
+        totalConnected += 1;
+      } else {
+        repStats[repName].notConnected += 1;
+        totalNotConnected += 1;
+      }
+      repStats[repName].totalTalkTime += talkSec;
+      totalTalkTime += talkSec;
+
+      if (log.callSource === "cloud_telecmi") {
+        cloudCallsCount += 1;
+      } else {
+        manualCallsCount += 1;
+      }
+
+      let formattedRecUrl = log.recordingUrl || "";
+      if (formattedRecUrl && formattedRecUrl.startsWith("/uploads/")) {
+        formattedRecUrl = `${backendBase}${formattedRecUrl}`;
+      }
+
+      return {
+        ...log,
+        recordingUrl: formattedRecUrl,
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        lead: {
+          id: leadDoc._id,
+          name: leadDoc.name,
+          phone: leadDoc.phone,
+        },
+        summary: {
+          totalCalls: formattedLogs.length,
+          connectedCalls: totalConnected,
+          notConnectedCalls: totalNotConnected,
+          totalTalkTime,
+          cloudCalls: cloudCallsCount,
+          manualCalls: manualCallsCount,
+          repBreakdown: Object.values(repStats),
+        },
+        callLogs: formattedLogs,
+      },
+    });
+  } catch (error) {
+    console.error("Error retrieving lead call logs:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error retrieving lead call logs.",
+    });
+  }
+};
+
+/**
+ * 11. POST /api/telephony/call-logs/:callLogId/summarize
+ * Summarizes a call recording on-demand using Gemini AI.
+ */
+export const summarizeCallLog = async (req, res) => {
+  try {
+    const { callLogId } = req.params;
+    const { CallLog, Lead } = req.tenantModels;
+    const org = req.organization;
+
+    const callLog = await CallLog.findById(callLogId);
+    if (!callLog) {
+      return res.status(404).json({ success: false, message: "Call log not found." });
+    }
+
+    if (!callLog.recordingUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "This call does not have an audio recording to summarize.",
+      });
+    }
+
+    // Resolve local file path
+    let localFilePath = null;
+    let recordingUrl = callLog.recordingUrl;
+
+    const orgIdStr = org?._id?.toString() || "default";
+    const possiblePaths = [
+      path.join(process.cwd(), "uploads", "recordings", orgIdStr, `${callLog.cmiuid}.mp3`),
+      path.join(process.cwd(), "uploads", "recordings", `${callLog.cmiuid}.mp3`),
+    ];
+
+    if (recordingUrl.includes("/uploads/")) {
+      const subPath = recordingUrl.split("/uploads/")[1];
+      if (subPath) {
+        possiblePaths.unshift(path.join(process.cwd(), "uploads", decodeURIComponent(subPath)));
+      }
+    }
+
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        localFilePath = p;
+        break;
+      }
+    }
+
+    // If local file not found but we have a remote URL or need to download
+    if (!localFilePath) {
+      try {
+        let fetchUrl = recordingUrl;
+        if (!fetchUrl.startsWith("http")) {
+          const backendBase = (
+            process.env.BACKEND_URL ||
+            process.env.API_URL ||
+            "https://betaapi.salesbuster.ai"
+          ).replace(/\/+$/, "");
+          fetchUrl = `${backendBase}${fetchUrl}`;
+        }
+
+        console.log(`[TelephonySummarize] Fetching recording for call ${callLog.cmiuid} from ${fetchUrl}...`);
+        const resp = await fetch(fetchUrl);
+        if (resp.ok) {
+          const arrayBuffer = await resp.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          if (buffer.length > 500) {
+            const targetDir = path.join(process.cwd(), "uploads", "recordings", orgIdStr);
+            if (!fs.existsSync(targetDir)) {
+              fs.mkdirSync(targetDir, { recursive: true });
+            }
+            localFilePath = path.join(targetDir, `${callLog.cmiuid}.mp3`);
+            fs.writeFileSync(localFilePath, buffer);
+          }
+        }
+      } catch (dlErr) {
+        console.warn("[TelephonySummarize] Could not download remote recording:", dlErr.message);
+      }
+    }
+
+    if (!localFilePath || !fs.existsSync(localFilePath)) {
+      return res.status(404).json({
+        success: false,
+        message: "Audio recording file could not be located on the server for summarization.",
+      });
+    }
+
+    const orgApiKey = decryptApiKey(org?.aiSettings?.geminiApiKey);
+    const activeApiKey = orgApiKey || process.env.GEMINI_API_KEY;
+
+    if (!activeApiKey) {
+      return res.status(400).json({
+        success: false,
+        message: "Google Gemini API Key is missing. Please configure your API key in Organization Settings.",
+      });
+    }
+
+    // Update status to pending
+    callLog.aiAnalysisStatus = "pending";
+    await callLog.save();
+
+    console.log(`[TelephonySummarize] Analyzing call audio for callLog ${callLogId} (${localFilePath})...`);
+    const result = await analyzeAudioFile(localFilePath, "audio/mpeg", activeApiKey);
+
+    const summaryText = result?.analysis || result?.fullText || result?.transcription || "Call summarized successfully.";
+
+    callLog.aiSummary = summaryText;
+    callLog.aiAnalysisStatus = "completed";
+    await callLog.save();
+
+    // If linked to lead, update lead recording if present
+    if (callLog.leadId) {
+      await Lead.updateOne(
+        { _id: callLog.leadId, "recordings.url": callLog.recordingUrl },
+        {
+          $set: {
+            "recordings.$.analysis": summaryText,
+            "recordings.$.transcription": result?.transcription || "",
+            "recordings.$.analysisStatus": "completed",
+          },
+        }
+      ).catch(() => {});
+    }
+
+    // Broadcast socket event
+    const io = getIO();
+    if (io && org?._id) {
+      io.to(org._id.toString()).emit("call_summarized", {
+        callLogId: callLog._id,
+        leadId: callLog.leadId,
+        aiSummary: summaryText,
+        aiAnalysisStatus: "completed",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Call recording summarized successfully.",
+      data: {
+        callLogId: callLog._id,
+        aiSummary: summaryText,
+        aiAnalysisStatus: "completed",
+        transcription: result?.transcription || "",
+      },
+    });
+  } catch (error) {
+    console.error("Error summarizing call log:", error);
+    if (req.tenantModels?.CallLog && req.params.callLogId) {
+      await req.tenantModels.CallLog.findByIdAndUpdate(req.params.callLogId, {
+        aiAnalysisStatus: "failed",
+      }).catch(() => {});
+    }
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to summarize call recording.",
+    });
+  }
+};
+

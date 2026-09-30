@@ -6,6 +6,8 @@ import {
   getTelephonyAnalytics,
   updateCallDisposition,
   recordManualCallLog,
+  getLeadCallLogs,
+  summarizeCallLog,
   updateOrganizationTelephonySettings,
   updateUserTelephonySettings,
   autoProvisionAgentExtension,
@@ -26,6 +28,8 @@ router.post("/webhook/cdr/:orgId", handleCDRWebhook);
 // -------------------------------------------------------------
 router.get("/agent-credentials", protect, getAgentCredentials);
 router.get("/call-logs", protect, requireTelephonyAddon, getCallLogs);
+router.get("/lead-calls/:leadId", protect, getLeadCallLogs);
+router.post("/call-logs/:callLogId/summarize", protect, summarizeCallLog);
 router.get("/analytics", protect, requireTelephonyAddon, getTelephonyAnalytics);
 router.post("/call-disposition", protect, requireTelephonyAddon, updateCallDisposition);
 router.post("/manual-call-log", protect, recordManualCallLog);
