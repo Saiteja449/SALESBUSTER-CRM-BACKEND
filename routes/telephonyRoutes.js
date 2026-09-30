@@ -10,7 +10,7 @@ import {
   updateUserTelephonySettings,
   autoProvisionAgentExtension,
 } from "../controllers/telephonyController.js";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, verifySuperAdmin } from "../middleware/authMiddleware.js";
 import { requireTelephonyAddon } from "../middleware/telephonyMiddleware.js";
 
 const router = express.Router();
@@ -31,12 +31,11 @@ router.post("/call-disposition", protect, requireTelephonyAddon, updateCallDispo
 router.post("/manual-call-log", protect, recordManualCallLog);
 
 // -------------------------------------------------------------
-// Admin Settings Configuration Endpoints
+// Admin Settings Configuration Endpoints (Super Admin Only)
 // -------------------------------------------------------------
 router.put(
   "/settings/organization",
-  protect,
-  requireTelephonyAddon,
+  verifySuperAdmin,
   updateOrganizationTelephonySettings
 );
 router.put(

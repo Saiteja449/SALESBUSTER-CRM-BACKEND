@@ -724,6 +724,13 @@ export const recordManualCallLog = async (req, res) => {
  */
 export const updateOrganizationTelephonySettings = async (req, res) => {
   try {
+    if (req.user?.role !== "super_admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden: Telephony credentials configuration is strictly restricted to Super Administrators.",
+      });
+    }
+
     const { Organization } = getMasterModels();
     const orgId = req.organization?._id;
 

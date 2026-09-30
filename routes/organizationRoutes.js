@@ -24,6 +24,11 @@ import {
   getOrganizationServices,
   getOrganizationSettings,
   toggleOrganizationTelephonyAddon,
+  getOrganizationTelephonySettings,
+  updateOrganizationTelephonySettings,
+  getOrganizationTelephonyAgents,
+  updateOrganizationTelephonyAgent,
+  autoProvisionOrganizationAgent,
 } from "../controllers/organizationController.js";
 import { protect, verifySuperAdmin } from "../middleware/authMiddleware.js";
 
@@ -102,6 +107,15 @@ router.patch("/:id/status", verifySuperAdmin, toggleStatus);
 router.post("/:id/resend-welcome", verifySuperAdmin, resendWelcomeEmail);
 router.put("/:id/whatsapp-limit", verifySuperAdmin, updateOrganizationWhatsAppLimit);
 router.put("/:id/telephony-addon", verifySuperAdmin, toggleOrganizationTelephonyAddon);
+router.get("/:id/telephony", verifySuperAdmin, getOrganizationTelephonySettings);
+router.put("/:id/telephony", verifySuperAdmin, updateOrganizationTelephonySettings);
+router.get("/:id/telephony/agents", verifySuperAdmin, getOrganizationTelephonyAgents);
+router.put("/:id/telephony/agents/:userId", verifySuperAdmin, updateOrganizationTelephonyAgent);
+router.post(
+  "/:id/telephony/agents/:userId/auto-provision",
+  verifySuperAdmin,
+  autoProvisionOrganizationAgent
+);
 
 // Super Admin AI Settings & Knowledge Base APIs
 router.get("/:id/ai-settings", verifySuperAdmin, getOrgAISettings);

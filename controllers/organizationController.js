@@ -18,6 +18,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { encryptApiKey, decryptApiKey } from "../utils/encryption.js";
 import { invalidateVectorStoreForOrg } from "../ai/aiService.js";
 import { checkAndResetDailyAiUsage } from "../services/aiUsageService.js";
+import { provisionTelecmiUser } from "../services/telephonyService.js";
 
 /**
  * Calculates subscription end date given a start date and duration in months.
@@ -1706,6 +1707,290 @@ export const toggleOrganizationTelephonyAddon = async (req, res) => {
   } catch (error) {
     console.error("Error toggling telephony addon:", error);
     res.status(500).json({ success: false, message: "Server error toggling telephony add-on." });
+  }
+};
+
+/**
+ * Super Admin: Get Telephony configuration and status for an Organization
+ * GET /api/organizations/:id/telephony
+ */
+export const getOrganizationTelephonySettings = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { Organization } = getMasterModels();
+
+    const org = await Organization.findById(id);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found." });
+    }
+
+    const backendBase = (
+      process.env.BACKEND_URL ||
+      process.env.API_URL ||
+      "https://betaapi.salesbuster.ai"
+    ).replace(/\/+$/, "");
+
+    const webhookUrl = `${backendBase}/api/telephony/webhook/cdr/${org._id}`;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        organizationId: org._id,
+        organizationName: org.name,
+        isAddonEnabled: Boolean(org.telephony?.isAddonEnabled),
+        isConfigured: Boolean(org.telephony?.isConfigured),
+        telecmiAppId: org.telephony?.telecmiAppId || "",
+        telecmiSecret: org.telephony?.telecmiSecret || "",
+        sbcUri: org.telephony?.sbcUri || "sbcind.telecmi.com",
+        virtualNumber: org.telephony?.virtualNumber || "",
+        webhookSecret: org.telephony?.webhookSecret || "",
+        addonStartDate: org.telephony?.addonStartDate || null,
+        addonEndDate: org.telephony?.addonEndDate || null,
+        recordingStorageType: org.telephony?.recordingStorageType || "local",
+        webhookUrl,
+      },
+    });
+  } catch (error) {
+    console.error("Error retrieving organization telephony settings:", error);
+    res.status(500).json({ success: false, message: "Server error retrieving telephony settings." });
+  }
+};
+
+/**
+ * Super Admin: Configure or Update Telephony credentials for an Organization
+ * PUT /api/organizations/:id/telephony
+ */
+export const updateOrganizationTelephonySettings = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      telecmiAppId,
+      telecmiSecret,
+      sbcUri,
+      virtualNumber,
+      webhookSecret,
+      recordingStorageType,
+      isAddonEnabled,
+      addonStartDate,
+      addonEndDate,
+    } = req.body;
+    const { Organization } = getMasterModels();
+
+    const org = await Organization.findById(id);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found." });
+    }
+
+    if (!org.telephony) {
+      org.telephony = {};
+    }
+
+    if (telecmiAppId !== undefined) org.telephony.telecmiAppId = String(telecmiAppId).trim();
+    if (telecmiSecret !== undefined) org.telephony.telecmiSecret = String(telecmiSecret).trim();
+    if (sbcUri !== undefined) org.telephony.sbcUri = String(sbcUri).trim() || "sbcind.telecmi.com";
+    if (virtualNumber !== undefined) org.telephony.virtualNumber = String(virtualNumber).trim();
+    if (webhookSecret !== undefined) org.telephony.webhookSecret = String(webhookSecret).trim();
+    if (recordingStorageType !== undefined) org.telephony.recordingStorageType = recordingStorageType;
+    if (isAddonEnabled !== undefined) org.telephony.isAddonEnabled = Boolean(isAddonEnabled);
+    if (addonStartDate) org.telephony.addonStartDate = new Date(addonStartDate);
+    if (addonEndDate) org.telephony.addonEndDate = new Date(addonEndDate);
+
+    org.telephony.isConfigured = Boolean(org.telephony.telecmiAppId && org.telephony.telecmiSecret);
+
+    await org.save();
+
+    const backendBase = (
+      process.env.BACKEND_URL ||
+      process.env.API_URL ||
+      "https://betaapi.salesbuster.ai"
+    ).replace(/\/+$/, "");
+
+    res.status(200).json({
+      success: true,
+      message: `Telephony configuration updated successfully for ${org.name}.`,
+      data: {
+        organizationId: org._id,
+        organizationName: org.name,
+        telephony: org.telephony,
+        webhookUrl: `${backendBase}/api/telephony/webhook/cdr/${org._id}`,
+      },
+    });
+  } catch (error) {
+    console.error("Error updating organization telephony settings:", error);
+    res.status(500).json({ success: false, message: "Server error updating telephony settings." });
+  }
+};
+
+/**
+ * Super Admin: Get all agents in an Organization with their Telephony extensions
+ * GET /api/organizations/:id/telephony/agents
+ */
+export const getOrganizationTelephonyAgents = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { Organization } = getMasterModels();
+
+    const org = await Organization.findById(id);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found." });
+    }
+
+    const tenantModels = await getTenantModels(org.tenantDbName);
+    const users = await tenantModels.User.find({
+      organizationId: org._id,
+      role: { $in: ["sales person", "Sales Representative", "sales manager", "Sales Manager"] },
+    })
+      .select("name email phone role telephony")
+      .lean();
+
+    res.status(200).json({
+      success: true,
+      data: users.map((u) => ({
+        id: u._id,
+        name: u.name,
+        email: u.email,
+        phone: u.phone,
+        role: u.role,
+        telecmiUserId: u.telephony?.telecmiUserId || "",
+        telecmiPassword: u.telephony?.telecmiPassword || "",
+        telecmiExtension: u.telephony?.telecmiExtension || "",
+        isActive: u.telephony?.isActive ?? true,
+        isCloudEnabled: u.telephony?.isCloudEnabled ?? Boolean(org.telephony?.isAddonEnabled),
+      })),
+    });
+  } catch (error) {
+    console.error("Error fetching organization telephony agents:", error);
+    res.status(500).json({ success: false, message: "Server error fetching telephony agents." });
+  }
+};
+
+/**
+ * Super Admin: Update an agent's Telephony credentials
+ * PUT /api/organizations/:id/telephony/agents/:userId
+ */
+export const updateOrganizationTelephonyAgent = async (req, res) => {
+  try {
+    const { id, userId } = req.params;
+    const { telecmiUserId, telecmiPassword, telecmiExtension, isActive, isCloudEnabled } = req.body;
+    const { Organization } = getMasterModels();
+
+    const org = await Organization.findById(id);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found." });
+    }
+
+    const tenantModels = await getTenantModels(org.tenantDbName);
+    const user = await tenantModels.User.findOne({ _id: userId, organizationId: org._id });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found in organization." });
+    }
+
+    if (!user.telephony) {
+      user.telephony = {};
+    }
+
+    if (telecmiUserId !== undefined) user.telephony.telecmiUserId = String(telecmiUserId).trim();
+    if (telecmiPassword !== undefined) user.telephony.telecmiPassword = String(telecmiPassword).trim();
+    if (telecmiExtension !== undefined) user.telephony.telecmiExtension = String(telecmiExtension).trim();
+    if (isActive !== undefined) user.telephony.isActive = Boolean(isActive);
+    if (isCloudEnabled !== undefined) user.telephony.isCloudEnabled = Boolean(isCloudEnabled);
+
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Telephony credentials updated for agent ${user.name}.`,
+      data: {
+        userId: user._id,
+        name: user.name,
+        telephony: user.telephony,
+      },
+    });
+  } catch (error) {
+    console.error("Error updating organization telephony agent:", error);
+    res.status(500).json({ success: false, message: "Server error updating telephony agent." });
+  }
+};
+
+/**
+ * Super Admin: Auto-provision an agent's extension in TeleCMI
+ * POST /api/organizations/:id/telephony/agents/:userId/auto-provision
+ */
+export const autoProvisionOrganizationAgent = async (req, res) => {
+  try {
+    const { id, userId } = req.params;
+    const { Organization } = getMasterModels();
+
+    const org = await Organization.findById(id);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found." });
+    }
+
+    if (!org.telephony?.isAddonEnabled || !org.telephony?.isConfigured) {
+      return res.status(400).json({
+        success: false,
+        message: "Telephony is not configured or enabled for this organization.",
+      });
+    }
+
+    const tenantModels = await getTenantModels(org.tenantDbName);
+    const user = await tenantModels.User.findOne({ _id: userId, organizationId: org._id });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found in organization." });
+    }
+
+    // Determine extension
+    let ext = req.body.extension;
+    if (!ext) {
+      const existingExts = await tenantModels.User.find({
+        "telephony.telecmiExtension": { $exists: true, $ne: "" },
+      }).select("telephony.telecmiExtension");
+      const exts = existingExts
+        .map((u) => parseInt(u.telephony?.telecmiExtension, 10))
+        .filter((n) => !isNaN(n));
+      ext = exts.length > 0 ? Math.max(...exts) + 1 : 101;
+    }
+
+    const cleanPhone = String(user.phone || "").replace(/\D/g, "");
+    const formattedPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
+    const password = req.body.password || `Sait#${Math.random().toString(36).substring(2, 8)}!`;
+
+    const telecmiResult = await provisionTelecmiUser({
+      name: user.name,
+      phone: formattedPhone,
+      password,
+      extension: ext,
+      organization: org,
+    });
+
+    if (!telecmiResult) {
+      return res.status(502).json({
+        success: false,
+        message: "Failed to auto-provision extension in TeleCMI.",
+      });
+    }
+
+    user.telephony = {
+      telecmiUserId: telecmiResult.telecmiUserId,
+      telecmiPassword: telecmiResult.telecmiPassword,
+      telecmiExtension: telecmiResult.telecmiExtension,
+      isActive: true,
+      isCloudEnabled: true,
+    };
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: `TeleCMI extension ${telecmiResult.telecmiExtension} auto-provisioned successfully for ${user.name}.`,
+      data: {
+        userId: user._id,
+        name: user.name,
+        telephony: user.telephony,
+      },
+    });
+  } catch (error) {
+    console.error("Error auto-provisioning telephony agent:", error);
+    res.status(500).json({ success: false, message: "Server error auto-provisioning telephony agent." });
   }
 };
 
