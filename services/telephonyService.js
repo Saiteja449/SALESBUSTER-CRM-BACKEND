@@ -107,7 +107,12 @@ export const downloadAndArchiveRecording = async (
     const localFilePath = path.join(recordingsDir, localFileName);
     fs.writeFileSync(localFilePath, buffer);
 
-    const publicUrl = `/uploads/recordings/${orgId}/${localFileName}`;
+    const backendBase = (
+      process.env.BACKEND_URL ||
+      process.env.API_URL ||
+      "https://betaapi.salesbuster.ai"
+    ).replace(/\/+$/, "");
+    const publicUrl = `${backendBase}/uploads/recordings/${orgId}/${localFileName}`;
     console.log(
       `[TelephonyService] Recording saved successfully: ${publicUrl} (${buffer.length} bytes)`
     );

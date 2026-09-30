@@ -368,9 +368,25 @@ export const getCallLogs = async (req, res) => {
       .limit(parseInt(limit))
       .lean();
 
+    const backendBase = (
+      process.env.BACKEND_URL ||
+      process.env.API_URL ||
+      "https://betaapi.salesbuster.ai"
+    ).replace(/\/+$/, "");
+
+    const formattedCallLogs = callLogs.map((log) => {
+      if (log.recordingUrl && log.recordingUrl.startsWith("/uploads/")) {
+        return {
+          ...log,
+          recordingUrl: `${backendBase}${log.recordingUrl}`,
+        };
+      }
+      return log;
+    });
+
     res.status(200).json({
       success: true,
-      data: callLogs,
+      data: formattedCallLogs,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
