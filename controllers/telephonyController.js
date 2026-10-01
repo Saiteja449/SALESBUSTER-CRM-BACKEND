@@ -887,7 +887,8 @@ export const autoProvisionAgentExtension = async (req, res) => {
       const exts = existingUsers
         .map((u) => parseInt(u.telephony?.telecmiExtension, 10))
         .filter((n) => !isNaN(n));
-      ext = exts.length > 0 ? Math.max(...exts) + 1 : 101;
+      ext = exts.length > 0 ? Math.max(...exts) + 1 : 1001;
+      if (ext < 1000) ext += 1000;
     }
 
     const password =
@@ -897,6 +898,7 @@ export const autoProvisionAgentExtension = async (req, res) => {
 
     const telecmiResult = await provisionTelecmiUser({
       name: user.name,
+      email: user.email,
       phone: user.phone || user.mobile,
       password: password,
       extension: ext,

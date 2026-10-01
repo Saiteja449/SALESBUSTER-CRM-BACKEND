@@ -210,11 +210,13 @@ export const addSalesPerson = async (req, res) => {
           const exts = existingExts
             .map((u) => parseInt(u.telephony?.telecmiExtension, 10))
             .filter((n) => !isNaN(n));
-          ext = exts.length > 0 ? Math.max(...exts) + 1 : 101;
+          ext = exts.length > 0 ? Math.max(...exts) + 1 : 1001;
+          if (ext < 1000) ext += 1000;
         }
 
         const telecmiResult = await provisionTelecmiUser({
           name: cleanName,
+          email: cleanEmail,
           phone: cleanMobile,
           password: temporaryPassword,
           extension: ext,

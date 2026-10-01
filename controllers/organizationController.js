@@ -1948,7 +1948,8 @@ export const autoProvisionOrganizationAgent = async (req, res) => {
       const exts = existingExts
         .map((u) => parseInt(u.telephony?.telecmiExtension, 10))
         .filter((n) => !isNaN(n));
-      ext = exts.length > 0 ? Math.max(...exts) + 1 : 101;
+      ext = exts.length > 0 ? Math.max(...exts) + 1 : 1001;
+      if (ext < 1000) ext += 1000;
     }
 
     const cleanPhone = String(user.phone || "").replace(/\D/g, "");
@@ -1957,6 +1958,7 @@ export const autoProvisionOrganizationAgent = async (req, res) => {
 
     const telecmiResult = await provisionTelecmiUser({
       name: user.name,
+      email: user.email,
       phone: formattedPhone,
       password,
       extension: ext,

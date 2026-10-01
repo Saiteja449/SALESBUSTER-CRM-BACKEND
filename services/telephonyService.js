@@ -217,10 +217,11 @@ export const triggerCallAiAnalysis = async ({
 
 /**
  * Automatically provisions an agent user extension in TeleCMI via REST API
- * POST https://rest.telecmi.com/v3/user/add (with v2 fallback)
+ * POST https://rest.telecmi.com/v3/user/add (v3 only, no v2 fallback)
  */
 export const provisionTelecmiUser = async ({
   name,
+  email,
   phone,
   password,
   extension,
@@ -240,66 +241,102 @@ export const provisionTelecmiUser = async ({
     const cleanPhone = String(phone || "").replace(/\D/g, "");
     const formattedPhone =
       cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
-    const ext = parseInt(extension) || 101;
+
+    // TeleCMI v3 requires a 4-digit extension between 1000 and 9999
+    let extNum = parseInt(extension, 10);
+    if (isNaN(extNum) || extNum < 1000 || extNum > 9999) {
+      if (!isNaN(extNum) && extNum >= 100 && extNum <= 999) {
+        extNum = extNum + 1000;
+      } else {
+        extNum = 1001;
+      }
+    }
+
+    // TeleCMI v3 requires separate mandatory first_name and last_name
+    const nameParts = String(name || "Agent User").trim().split(/\s+/);
+    const firstName = nameParts[0] || "Agent";
+    const lastName = nameParts.slice(1).join(" ") || "User";
+
+    // TeleCMI v3 requires minimum 8 character password
+    let sipPassword = String(password || "").trim();
+    if (sipPassword.length < 8) {
+      sipPassword = sipPassword
+        ? `${sipPassword}Pass@123`
+        : `SipPass@${Math.floor(1000 + Math.random() * 9000)}`;
+    }
+
+    // TeleCMI v3 requires mandatory email_id
+    const userEmail =
+      email && String(email).includes("@")
+        ? String(email).trim()
+        : `${firstName.toLowerCase()}${extNum}@telecmi.internal`;
 
     console.log(
-      `[TelephonyService] Auto-provisioning TeleCMI user ${name} with extension ${ext} via v2 API...`
+      `[TelephonyService] Auto-provisioning TeleCMI user ${firstName} ${lastName} (ext ${extNum}) via v3 API...`
     );
 
     const payload = {
       appid: Number(telecmiAppId) || telecmiAppId,
       secret: telecmiSecret,
-      extension: ext,
-      name: name,
+      extension: extNum,
+      first_name: firstName,
+      last_name: lastName,
+      email_id: userEmail,
       phone_number: formattedPhone,
-      password: password || "123456",
+      password: sipPassword,
       start_time: 1,
       end_time: 24,
-      sms_alert: false,
+      followme: true,
     };
 
-    // Primary: TeleCMI official v2 User Operations endpoint
-    let response = await fetch("https://rest.telecmi.com/v2/user/add", {
+    // Exclusively call TeleCMI v3 User Add endpoint
+    const response = await fetch("https://rest.telecmi.com/v3/user/add", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
-    }).catch(() => null);
-
-    // Fallback to v3 if v2 fails
-    if (!response || !response.ok) {
-      console.warn(
-        `[TelephonyService] TeleCMI v2 user/add returned ${response?.status || "network failure"}. Trying v3 fallback...`
+    }).catch((err) => {
+      console.error(
+        "[TelephonyService] Network failure calling TeleCMI v3 user/add:",
+        err.message
       );
-      const v3Response = await fetch("https://rest.telecmi.com/v3/user/add", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      }).catch(() => null);
+      return null;
+    });
 
-      if (v3Response) {
-        response = v3Response;
-      }
+    if (!response || !response.ok) {
+      const errText = response
+        ? await response.text().catch(() => "")
+        : "No response";
+      console.error(
+        `[TelephonyService] TeleCMI v3 user/add failed with status ${response?.status}: ${errText}`
+      );
+      return null;
     }
 
-    const data = response ? await response.json().catch(() => ({})) : {};
-    console.log("[TelephonyService] TeleCMI user/add API response:", data);
+    const data = await response.json().catch(() => ({}));
+    console.log("[TelephonyService] TeleCMI v3 user/add API response:", data);
 
-    const telecmiUserId = `${ext}_${telecmiAppId}`;
+    if (data.code && data.code !== 200 && data.status !== "success") {
+      console.error(
+        `[TelephonyService] TeleCMI v3 rejected user add: ${data.msg || "Unknown error"}`
+      );
+      return null;
+    }
+
+    const telecmiUserId = data.agent?.agent_id || `${extNum}_${telecmiAppId}`;
+    const confirmedExtension = String(data.agent?.extension || extNum);
 
     return {
       success: true,
       telecmiUserId,
-      telecmiPassword: password || "123456",
-      telecmiExtension: String(ext),
+      telecmiPassword: sipPassword,
+      telecmiExtension: confirmedExtension,
       rawResponse: data,
     };
   } catch (error) {
     console.error(
-      "[TelephonyService] Error provisioning TeleCMI user:",
+      "[TelephonyService] Error provisioning TeleCMI user via v3:",
       error.message
     );
     return null;
