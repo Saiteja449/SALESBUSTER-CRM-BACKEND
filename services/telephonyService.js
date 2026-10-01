@@ -343,3 +343,71 @@ export const provisionTelecmiUser = async ({
   }
 };
 
+/**
+ * Automatically removes an agent user extension in TeleCMI via REST API
+ * POST https://rest.telecmi.com/v3/user/remove
+ */
+export const removeTelecmiUser = async ({ agentId, organization }) => {
+  if (
+    !organization?.telephony?.isAddonEnabled ||
+    !organization?.telephony?.isConfigured
+  ) {
+    return null;
+  }
+
+  const { telecmiAppId, telecmiSecret } = organization.telephony;
+  if (!telecmiAppId || !telecmiSecret || !agentId) return null;
+
+  try {
+    console.log(
+      `[TelephonyService] Auto-removing TeleCMI user ${agentId} via v3 API...`
+    );
+
+    const payload = {
+      appid: Number(telecmiAppId) || telecmiAppId,
+      secret: telecmiSecret,
+      agent_id: String(agentId).trim(),
+    };
+
+    const response = await fetch("https://rest.telecmi.com/v3/user/remove", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }).catch((err) => {
+      console.error(
+        "[TelephonyService] Network failure calling TeleCMI v3 user/remove:",
+        err.message
+      );
+      return null;
+    });
+
+    if (!response || !response.ok) {
+      const errText = response
+        ? await response.text().catch(() => "")
+        : "No response";
+      console.error(
+        `[TelephonyService] TeleCMI v3 user/remove failed with status ${response?.status}: ${errText}`
+      );
+      return null;
+    }
+
+    const data = await response.json().catch(() => ({}));
+    console.log("[TelephonyService] TeleCMI v3 user/remove API response:", data);
+
+    const isSuccess = data.code === 200 || data.status === "success";
+    return {
+      success: isSuccess,
+      rawResponse: data,
+    };
+  } catch (error) {
+    console.error(
+      "[TelephonyService] Error removing TeleCMI user via v3:",
+      error.message
+    );
+    return null;
+  }
+};
+
+

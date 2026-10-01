@@ -4,7 +4,7 @@ import Lead from "../models/Lead.js";
 import Notification from "../models/Notification.js";
 import { getMasterModels, generateSecurePassword } from "../services/tenantManager.js";
 import { sendSalesPersonWelcomeEmail } from "../helpers/emailHelper.js";
-import { provisionTelecmiUser } from "../services/telephonyService.js";
+import { provisionTelecmiUser, removeTelecmiUser } from "../services/telephonyService.js";
 
 // Helper to resolve models
 const getModels = (req) => {
@@ -368,6 +368,27 @@ export const deleteSalesPerson = async (req, res) => {
 
     // Delete from tenant DB
     await UserModel.findByIdAndDelete(req.params.id);
+
+    // Auto-remove agent extension from TeleCMI if provisioned
+    const telecmiAgentId =
+      user.telephony?.telecmiUserId ||
+      (user.telephony?.telecmiExtension && req.organization?.telephony?.telecmiAppId
+        ? `${user.telephony.telecmiExtension}_${req.organization.telephony.telecmiAppId}`
+        : null);
+
+    if (telecmiAgentId && req.organization) {
+      try {
+        await removeTelecmiUser({
+          agentId: telecmiAgentId,
+          organization: req.organization,
+        });
+      } catch (telecmiErr) {
+        console.warn(
+          `[UserController] Non-fatal: Failed to remove TeleCMI agent ${telecmiAgentId}:`,
+          telecmiErr.message
+        );
+      }
+    }
 
     // Unassign leads previously assigned to this user
     try {
