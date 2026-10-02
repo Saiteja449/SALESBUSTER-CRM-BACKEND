@@ -159,6 +159,11 @@ const organizationSchema = new mongoose.Schema(
       enum: [1, 2],
       default: 1,
     },
+    defaultWhatsAppLine: {
+      type: Number,
+      enum: [1, 2],
+      default: 1,
+    },
     aiSettings: {
       geminiApiKey: {
         type: String,

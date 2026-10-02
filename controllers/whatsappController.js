@@ -150,7 +150,7 @@ export const getStatus = async (req, res) => {
     // ================================================================
     if (req.user?.role === "sales person") {
       const repUserId = req.user._id.toString();
-      const user = await UserModel.findById(repUserId).select("phone whatsappLine1Phone whatsappLine2Phone").lean();
+      const user = await UserModel.findById(repUserId).select("phone whatsappLine1Phone whatsappLine2Phone defaultWhatsAppLine").lean();
       const sessionIds = [resolveSessionId(orgId, repUserId, 1), resolveSessionId(orgId, repUserId, 2)];
       const memStatuses = getWhatsAppStatus(orgId);
       const dbSessions = await WhatsAppSessionModel.find({ sessionId: { $in: sessionIds } }).lean();
@@ -196,6 +196,7 @@ export const getStatus = async (req, res) => {
         sessions: repSessions,
         isRepSession: true,
         whatsappLineLimit: 2,
+        defaultWhatsAppLine: user?.defaultWhatsAppLine || 1,
         unreadCountLine1: unreadCounts[1],
         unreadCountLine2: unreadCounts[2],
       });
@@ -357,6 +358,7 @@ export const getStatus = async (req, res) => {
     res.status(200).json({
       sessions: result,
       whatsappLineLimit: lineLimit,
+      defaultWhatsAppLine: req.user?.defaultWhatsAppLine || 1,
       unreadCountLine1: unreadRows[0]?.line1 || 0,
       unreadCountLine2: unreadRows[0]?.line2 || 0,
     });
@@ -503,12 +505,80 @@ export const getQR = async (req, res) => {
   }
 };
 
+// @desc    Set default WhatsApp connection (Line 1 or Line 2)
+// @route   PUT /api/whatsapp/default-connection
+// @access  Protected
+export const setDefaultConnection = async (req, res) => {
+  try {
+    const rawLine = req.body?.defaultWhatsAppLine ?? req.body?.lineNumber ?? req.body?.line;
+    const lineNumber = Number(rawLine);
+
+    if (![1, 2].includes(lineNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid default WhatsApp connection. Must be 1 or 2.",
+      });
+    }
+
+    const userId = req.user?._id || req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized." });
+    }
+
+    const { UserModel } = getModels(req);
+    const orgId = req.user?.organizationId || req.organization?._id;
+
+    // If manager or admin tries to set Line 2 as default, check org lineLimit
+    if (req.user?.role !== "sales person" && lineNumber === 2 && orgId) {
+      const { Organization } = getMasterModels();
+      const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
+      if ((org?.whatsappLineLimit || 1) < 2) {
+        return res.status(403).json({
+          success: false,
+          message: "Your organization plan allows only 1 WhatsApp channel. Upgrade to Dual Lines to set Account 2 as default.",
+        });
+      }
+    }
+
+    // Update user's default line
+    const updatedUser = await UserModel.findByIdAndUpdate(
+      userId,
+      { $set: { defaultWhatsAppLine: lineNumber } },
+      { new: true }
+    ).select("-password").lean();
+
+    // If user is org owner or sales manager, also update Organization.defaultWhatsAppLine
+    if (["sales manager", "super_admin"].includes(req.user?.role) || req.user?.isOrgOwner) {
+      if (orgId) {
+        try {
+          const { Organization } = getMasterModels();
+          await Organization.findByIdAndUpdate(orgId, {
+            $set: { defaultWhatsAppLine: lineNumber },
+          });
+        } catch (orgErr) {
+          console.warn("[WhatsApp] Error updating org defaultWhatsAppLine:", orgErr.message);
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Default WhatsApp connection set to Account ${lineNumber}.`,
+      defaultWhatsAppLine: lineNumber,
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error("[WhatsApp] setDefaultConnection error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // @desc    Get all WhatsApp conversations
 // @route   GET /api/whatsapp/conversations
 // @access  Public
 export const getConversations = async (req, res) => {
   try {
-    const { ConversationModel, MessageModel } = getModels(req);
+    const { ConversationModel, MessageModel, LeadModel } = getModels(req);
     const userRole = req.user?.role;
     const isSalesRep = userRole === "sales person";
     const lineNumber = Number(req.query.lineNumber);
@@ -582,6 +652,43 @@ export const getConversations = async (req, res) => {
     // Filter out conversations where leadId is null (due to population match failure)
     if (isSalesRep || req.query.userId || req.query.name) {
       conversations = conversations.filter((c) => c.leadId != null);
+    }
+
+    // RULE 3: Assigned leads from manager show ONLY in sales rep's default WhatsApp connection
+    if (isSalesRep && [1, 2].includes(lineNumber)) {
+      const repDefaultLine = req.user?.defaultWhatsAppLine || 1;
+      if (lineNumber === repDefaultLine) {
+        const existingLeadIds = conversations.map((c) => (c.leadId?._id || c.leadId?.id || c.leadId)?.toString());
+        const repMatchArray = [
+          String(req.user._id),
+          new mongoose.Types.ObjectId(req.user._id),
+          ...(req.user.name ? [new RegExp("^" + req.user.name.trim() + "$", "i")] : []),
+        ];
+
+        const uncontactedAssignedLeads = await LeadModel.find({
+          assignedTo: { $in: repMatchArray },
+          _id: { $nin: existingLeadIds },
+          status: { $nin: ["Lost"] },
+        })
+          .sort({ updatedAt: -1 })
+          .limit(50)
+          .lean();
+
+        if (uncontactedAssignedLeads.length > 0) {
+          const pendingItems = uncontactedAssignedLeads.map((lead) => ({
+            _id: `assigned_${lead._id}`,
+            id: `assigned_${lead._id}`,
+            leadId: lead,
+            unreadCount: 0,
+            lastMessage: "Manager Assigned Lead · Ready to initiate",
+            lastMessageTime: lead.updatedAt || lead.createdAt || new Date(),
+            isAssignedPending: true,
+            activeLines: [lineNumber],
+            assignedInitiationLine: repDefaultLine,
+          }));
+          conversations = [...conversations, ...pendingItems];
+        }
+      }
     }
 
     if ([1, 2].includes(lineNumber)) {
@@ -734,10 +841,27 @@ export const sendMessage = async (req, res) => {
         });
       }
 
-      const lineNumber = Number(req.body.lineNumber);
+      const defaultLine = req.user?.defaultWhatsAppLine || 1;
+      const lineNumber = Number(req.body.lineNumber) || defaultLine;
       if (![1, 2].includes(lineNumber)) {
         return res.status(400).json({ message: "lineNumber must be 1 or 2." });
       }
+
+      // RULE 3: Assigned leads from manager can ONLY be initiated from the sales rep's default WhatsApp connection!
+      const existingMessageOnRequestedLine = await MessageModel.findOne({
+        leadId,
+        lineNumber,
+      }).select("_id").lean();
+
+      if (!existingMessageOnRequestedLine && lineNumber !== defaultLine) {
+        return res.status(403).json({
+          message: `Assigned leads can only be initiated from your default WhatsApp connection (Account ${defaultLine}). Please switch to Account ${defaultLine} to send the first message.`,
+          requiresDefaultLine: true,
+          defaultWhatsAppLine: defaultLine,
+          attemptedLine: lineNumber,
+        });
+      }
+
       targetSessionId = resolveSessionId(orgId, repId, lineNumber);
       const targetStatus = getWhatsAppStatus(orgId).find((session) => session.sessionId === targetSessionId);
       if (targetStatus?.status !== "connected") {
@@ -1143,7 +1267,7 @@ export const getTeamWhatsAppStatuses = async (req, res) => {
 
     // Fetch all active sales reps
     const reps = await UserModel.find({ role: "sales person", status: "active" })
-      .select("name phone email whatsappLine1Phone whatsappLine2Phone _id")
+      .select("name phone email whatsappLine1Phone whatsappLine2Phone defaultWhatsAppLine _id")
       .lean();
 
     const allMemSessions = getWhatsAppStatus(orgId);
@@ -1173,6 +1297,7 @@ export const getTeamWhatsAppStatuses = async (req, res) => {
           name: rep.name || "Unknown",
           email: rep.email || "",
           profilePhone: rep.phone || "",
+          defaultWhatsAppLine: rep.defaultWhatsAppLine || 1,
           sessionId: primary.sessionId,
           status: primary.status,
           connectedPhone: primary.connectedPhone,

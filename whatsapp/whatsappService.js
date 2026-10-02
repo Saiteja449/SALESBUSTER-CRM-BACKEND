@@ -1952,10 +1952,10 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
       organizationId = organizationId.toString();
     }
 
-    const sessionId = organizationId ? `org_${organizationId}` : (context?.sessionId || null);
-    const models = context?.tenantModels || (sessionId ? await getModelsForSession(sessionId) : { Message, Conversation, SystemSettings });
+    const models = context?.tenantModels || (organizationId ? await getModelsForSession(`org_${organizationId}`) : { Message, Conversation, SystemSettings, User });
     const MessageModel = models?.Message || Message;
     const ConversationModel = models?.Conversation || Conversation;
+    const UserModel = models?.User || User;
 
     // Check if Welcome Messages are enabled
     const settings = await getSystemSettings(models);
@@ -1971,9 +1971,48 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
       return null;
     }
 
-    // Find active connected WhatsApp socket for this organization line
-    let sock = sessionId ? sessions[sessionId]?.sock : null;
-    if (!sock && organizationId && (!sessionId || sessionId === `org_${organizationId}`)) {
+    // Determine target WhatsApp connection:
+    // If assigned to a sales rep, strictly use that rep's defaultWhatsAppLine.
+    let targetSessionId = null;
+    let targetLineNumber = 1;
+    let assignedSalesRepId = null;
+    let assignedSalesRepName = "";
+
+    if (lead.assignedTo && lead.assignedTo !== "Unassigned") {
+      let repUser = null;
+      if (mongoose.Types.ObjectId.isValid(lead.assignedTo)) {
+        repUser = await UserModel.findById(lead.assignedTo).select("name role defaultWhatsAppLine").lean();
+      } else if (typeof lead.assignedTo === "string") {
+        repUser = await UserModel.findOne({ name: lead.assignedTo }).select("name role defaultWhatsAppLine").lean();
+      }
+
+      if (repUser && repUser.role === "sales person") {
+        assignedSalesRepId = repUser._id;
+        assignedSalesRepName = repUser.name || "";
+        targetLineNumber = repUser.defaultWhatsAppLine || 1;
+        targetSessionId = resolveSessionId(organizationId, repUser._id.toString(), targetLineNumber);
+      }
+    }
+
+    if (!targetSessionId) {
+      // Organization / manager fallback default line
+      let orgDefaultLine = 1;
+      if (organizationId) {
+        try {
+          const { Organization } = getMasterModels();
+          const org = await Organization.findById(organizationId).select("defaultWhatsAppLine whatsappLineLimit").lean();
+          if (org) {
+            orgDefaultLine = (org.whatsappLineLimit || 1) >= 2 ? (org.defaultWhatsAppLine || 1) : 1;
+          }
+        } catch (e) {}
+      }
+      targetLineNumber = orgDefaultLine;
+      targetSessionId = orgDefaultLine === 2 ? `org_${organizationId}_device_2` : `org_${organizationId}`;
+    }
+
+    // Find active connected WhatsApp socket for this target line
+    let sock = targetSessionId ? sessions[targetSessionId]?.sock : null;
+    if (!sock && organizationId && targetSessionId === `org_${organizationId}`) {
       const orgSession = sessions[`org_${organizationId}`];
       if (orgSession && orgSession.status === "connected") {
         sock = orgSession.sock;
@@ -1982,7 +2021,7 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
 
     if (!sock) {
       console.warn(
-        `[WhatsApp Welcome] WhatsApp is not connected for organization ${organizationId || "default"}. Skipping welcome message for ${lead.phone}`,
+        `[WhatsApp Welcome] WhatsApp session ${targetSessionId} is not connected. Skipping welcome message for ${lead.phone}`,
       );
       return null;
     }
@@ -2076,7 +2115,7 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
         messageId,
         leadId: lead._id,
         sender: "system",
-        senderName: "Automated Welcome",
+        senderName: assignedSalesRepName || "Automated Welcome",
         direction: "outgoing",
         messageType: "text",
         text: welcomeText,
@@ -2085,18 +2124,26 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
         delivered: true,
         read: false,
         status: "sent",
+        salesRepId: assignedSalesRepId,
+        lineNumber: targetLineNumber,
+        sessionId: targetSessionId,
       });
 
       // Update or Create Conversation
       await ConversationModel.findOneAndUpdate(
         { leadId: lead._id },
         {
-          leadId: lead._id,
-          lastMessage: welcomeText,
-          lastMessageTime: timestamp,
-          unreadCount: 0,
+          $set: {
+            leadId: lead._id,
+            lastMessage: welcomeText,
+            lastMessageTime: timestamp,
+            lastOutboundLine: targetLineNumber,
+            lastOutboundSessionId: targetSessionId,
+            unreadCount: 0,
+          },
+          $addToSet: { activeLines: targetLineNumber },
         },
-        { upsert: true, new: true },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
       );
 
       // Emit socket updates

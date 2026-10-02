@@ -12,7 +12,8 @@ import fs from "fs";
 import path from "path";
 import { processAudioUpload } from "../utils/audioConverter.js";
 import { analyzeAudioFile } from "../services/audioAnalysisService.js";
-import { sendWelcomeEnquiryMessage, sendMessageFromCRM } from "../whatsapp/whatsappService.js";
+import { sendWelcomeEnquiryMessage, sendMessageFromCRM, resolveSessionId } from "../whatsapp/whatsappService.js";
+import { getMasterModels } from "../services/tenantManager.js";
 import { decryptApiKey } from "../utils/encryption.js";
 import { recordAiUsage } from "../services/aiUsageService.js";
 import * as XLSX from "xlsx";
@@ -1530,12 +1531,41 @@ export const handleMissedCall = async (req, res) => {
 
           const senderName = req.user?.name || "Sales Team";
 
-          // Try rep's personal session first; fallback to organization primary line
+          // RULE 2: Missed call follow-up messages MUST be sent strictly from the sales rep's chosen default WhatsApp connection
           let targetSessionId = null;
+          let targetLineNumber = 1;
+          let targetRepId = null;
+
           if (req.user?.role === "sales person") {
-            targetSessionId = orgId ? `org_${orgId}_user_${req.user._id}` : `user_${req.user._id}`;
-          } else if (orgId) {
-            targetSessionId = `org_${orgId}`;
+            targetRepId = req.user._id;
+            targetLineNumber = req.user.defaultWhatsAppLine || 1;
+            targetSessionId = resolveSessionId(orgId, req.user._id.toString(), targetLineNumber);
+          } else if (lead.assignedTo && lead.assignedTo !== "Unassigned") {
+            let repUser = null;
+            if (mongoose.Types.ObjectId.isValid(lead.assignedTo)) {
+              repUser = await UserModel.findById(lead.assignedTo).select("name role defaultWhatsAppLine").lean();
+            } else if (typeof lead.assignedTo === "string") {
+              repUser = await UserModel.findOne({ name: lead.assignedTo }).select("name role defaultWhatsAppLine").lean();
+            }
+            if (repUser?.role === "sales person") {
+              targetRepId = repUser._id;
+              targetLineNumber = repUser.defaultWhatsAppLine || 1;
+              targetSessionId = resolveSessionId(orgId, repUser._id.toString(), targetLineNumber);
+            }
+          }
+
+          if (!targetSessionId && orgId) {
+            // Manager/Organization default line
+            let orgDefaultLine = 1;
+            try {
+              const { Organization } = getMasterModels();
+              const org = await Organization.findById(orgId).select("defaultWhatsAppLine whatsappLineLimit").lean();
+              if (org) {
+                orgDefaultLine = (org.whatsappLineLimit || 1) >= 2 ? (org.defaultWhatsAppLine || 1) : 1;
+              }
+            } catch (e) {}
+            targetLineNumber = orgDefaultLine;
+            targetSessionId = orgDefaultLine === 2 ? `org_${orgId}_device_2` : `org_${orgId}`;
           }
 
           try {
@@ -1547,29 +1577,17 @@ export const handleMissedCall = async (req, res) => {
                 organizationId: orgId,
                 tenantModels: req.tenantModels,
                 sessionId: targetSessionId,
+                lineNumber: targetLineNumber,
+                salesRepId: targetRepId,
               }
             );
             whatsappSent = true;
           } catch (sessionErr) {
-            // If rep's personal session is offline, fallback to org primary line
-            if (targetSessionId && orgId && targetSessionId !== `org_${orgId}`) {
-              console.log(
-                `[Missed Call] Rep session ${targetSessionId} offline. Attempting fallback to organization line org_${orgId}...`
-              );
-              await sendMessageFromCRM(
-                lead._id,
-                welcomeText,
-                senderName,
-                {
-                  organizationId: orgId,
-                  tenantModels: req.tenantModels,
-                  sessionId: `org_${orgId}`,
-                }
-              );
-              whatsappSent = true;
-            } else {
-              throw sessionErr;
-            }
+            console.warn(
+              `[Missed Call] Dispatch via default connection ${targetSessionId} failed:`,
+              sessionErr.message
+            );
+            whatsappError = sessionErr.message;
           }
         }
       } catch (waErr) {

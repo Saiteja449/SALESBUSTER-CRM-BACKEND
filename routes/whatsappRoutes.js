@@ -15,6 +15,7 @@ import {
   summarizeConversation,
   getTeamWhatsAppStatuses,
   requestPairingCode,
+  setDefaultConnection,
 } from "../controllers/whatsappController.js";
 import { protect } from "../middleware/authMiddleware.js";
 
@@ -48,6 +49,7 @@ router.get("/status", getStatus);
 router.post("/logout", logoutClient);
 router.get("/qr", getQR);
 router.post("/pairing-code", requestPairingCode);
+router.put("/default-connection", setDefaultConnection);
 
 // Chats and Messages
 router.get("/conversations", getConversations);

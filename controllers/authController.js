@@ -159,6 +159,7 @@ export const login = async (req, res) => {
       name: user.name || cleanEmail.split("@")[0],
       email: user.email,
       phone: user.phone || "",
+      defaultWhatsAppLine: user.defaultWhatsAppLine || 1,
       role: user.role,
       token,
       tenantDbName: user.tenantDbName || null,
