@@ -13,6 +13,15 @@ const conversationSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    unreadCountByLine: {
+      line1: { type: Number, default: 0 },
+      line2: { type: Number, default: 0 },
+    },
+    lastInboundLine: { type: Number, enum: [1, 2], default: 1 },
+    lastOutboundLine: { type: Number, enum: [1, 2], default: 1 },
+    lastInboundSessionId: { type: String, default: "" },
+    lastOutboundSessionId: { type: String, default: "" },
+    activeLines: { type: [Number], default: [], index: true },
     lastMessage: {
       type: String,
       default: "",
@@ -35,6 +44,9 @@ const conversationSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+conversationSchema.index({ leadId: 1, activeLines: 1 });
+conversationSchema.index({ lastInboundLine: 1, lastMessageTime: -1 });
 
 conversationSchema.set("toJSON", {
   virtuals: true,

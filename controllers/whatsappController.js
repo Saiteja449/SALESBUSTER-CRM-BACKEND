@@ -13,6 +13,7 @@ import {
   updateSystemSettings,
   DEFAULT_WELCOME_MESSAGE_TEMPLATE,
   clearAIPauseForLead,
+  resolveSessionId,
 } from "../whatsapp/whatsappService.js";
 import { getMasterModels } from "../services/tenantManager.js";
 
@@ -58,25 +59,27 @@ export const connectClient = async (req, res) => {
     // ================================================================
     if (req.user?.role === "sales person") {
       const repUserId = req.user._id.toString();
-      const targetSessionId = `org_${orgId}_user_${repUserId}`;
+      const lineNumber = Number(req.body.lineNumber || req.body.device || 1) === 2 ? 2 : 1;
+      const targetSessionId = resolveSessionId(orgId, repUserId, lineNumber);
       try {
-        const SessionModel = req.tenantModels?.WhatsAppSession || WhatsAppSessionModel;
-        if (SessionModel) {
-          await SessionModel.updateOne(
-            { sessionId: targetSessionId },
-            { $set: { errorMessage: "" } }
-          );
-        }
+        const SessionModel = req.tenantModels?.WhatsAppSession || WhatsAppSession;
+        await SessionModel.findOneAndUpdate(
+          { sessionId: targetSessionId },
+          { $set: { organizationId: orgId, userId: repUserId, lineNumber, errorMessage: "" } },
+          { upsert: true, setDefaultsOnInsert: true },
+        );
       } catch (e) {}
 
       connectWhatsApp({
         sessionId: targetSessionId,
         organizationId: orgId,
         tenantDbName,
+        lineNumber,
       });
       return res.status(200).json({
-        message: "WhatsApp connection started for your personal line. Please scan the QR code when it appears.",
+        message: `WhatsApp Account ${lineNumber} connection started. Please scan the QR code when it appears.`,
         sessionId: targetSessionId,
+        lineNumber,
       });
     }
     // ================================================================
@@ -133,7 +136,7 @@ export const connectClient = async (req, res) => {
 // @access  Protected
 export const getStatus = async (req, res) => {
   try {
-    const { WhatsAppSessionModel } = getModels(req);
+    const { WhatsAppSessionModel, UserModel, ConversationModel, LeadModel } = getModels(req);
     const orgId = req.user?.organizationId
       ? req.user.organizationId.toString()
       : req.organization?._id
@@ -143,63 +146,58 @@ export const getStatus = async (req, res) => {
     const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
 
     // ================================================================
-    // SALES REP: Return only their personal session status
+    // SALES REP: Return both independently authenticated line slots.
     // ================================================================
     if (req.user?.role === "sales person") {
       const repUserId = req.user._id.toString();
-      const repSessionId = `org_${orgId}_user_${repUserId}`;
+      const user = await UserModel.findById(repUserId).select("phone whatsappLine1Phone whatsappLine2Phone").lean();
+      const sessionIds = [resolveSessionId(orgId, repUserId, 1), resolveSessionId(orgId, repUserId, 2)];
       const memStatuses = getWhatsAppStatus(orgId);
-      const memSession = memStatuses.find((s) => s.sessionId === repSessionId) || {};
-      const dbSession = await WhatsAppSessionModel.findOne({ sessionId: repSessionId }).lean();
-
-      // Resolve status: prefer active in-memory runtime state.
-      // If there is no in-memory session:
-      // - If DB says "connected", trigger auto-heal and report "connecting".
-      // - Otherwise, any stale "connecting" or "qr" in DB from a previous server run is reset to "disconnected".
-      let status = "disconnected";
-      if (memSession.status) {
-        status = memSession.status;
-      } else if (dbSession?.status === "connected") {
-        status = "connecting";
-        connectWhatsApp({ sessionId: repSessionId, organizationId: orgId, tenantDbName }).catch(() => {});
-      } else {
-        status = "disconnected";
-        if (dbSession?.status === "connecting" || dbSession?.status === "qr") {
-          WhatsAppSessionModel.updateOne(
-            { sessionId: repSessionId },
-            { $set: { status: "disconnected", qrCode: "" } }
-          ).catch(() => {});
+      const dbSessions = await WhatsAppSessionModel.find({ sessionId: { $in: sessionIds } }).lean();
+      const assignedLeadIds = await LeadModel.find({
+        $or: [
+          { assignedTo: repUserId },
+          { assignedTo: req.user._id },
+          ...(req.user.name ? [{ assignedTo: new RegExp(`^${req.user.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") }] : []),
+        ],
+      }).distinct("_id");
+      const unreadRows = await ConversationModel.aggregate([
+        { $match: { leadId: { $in: assignedLeadIds } } },
+        { $group: { _id: null,
+          line1: { $sum: { $ifNull: ["$unreadCountByLine.line1", { $cond: [{ $eq: ["$lastInboundLine", 1] }, "$unreadCount", 0] }] } },
+          line2: { $sum: { $ifNull: ["$unreadCountByLine.line2", { $cond: [{ $eq: ["$lastInboundLine", 2] }, "$unreadCount", 0] }] } },
+        } },
+      ]);
+      const unreadCounts = { 1: unreadRows[0]?.line1 || 0, 2: unreadRows[0]?.line2 || 0 };
+      const repSessions = sessionIds.map((sessionId, index) => {
+        const lineNumber = index + 1;
+        const memSession = memStatuses.find((session) => session.sessionId === sessionId) || {};
+        const dbSession = dbSessions.find((session) => session.sessionId === sessionId);
+        let status = memSession.status || "disconnected";
+        if (!memSession.hasSocket && dbSession?.status === "connected" && status === "disconnected") {
+          status = "connecting";
+          connectWhatsApp({ sessionId, organizationId: orgId, tenantDbName, lineNumber }).catch(() => {});
+        } else if (!memSession.status && ["connecting", "qr"].includes(dbSession?.status)) {
+          WhatsAppSessionModel.updateOne({ sessionId }, { $set: { status: "disconnected", qrCode: "" } }).catch(() => {});
         }
-      }
-
-      if ((status === "connected" || status === "qr" || status === "connecting") && dbSession?.errorMessage) {
-        WhatsAppSessionModel.updateOne(
-          { sessionId: repSessionId },
-          { $set: { errorMessage: "" } }
-        ).catch(() => {});
-      }
+        return {
+          sessionId, organizationId: orgId, lineNumber, status,
+          qrCode: status === "qr" ? memSession.qrCode || dbSession?.qrCode || "" : "",
+          connectedPhone: memSession.connectedPhone || dbSession?.connectedPhone || "",
+          connectedName: memSession.connectedName || dbSession?.connectedName || "",
+          isPrimary: lineNumber === 1, isRepSession: true,
+          label: `WhatsApp Account ${lineNumber}`,
+          displayPhone: lineNumber === 1 ? user?.whatsappLine1Phone || user?.phone || "" : user?.whatsappLine2Phone || "",
+          errorMessage: dbSession?.errorMessage || "",
+        };
+      });
 
       return res.status(200).json({
-        sessions: [
-          {
-            sessionId: repSessionId,
-            organizationId: orgId,
-            status,
-            qrCode: status === "qr" ? memSession.qrCode || dbSession?.qrCode || "" : "",
-            connectedPhone: memSession.connectedPhone || dbSession?.connectedPhone || "",
-            connectedName: memSession.connectedName || dbSession?.connectedName || "",
-            isPrimary: true,
-            label: "My WhatsApp Line",
-            isRepSession: true,
-            expectedPhone: req.user.phone || "",
-            errorMessage:
-              status === "connected" || status === "qr" || status === "connecting"
-                ? ""
-                : dbSession?.errorMessage || "",
-          },
-        ],
+        sessions: repSessions,
         isRepSession: true,
-        whatsappLineLimit: 1,
+        whatsappLineLimit: 2,
+        unreadCountLine1: unreadCounts[1],
+        unreadCountLine2: unreadCounts[2],
       });
     }
     // ================================================================
@@ -229,6 +227,7 @@ export const getStatus = async (req, res) => {
           qrCode: status === "qr" ? mem?.qrCode || db?.qrCode || "" : "",
           connectedPhone: mem?.connectedPhone || db?.connectedPhone || "",
           connectedName: mem?.connectedName || db?.connectedName || "",
+          lineNumber: index + 1,
           isPrimary: index === 0,
           label: index === 0 ? "Device 1 (Primary)" : "Device 2 (Secondary)",
         };
@@ -296,6 +295,7 @@ export const getStatus = async (req, res) => {
       qrCode: primaryStatus === "qr" ? primaryMem?.qrCode || primaryDb?.qrCode || "" : "",
       connectedPhone: primaryMem?.connectedPhone || primaryDb?.connectedPhone || "",
       connectedName: primaryMem?.connectedName || primaryDb?.connectedName || "",
+      lineNumber: 1,
       isPrimary: true,
       label: "Device 1 (Primary)",
     });
@@ -336,13 +336,30 @@ export const getStatus = async (req, res) => {
         qrCode: secondaryStatus === "qr" ? secondaryMem?.qrCode || secondaryDb?.qrCode || "" : "",
         connectedPhone: secondaryMem?.connectedPhone || secondaryDb?.connectedPhone || "",
         connectedName: secondaryMem?.connectedName || secondaryDb?.connectedName || "",
+        lineNumber: 2,
         isPrimary: false,
         label: "Device 2 (Secondary)",
       });
     }
 
-    // Include the line limit in the response for frontend adaptation
-    res.status(200).json({ sessions: result, whatsappLineLimit: lineLimit });
+    // Compute org-wide line unread counts for manager sidebar badges
+    const unreadRows = await ConversationModel.aggregate([
+      { $group: {
+        _id: null,
+        line1: { $sum: { $ifNull: ["$unreadCountByLine.line1",
+          { $cond: [{ $eq: ["$lastInboundLine", 1] }, "$unreadCount", 0] }] } },
+        line2: { $sum: { $ifNull: ["$unreadCountByLine.line2",
+          { $cond: [{ $eq: ["$lastInboundLine", 2] }, "$unreadCount", 0] }] } },
+      }},
+    ]);
+
+    // Include the line limit and unread counts in the response for frontend adaptation
+    res.status(200).json({
+      sessions: result,
+      whatsappLineLimit: lineLimit,
+      unreadCountLine1: unreadRows[0]?.line1 || 0,
+      unreadCountLine2: unreadRows[0]?.line2 || 0,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -364,11 +381,13 @@ export const logoutClient = async (req, res) => {
     // ================================================================
     if (req.user?.role === "sales person") {
       const repUserId = req.user._id.toString();
-      const targetSessionId = `org_${orgId}_user_${repUserId}`;
+      const targetLine = Number(req.body.lineNumber) === 2 || req.body.sessionId?.endsWith("_line_2") ? 2 : 1;
+      const targetSessionId = resolveSessionId(orgId, repUserId, targetLine);
       await logoutWhatsApp(targetSessionId);
       return res.status(200).json({
-        message: "Your WhatsApp line has been disconnected successfully.",
+        message: `WhatsApp Account ${targetLine} disconnected successfully.`,
         sessionId: targetSessionId,
+        lineNumber: targetLine,
       });
     }
     // ================================================================
@@ -423,9 +442,8 @@ export const getQR = async (req, res) => {
     // Admins can only access organization line QR codes.
     // ================================================================
     if (req.user?.role === "sales person") {
-      const repSessionId = orgId
-        ? `org_${orgId}_user_${req.user._id.toString()}`
-        : `user_${req.user._id.toString()}`;
+      const lineNumber = Number(req.query.lineNumber || req.query.device) === 2 ? 2 : 1;
+      const repSessionId = resolveSessionId(orgId, req.user._id.toString(), lineNumber);
       if (req.query.sessionId && req.query.sessionId !== repSessionId) {
         return res.status(403).json({
           message:
@@ -490,9 +508,10 @@ export const getQR = async (req, res) => {
 // @access  Public
 export const getConversations = async (req, res) => {
   try {
-    const { ConversationModel } = getModels(req);
+    const { ConversationModel, MessageModel } = getModels(req);
     const userRole = req.user?.role;
     const isSalesRep = userRole === "sales person";
+    const lineNumber = Number(req.query.lineNumber);
 
     const populateOptions = { path: "leadId" };
 
@@ -525,13 +544,51 @@ export const getConversations = async (req, res) => {
       };
     }
 
-    let conversations = await ConversationModel.find()
+    let conversationFilter = {};
+    if ([1, 2].includes(lineNumber)) {
+      const orgId = req.user?.organizationId?.toString() || req.organization?._id?.toString();
+      const orgSessionId = lineNumber === 1 ? `org_${orgId}` : `org_${orgId}_device_2`;
+      const repPattern = orgId
+        ? lineNumber === 1
+          ? new RegExp(`^org_${orgId}_user_[a-fA-F0-9]{24}(?:_line_1)?$`)
+          : new RegExp(`^org_${orgId}_user_[a-fA-F0-9]{24}_line_2$`)
+        : new RegExp(`^user_[a-fA-F0-9]{24}_line_${lineNumber}$`);
+
+      const matchingLeadIds = await MessageModel.distinct("leadId", {
+        $or: [
+          { sessionId: orgSessionId },
+          { sessionId: repPattern },
+          { lineNumber },
+        ],
+      });
+
+      conversationFilter = {
+        $or: [
+          { activeLines: lineNumber },
+          { lastInboundLine: lineNumber },
+          { lastOutboundLine: lineNumber },
+          { lastInboundSessionId: orgSessionId },
+          { lastOutboundSessionId: orgSessionId },
+          { lastInboundSessionId: repPattern },
+          { lastOutboundSessionId: repPattern },
+          { leadId: { $in: matchingLeadIds } },
+        ],
+      };
+    }
+    let conversations = await ConversationModel.find(conversationFilter)
       .populate(populateOptions)
       .sort({ lastMessageTime: -1 });
 
     // Filter out conversations where leadId is null (due to population match failure)
     if (isSalesRep || req.query.userId || req.query.name) {
       conversations = conversations.filter((c) => c.leadId != null);
+    }
+
+    if ([1, 2].includes(lineNumber)) {
+      conversations.forEach((conversation) => {
+        const lineUnread = conversation.unreadCountByLine?.[`line${lineNumber}`];
+        conversation.unreadCount = lineUnread ?? (conversation.lastInboundLine === lineNumber ? conversation.unreadCount : 0);
+      });
     }
 
     res.status(200).json(conversations);
@@ -546,6 +603,7 @@ export const getConversations = async (req, res) => {
 export const getMessages = async (req, res) => {
   try {
     const { leadId } = req.params;
+    const lineNumber = Number(req.query.lineNumber);
     if (!leadId) {
       return res.status(400).json({ message: "leadId is required." });
     }
@@ -571,10 +629,25 @@ export const getMessages = async (req, res) => {
       }
     }
 
-    // Reset unread count for this conversation since the agent is loading it
-    await ConversationModel.findOneAndUpdate({ leadId }, { unreadCount: 0 });
+    // Clear only this line's unread count so the other account badge remains intact.
+    if (req.user?.role === "sales person" && [1, 2].includes(lineNumber)) {
+      const conversation = await ConversationModel.findOne({ leadId }).lean();
+      const lineKey = `line${lineNumber}`;
+      const previousLineUnread = conversation?.unreadCountByLine?.[lineKey] ??
+        (conversation?.lastInboundLine === lineNumber ? conversation?.unreadCount || 0 : 0);
+      await ConversationModel.findOneAndUpdate({ leadId }, {
+        $set: {
+          [`unreadCountByLine.${lineKey}`]: 0,
+          unreadCount: Math.max(0, (conversation?.unreadCount || 0) - previousLineUnread),
+        },
+      });
+    } else {
+      await ConversationModel.findOneAndUpdate({ leadId }, { unreadCount: 0 });
+    }
 
-    const messages = await MessageModel.find({ leadId }).sort({ timestamp: 1 });
+    const messageFilter = { leadId };
+    if (req.query.strictLine === "true" && [1, 2].includes(lineNumber)) messageFilter.lineNumber = lineNumber;
+    const messages = await MessageModel.find(messageFilter).sort({ timestamp: 1 });
     res.status(200).json(messages);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -661,8 +734,19 @@ export const sendMessage = async (req, res) => {
         });
       }
 
-      // Always route to the sales rep's personal session
-      targetSessionId = orgId ? `org_${orgId}_user_${repId}` : `user_${repId}`;
+      const lineNumber = Number(req.body.lineNumber);
+      if (![1, 2].includes(lineNumber)) {
+        return res.status(400).json({ message: "lineNumber must be 1 or 2." });
+      }
+      targetSessionId = resolveSessionId(orgId, repId, lineNumber);
+      const targetStatus = getWhatsAppStatus(orgId).find((session) => session.sessionId === targetSessionId);
+      if (targetStatus?.status !== "connected") {
+        return res.status(400).json({
+          message: `WhatsApp Account ${lineNumber} is offline. Reconnect it or switch accounts.`,
+          lineDisconnected: true,
+          attemptedLine: lineNumber,
+        });
+      }
     } else if (orgId) {
       let lineLimit = 1;
       try {
@@ -671,10 +755,21 @@ export const sendMessage = async (req, res) => {
         if (org) lineLimit = org.whatsappLineLimit || 1;
       } catch (e) {}
 
+      const requestedLine = Number(req.body.lineNumber) || (req.body.device === 2 ? 2 : 1);
       if (!targetSessionId) {
-        targetSessionId = req.body.device === 2 && lineLimit >= 2 ? `org_${orgId}_device_2` : `org_${orgId}`;
+        if (requestedLine === 2 && lineLimit >= 2) {
+          targetSessionId = `org_${orgId}_device_2`;
+        } else if (requestedLine === 2 && lineLimit < 2) {
+          return res.status(403).json({
+            message: "Your organization plan allows only 1 WhatsApp channel. Upgrade to send from Account 2.",
+          });
+        } else {
+          targetSessionId = `org_${orgId}`;
+        }
       } else if (targetSessionId.includes("device_2") && lineLimit < 2) {
-        targetSessionId = `org_${orgId}`;
+        return res.status(403).json({
+          message: "Your organization plan allows only 1 WhatsApp channel. Upgrade to send from Account 2.",
+        });
       }
     }
 
@@ -686,6 +781,8 @@ export const sendMessage = async (req, res) => {
         organizationId: orgId,
         tenantModels: req.tenantModels,
         sessionId: targetSessionId,
+        lineNumber: senderRole === "sales person" ? Number(req.body.lineNumber) : (targetSessionId?.includes("device_2") ? 2 : 1),
+        salesRepId: senderRole === "sales person" ? req.user._id : null,
       },
     );
     res.status(200).json(messageRecord);
@@ -1046,32 +1143,43 @@ export const getTeamWhatsAppStatuses = async (req, res) => {
 
     // Fetch all active sales reps
     const reps = await UserModel.find({ role: "sales person", status: "active" })
-      .select("name phone email _id")
+      .select("name phone email whatsappLine1Phone whatsappLine2Phone _id")
       .lean();
 
     const allMemSessions = getWhatsAppStatus(orgId);
 
     const result = await Promise.all(
       reps.map(async (rep) => {
-        const repSessionId = `org_${orgId}_user_${rep._id.toString()}`;
-        const memSession = allMemSessions.find((s) => s.sessionId === repSessionId) || {};
-        const dbSession = await WhatsAppSessionModel.findOne({ sessionId: repSessionId })
-          .select("status connectedPhone connectedName updatedAt errorMessage")
-          .lean();
-
-        const status = memSession.status || dbSession?.status || "disconnected";
+        const lines = await Promise.all([1, 2].map(async (lineNumber) => {
+          const repSessionId = resolveSessionId(orgId, rep._id.toString(), lineNumber);
+          const memSession = allMemSessions.find((session) => session.sessionId === repSessionId) || {};
+          const dbSession = await WhatsAppSessionModel.findOne({ sessionId: repSessionId })
+            .select("status connectedPhone connectedName updatedAt errorMessage lineNumber")
+            .lean();
+          return {
+            lineNumber, sessionId: repSessionId,
+            status: memSession.status || dbSession?.status || "disconnected",
+            connectedPhone: memSession.connectedPhone || dbSession?.connectedPhone || "",
+            connectedName: memSession.connectedName || dbSession?.connectedName || "",
+            displayPhone: lineNumber === 1 ? rep.whatsappLine1Phone || rep.phone || "" : rep.whatsappLine2Phone || "",
+            lastSeen: dbSession?.updatedAt || null,
+            errorMessage: dbSession?.errorMessage || "",
+          };
+        }));
+        const primary = lines[0];
 
         return {
           userId: rep._id,
           name: rep.name || "Unknown",
           email: rep.email || "",
           profilePhone: rep.phone || "",
-          sessionId: repSessionId,
-          status,
-          connectedPhone: memSession.connectedPhone || dbSession?.connectedPhone || "",
-          connectedName: memSession.connectedName || dbSession?.connectedName || "",
-          lastSeen: dbSession?.updatedAt || null,
-          errorMessage: dbSession?.errorMessage || "",
+          sessionId: primary.sessionId,
+          status: primary.status,
+          connectedPhone: primary.connectedPhone,
+          connectedName: primary.connectedName,
+          lastSeen: primary.lastSeen,
+          errorMessage: primary.errorMessage,
+          lines,
         };
       })
     );
@@ -1114,11 +1222,12 @@ export const requestPairingCode = async (req, res) => {
     let targetSessionId;
 
     // ================================================================
-    // SALES REP: Use personal session
+    // SALES REP: Use personal session (line 1 or line 2)
     // ================================================================
     if (req.user?.role === "sales person") {
       const repUserId = req.user._id.toString();
-      targetSessionId = `org_${orgId}_user_${repUserId}`;
+      const repLineNumber = Number(req.body.lineNumber) === 2 ? 2 : 1;
+      targetSessionId = resolveSessionId(orgId, repUserId, repLineNumber);
 
       // Clear any previous error messages for clean retry
       try {
@@ -1126,7 +1235,7 @@ export const requestPairingCode = async (req, res) => {
         if (SessionModel) {
           await SessionModel.updateOne(
             { sessionId: targetSessionId },
-            { $set: { errorMessage: "" } }
+            { $set: { errorMessage: "", lineNumber: repLineNumber } }
           );
         }
       } catch (e) {}

@@ -34,6 +34,8 @@ const userSchema = mongoose.Schema(
       type: String,
       default: "",
     },
+    whatsappLine1Phone: { type: String, default: "", trim: true },
+    whatsappLine2Phone: { type: String, default: "", trim: true },
     status: {
       type: String,
       enum: ["active", "inactive"],

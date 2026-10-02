@@ -61,6 +61,19 @@ const reconnectTimers = new Map(); // sessionId -> timeoutHandle
 
 const sessions = {}; // map of sessionId -> { sock, status, qrCode, connectedPhone, connectedName, organizationId, tenantDbName }
 
+export const resolveSessionId = (organizationId, userId = null, lineNumber = 1) => {
+  const line = Number(lineNumber) === 2 ? 2 : 1;
+  if (userId) return organizationId
+    ? `org_${organizationId}_user_${userId}_line_${line}`
+    : `user_${userId}_line_${line}`;
+  return line === 2 ? `org_${organizationId}_device_2` : `org_${organizationId}`;
+};
+
+export const normalizeRepSessionId = (sessionId) => {
+  if (!sessionId) return sessionId;
+  return sessionId.replace(/^(org_[a-fA-F0-9]{24}_user_[a-fA-F0-9]{24})$/, "$1_line_1");
+};
+
 /**
  * Schedules a delayed reconnect for a session, coordinating between the close handler and watchdog.
  * Clears any existing timer so duplicate reconnects are never queued for the same session.
@@ -75,6 +88,7 @@ const scheduleReconnect = (sessionId, delayMs = RECONNECT_DELAY_MS) => {
       sessionId,
       organizationId: sessions[sessionId]?.organizationId,
       tenantDbName: sessions[sessionId]?.tenantDbName,
+      lineNumber: sessions[sessionId]?.lineNumber,
     });
   }, delayMs);
   reconnectTimers.set(sessionId, timer);
@@ -201,8 +215,15 @@ const updateSessionStatus = async (
     const SessionModel = models?.WhatsAppSession || WhatsAppSession;
     let session = await SessionModel.findOne({ sessionId });
     if (!session) {
-      session = new SessionModel({ sessionId });
+      const repMatch = sessionId.match(/_user_([a-fA-F0-9]{24})(?:_line_([12]))?$/);
+      session = new SessionModel({
+        sessionId,
+        lineNumber: sessions[sessionId]?.lineNumber || Number(repMatch?.[2] || 1),
+        userId: repMatch?.[1] || null,
+        organizationId: sessions[sessionId]?.organizationId || null,
+      });
     }
+    session.lineNumber = sessions[sessionId]?.lineNumber || session.lineNumber || 1;
     session.status = dbStatus;
     session.qrCode = qr;
     if (phone) session.connectedPhone = phone;
@@ -218,6 +239,7 @@ const updateSessionStatus = async (
         qrCode: qr,
         connectedPhone: phone || session.connectedPhone,
         connectedName: name || session.connectedName,
+        lineNumber: sessions[sessionId]?.lineNumber || session.lineNumber || 1,
       };
 
       // Emit strictly to organization room if org is known, else broadcast for legacy single-tenant
@@ -233,19 +255,23 @@ const updateSessionStatus = async (
 };
 
 export const connectWhatsApp = async (param1, param2, param3) => {
-  let sessionId, organizationId, tenantDbName, usePairingCode, pairingPhone;
+  let sessionId, organizationId, tenantDbName, usePairingCode, pairingPhone, lineNumber;
   if (typeof param1 === "object" && param1 !== null) {
     sessionId = param1.sessionId;
     organizationId = param1.organizationId;
     tenantDbName = param1.tenantDbName;
     usePairingCode = param1.usePairingCode || false;
     pairingPhone = param1.pairingPhone || "";
+    lineNumber = param1.lineNumber != null
+      ? (Number(param1.lineNumber) === 2 ? 2 : 1)
+      : (/(?:_line_2|device_2)$/.test(param1.sessionId || "") ? 2 : 1);
   } else {
     sessionId = param1;
     organizationId = param2;
     tenantDbName = param3;
     usePairingCode = false;
     pairingPhone = "";
+    lineNumber = /(?:_line_2|device_2)$/.test(sessionId || "") ? 2 : 1;
   }
 
   if (!sessionId && organizationId) {
@@ -266,6 +292,7 @@ export const connectWhatsApp = async (param1, param2, param3) => {
   }
   if (organizationId) sessions[sessionId].organizationId = organizationId;
   if (tenantDbName) sessions[sessionId].tenantDbName = tenantDbName;
+  sessions[sessionId].lineNumber = lineNumber;
 
   // Synchronous duplicate guard: if already connected or actively connecting, return immediately.
   // Setting status = "connecting" synchronously BEFORE any await closes the race window
@@ -479,7 +506,7 @@ export const connectWhatsApp = async (param1, param2, param3) => {
           // for multi-user direct routing and messaging ownership.
           // =========================================================
           if (sessionId.includes("_user_")) {
-            const userMatch = sessionId.match(/_user_([a-fA-F0-9]{24})$/);
+            const userMatch = sessionId.match(/_user_([a-fA-F0-9]{24})(?:_line_([12]))?$/);
             if (!userMatch) {
               console.warn(`[WhatsApp] Invalid rep sessionId format: ${sessionId}`);
               try { sock.end(); } catch (e) {}
@@ -487,6 +514,8 @@ export const connectWhatsApp = async (param1, param2, param3) => {
             }
 
             const repUserId = userMatch[1];
+            const slotLineNumber = Number(userMatch[2] || 1);
+            sessions[sessionId].lineNumber = slotLineNumber;
 
             try {
               const models = await getModelsForSession(sessionId);
@@ -494,8 +523,7 @@ export const connectWhatsApp = async (param1, param2, param3) => {
               await SessionModel.findOneAndUpdate(
                 { sessionId },
                 {
-                  userId: repUserId,
-                  errorMessage: "",
+                  $set: { userId: repUserId, lineNumber: slotLineNumber, organizationId, status: "connected", connectedPhone: phone, connectedName: name, errorMessage: "", qrCode: "" },
                 },
                 { upsert: true }
               );
@@ -854,9 +882,10 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
     let assignedRepName = "Sales Representative";
 
     // Detect if this is a rep's personal session — used for direct assignment and message tagging
-    const repUserMatch = sessionId.match(/_user_([a-fA-F0-9]{24})$/);
+    const repUserMatch = sessionId.match(/_user_([a-fA-F0-9]{24})(?:_line_([12]))?$/);
     const isRepSession = !!repUserMatch;
     const repSessionUserId = repUserMatch ? repUserMatch[1] : null;
+    const lineNumber = Number(repUserMatch?.[2] || 1);
 
     if (!lead) {
       // Do NOT create a lead if the identifier is a LID (not a real phone number)
@@ -1003,6 +1032,8 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       // Multi-user session traceability
       sessionId: sessionId || null,
       salesRepId: isRepSession && repSessionUserId ? repSessionUserId : null,
+      lineNumber,
+      linePhone: sessions[sessionId]?.connectedPhone || "",
     });
 
     // 4. Update Conversation session meta
@@ -1014,12 +1045,35 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
     }
 
     if (fromMe) {
-      conversation.unreadCount = 0;
+      if (isRepSession) {
+        const lineKey = `line${lineNumber}`;
+        const otherKey = `line${lineNumber === 1 ? 2 : 1}`;
+        conversation.unreadCountByLine[lineKey] = 0;
+        conversation.unreadCount = conversation.unreadCountByLine[otherKey] || 0;
+      } else {
+        conversation.unreadCount = 0;
+        conversation.unreadCountByLine.line1 = 0;
+        conversation.unreadCountByLine.line2 = 0;
+      }
     } else {
       conversation.unreadCount += 1;
+      if (isRepSession) {
+        const lineKey = `line${lineNumber}`;
+        conversation.unreadCountByLine[lineKey] = (conversation.unreadCountByLine[lineKey] || 0) + 1;
+      }
     }
     conversation.lastMessage = textContent;
     conversation.lastMessageTime = timestamp;
+    if (isRepSession) {
+      if (fromMe) {
+        conversation.lastOutboundLine = lineNumber;
+        conversation.lastOutboundSessionId = sessionId;
+      } else {
+        conversation.lastInboundLine = lineNumber;
+        conversation.lastInboundSessionId = sessionId;
+      }
+      conversation.activeLines.addToSet(lineNumber);
+    }
     await conversation.save();
 
     // 5. Broadcast message to frontend clients with org room isolation
@@ -1033,6 +1087,8 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       const convMetaPayload = {
         leadId: lead._id,
         timestamp: timestamp || new Date(),
+        lineNumber: isRepSession ? lineNumber : undefined,
+        salesRepId: isRepSession ? repSessionUserId : undefined,
       };
 
       if (orgId) {
@@ -1423,6 +1479,11 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
         const outgoingId = sendResult.key.id;
         const outboundTimestamp = new Date();
 
+        const repUserMatch = sessionId ? sessionId.match(/_user_([a-fA-F0-9]{24})(?:_line_([12]))?$/) : null;
+        const isRepSession = !!repUserMatch;
+        const repSessionUserId = repUserMatch ? repUserMatch[1] : null;
+        const repLineNumber = Number(repUserMatch?.[2] || sessions[sessionId]?.lineNumber || 1);
+
         // Save outgoing message to tenant DB
         const replyRecord = await MessageModel.create({
           messageId: outgoingId,
@@ -1436,6 +1497,10 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
           delivered: true,
           read: false,
           status: "sent",
+          sessionId: sessionId || null,
+          salesRepId: isRepSession && repSessionUserId ? repSessionUserId : null,
+          lineNumber: repLineNumber,
+          linePhone: sessions[sessionId]?.connectedPhone || "",
         });
 
         // Update Conversation meta
@@ -1444,6 +1509,12 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
           {
             lastMessage: replyText,
             lastMessageTime: outboundTimestamp,
+            ...(isRepSession
+              ? {
+                  lastOutboundLine: repLineNumber,
+                  lastOutboundSessionId: sessionId,
+                }
+              : {}),
           },
           { upsert: true }
         );
@@ -1455,6 +1526,8 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
             leadId: lead._id,
             lastMessage: replyText,
             lastMessageTime: outboundTimestamp,
+            lineNumber: isRepSession ? repLineNumber : undefined,
+            salesRepId: isRepSession ? repSessionUserId : undefined,
           };
           if (orgId) {
             io.to(`org_${orgId}`).emit("conversation_updated", updatePayload);
@@ -1504,7 +1577,7 @@ export const sendMessageFromCRM = async (
   senderName = "Agent",
   context = {},
 ) => {
-  let { organizationId, tenantModels, sessionId } = context;
+  let { organizationId, tenantModels, sessionId, lineNumber = 1, salesRepId = null } = context;
   if (!sessionId && organizationId) {
     sessionId = `org_${organizationId}`;
   }
@@ -1599,15 +1672,33 @@ export const sendMessageFromCRM = async (
     delivered: true,
     read: false,
     status: "sent",
+    sessionId: sessionId || null,
+    salesRepId,
+    lineNumber: Number(lineNumber) === 2 ? 2 : 1,
+    linePhone: sessions[sessionId]?.connectedPhone || "",
   });
 
   // Update Conversation details
+  const lineKey = `line${Number(lineNumber) === 2 ? 2 : 1}`;
+  const existingConversation = await ConversationModel.findOne({ leadId: lead._id }).lean();
+  const previousLineUnread = salesRepId
+    ? existingConversation?.unreadCountByLine?.[lineKey] ??
+      (existingConversation?.lastInboundLine === Number(lineNumber) ? existingConversation?.unreadCount || 0 : 0)
+    : existingConversation?.unreadCount || 0;
   await ConversationModel.findOneAndUpdate(
     { leadId: lead._id },
     {
-      lastMessage: messageText,
-      lastMessageTime: timestamp,
-      unreadCount: 0,
+      $set: {
+        lastMessage: messageText,
+        lastMessageTime: timestamp,
+        ...(salesRepId
+          ? { [`unreadCountByLine.${lineKey}`]: 0 }
+          : { "unreadCountByLine.line1": 0, "unreadCountByLine.line2": 0 }),
+        unreadCount: Math.max(0, (existingConversation?.unreadCount || 0) - previousLineUnread),
+        lastOutboundLine: Number(lineNumber) === 2 ? 2 : 1,
+        lastOutboundSessionId: sessionId || "",
+      },
+      ...(salesRepId ? { $addToSet: { activeLines: Number(lineNumber) === 2 ? 2 : 1 } } : {}),
     },
     { upsert: true }
   );
@@ -1621,6 +1712,8 @@ export const sendMessageFromCRM = async (
       unreadCount: 0,
       lastMessage: messageText,
       lastMessageTime: timestamp,
+      lineNumber: Number(lineNumber) === 2 ? 2 : 1,
+      salesRepId: salesRepId || null,
     };
     if (organizationId) {
       io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
@@ -1643,6 +1736,8 @@ export const getWhatsAppStatus = (organizationId = null) => {
     qrCode: sessions[sessionId].qrCode,
     connectedPhone: sessions[sessionId].connectedPhone,
     connectedName: sessions[sessionId].connectedName,
+    hasSocket: !!sessions[sessionId].sock,
+    lineNumber: sessions[sessionId].lineNumber || Number(sessionId.match(/_line_([12])$/)?.[1] || 1),
   }));
 
   if (organizationId) {
@@ -2198,7 +2293,7 @@ export const initAllOrganizationWhatsAppConnections = async () => {
         // ================================================================
         try {
           const userSessionCreds = await models.WhatsAppAuthState.find({
-            sessionId: { $regex: `^org_${orgId}_user_[a-fA-F0-9]{24}$` },
+            sessionId: { $regex: `^org_${orgId}_user_[a-fA-F0-9]{24}(?:_line_[12])?$` },
             type: "creds",
           });
           if (userSessionCreds && userSessionCreds.length > 0) {
@@ -2210,6 +2305,7 @@ export const initAllOrganizationWhatsAppConnections = async () => {
                 sessionId: cred.sessionId,
                 organizationId: orgId,
                 tenantDbName,
+                lineNumber: Number(cred.sessionId.match(/_line_([12])$/)?.[1] || 1),
               }).catch((err) =>
                 console.error(`[WhatsApp] Failed to auto-connect rep session ${cred.sessionId}:`, err)
               );
@@ -2303,7 +2399,7 @@ export const startWhatsAppWatchdog = () => {
           // ================================================================
           try {
             const userSessionCreds = await models.WhatsAppAuthState.find({
-              sessionId: { $regex: `^org_${orgId}_user_[a-fA-F0-9]{24}$` },
+              sessionId: { $regex: `^org_${orgId}_user_[a-fA-F0-9]{24}(?:_line_[12])?$` },
               type: "creds",
             });
             for (const cred of userSessionCreds) {
@@ -2320,6 +2416,7 @@ export const startWhatsAppWatchdog = () => {
                   sessionId: sId,
                   organizationId: orgId,
                   tenantDbName,
+                  lineNumber: Number(cred.sessionId.match(/_line_([12])$/)?.[1] || 1),
                 }).catch((err) =>
                   console.error(`[WhatsApp Watchdog] Rep session reconnect failed for ${sId}:`, err)
                 );

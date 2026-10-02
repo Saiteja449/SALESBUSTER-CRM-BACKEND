@@ -6,7 +6,9 @@ const whatsappSessionSchema = new mongoose.Schema(
       type: String,
       required: true,
       unique: true,
+      index: true,
     },
+    lineNumber: { type: Number, enum: [1, 2], default: 1 },
     status: {
       type: String,
       enum: ["disconnected", "qr", "connecting", "connected"],
@@ -36,12 +38,6 @@ const whatsappSessionSchema = new mongoose.Schema(
       ref: "Organization",
       default: null,
     },
-    // The phone number the rep is expected to scan (from their profile)
-    expectedPhone: {
-      type: String,
-      default: "",
-    },
-    // Populated when phone verification fails (phone_mismatch error)
     errorMessage: {
       type: String,
       default: "",
@@ -49,6 +45,8 @@ const whatsappSessionSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+whatsappSessionSchema.index({ organizationId: 1, userId: 1, lineNumber: 1 });
 
 whatsappSessionSchema.set("toJSON", {
   virtuals: true,

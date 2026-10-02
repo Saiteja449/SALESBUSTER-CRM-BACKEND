@@ -89,6 +89,8 @@ const messageSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+    lineNumber: { type: Number, enum: [1, 2], default: 1 },
+    linePhone: { type: String, default: "" },
   },
   { timestamps: true }
 );
