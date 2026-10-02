@@ -685,20 +685,42 @@ export const getConversations = async (req, res) => {
             isAssignedPending: true,
             activeLines: [lineNumber],
             assignedInitiationLine: repDefaultLine,
+            lastContactedWhatsAppNumber: lead.lastContactedWhatsApp?.number || "",
+            lastContactedLine: repDefaultLine,
+            lastContactedTime: null,
+            lastContactedDirection: "none",
           }));
           conversations = [...conversations, ...pendingItems];
         }
       }
     }
 
+    // Format conversations with Last Contacted WhatsApp Tracker attributes
+    const formattedConversations = conversations.map((c) => {
+      const conv = c.toObject ? c.toObject() : { ...c };
+      const effectiveLine = conv.lastOutboundLine || conv.lastInboundLine || (lineNumber && lineNumber !== 0 ? lineNumber : 1);
+      const trackerNumber = conv.lastContactedWhatsAppNumber || conv.leadId?.lastContactedWhatsApp?.number || "";
+      const trackerLine = conv.lastContactedLine || effectiveLine;
+      const trackerTime = conv.lastContactedTime || conv.leadId?.lastContactedWhatsApp?.contactedAt || conv.lastMessageTime;
+      const trackerDirection = conv.lastContactedDirection || (conv.lastOutboundLine ? "outbound" : "inbound");
+
+      return {
+        ...conv,
+        lastContactedWhatsAppNumber: trackerNumber,
+        lastContactedLine: trackerLine,
+        lastContactedTime: trackerTime,
+        lastContactedDirection: trackerDirection,
+      };
+    });
+
     if ([1, 2].includes(lineNumber)) {
-      conversations.forEach((conversation) => {
+      formattedConversations.forEach((conversation) => {
         const lineUnread = conversation.unreadCountByLine?.[`line${lineNumber}`];
         conversation.unreadCount = lineUnread ?? (conversation.lastInboundLine === lineNumber ? conversation.unreadCount : 0);
       });
     }
 
-    res.status(200).json(conversations);
+    res.status(200).json(formattedConversations);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

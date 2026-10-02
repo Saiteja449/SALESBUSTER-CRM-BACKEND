@@ -195,6 +195,14 @@ const leadSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // Tracker: Which of our business WhatsApp numbers and accounts contacted this lead last
+    lastContactedWhatsApp: {
+      number: { type: String, default: "" },
+      lineNumber: { type: Number, enum: [1, 2], default: 1 },
+      direction: { type: String, enum: ["inbound", "outbound"], default: "outbound" },
+      contactedAt: { type: Date, default: null },
+      sessionId: { type: String, default: "" },
+    },
     recordings: [
       {
         name: String,

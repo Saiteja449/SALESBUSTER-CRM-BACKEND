@@ -1036,7 +1036,18 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       linePhone: sessions[sessionId]?.connectedPhone || "",
     });
 
-    // 4. Update Conversation session meta
+    // 4. Update Conversation session meta & Last Contacted WhatsApp Tracker
+    let linePhone = sessions[sessionId]?.connectedPhone || "";
+    if (!linePhone && sessionId) {
+      try {
+        const SessionModel = models?.WhatsAppSession || WhatsAppSession;
+        if (SessionModel) {
+          const dbS = await SessionModel.findOne({ sessionId }).select("connectedPhone").lean();
+          if (dbS?.connectedPhone) linePhone = dbS.connectedPhone;
+        }
+      } catch (e) {}
+    }
+
     let conversation = await ConversationModel.findOne({ leadId: lead._id });
     if (!conversation) {
       conversation = new ConversationModel({
@@ -1064,6 +1075,16 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
     }
     conversation.lastMessage = textContent;
     conversation.lastMessageTime = timestamp;
+
+    // Contact Tracker
+    if (linePhone) {
+      conversation.lastContactedWhatsAppNumber = linePhone;
+    }
+    conversation.lastContactedLine = lineNumber || 1;
+    conversation.lastContactedTime = timestamp;
+    conversation.lastContactedDirection = fromMe ? "outbound" : "inbound";
+    conversation.lastContactedSessionId = sessionId || "";
+
     if (isRepSession) {
       if (fromMe) {
         conversation.lastOutboundLine = lineNumber;
@@ -1075,6 +1096,21 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       conversation.activeLines.addToSet(lineNumber);
     }
     await conversation.save();
+
+    // Also persist tracker on Lead
+    try {
+      await LeadModel.findByIdAndUpdate(lead._id, {
+        $set: {
+          lastContactedWhatsApp: {
+            number: linePhone || conversation.lastContactedWhatsAppNumber || "",
+            lineNumber: lineNumber || 1,
+            direction: fromMe ? "outbound" : "inbound",
+            contactedAt: timestamp,
+            sessionId: sessionId || "",
+          },
+        },
+      });
+    } catch (e) {}
 
     // 5. Broadcast message to frontend clients with org room isolation
     const io = getIO();
@@ -1678,7 +1714,18 @@ export const sendMessageFromCRM = async (
     linePhone: sessions[sessionId]?.connectedPhone || "",
   });
 
-  // Update Conversation details
+  let linePhone = sessions[sessionId]?.connectedPhone || "";
+  if (!linePhone && sessionId) {
+    try {
+      const SessionModel = models?.WhatsAppSession || WhatsAppSession;
+      if (SessionModel) {
+        const dbS = await SessionModel.findOne({ sessionId }).select("connectedPhone").lean();
+        if (dbS?.connectedPhone) linePhone = dbS.connectedPhone;
+      }
+    } catch (e) {}
+  }
+
+  // Update Conversation details with Contact Tracker
   const lineKey = `line${Number(lineNumber) === 2 ? 2 : 1}`;
   const existingConversation = await ConversationModel.findOne({ leadId: lead._id }).lean();
   const previousLineUnread = salesRepId
@@ -1697,11 +1744,31 @@ export const sendMessageFromCRM = async (
         unreadCount: Math.max(0, (existingConversation?.unreadCount || 0) - previousLineUnread),
         lastOutboundLine: Number(lineNumber) === 2 ? 2 : 1,
         lastOutboundSessionId: sessionId || "",
+        lastContactedWhatsAppNumber: linePhone,
+        lastContactedLine: Number(lineNumber) === 2 ? 2 : 1,
+        lastContactedTime: timestamp,
+        lastContactedDirection: "outbound",
+        lastContactedSessionId: sessionId || "",
       },
       ...(salesRepId ? { $addToSet: { activeLines: Number(lineNumber) === 2 ? 2 : 1 } } : {}),
     },
     { upsert: true }
   );
+
+  // Update Lead tracker
+  try {
+    await LeadModel.findByIdAndUpdate(lead._id, {
+      $set: {
+        lastContactedWhatsApp: {
+          number: linePhone,
+          lineNumber: Number(lineNumber) === 2 ? 2 : 1,
+          direction: "outbound",
+          contactedAt: timestamp,
+          sessionId: sessionId || "",
+        },
+      },
+    });
+  } catch (e) {}
 
   // Emit socket updates
   const io = getIO();
@@ -1714,6 +1781,10 @@ export const sendMessageFromCRM = async (
       lastMessageTime: timestamp,
       lineNumber: Number(lineNumber) === 2 ? 2 : 1,
       salesRepId: salesRepId || null,
+      lastContactedWhatsAppNumber: linePhone,
+      lastContactedLine: Number(lineNumber) === 2 ? 2 : 1,
+      lastContactedTime: timestamp,
+      lastContactedDirection: "outbound",
     };
     if (organizationId) {
       io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
@@ -2129,7 +2200,8 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
         sessionId: targetSessionId,
       });
 
-      // Update or Create Conversation
+      // Update or Create Conversation with Contact Tracker
+      const welcomePhone = targetPhone || sessions[targetSessionId]?.connectedPhone || "";
       await ConversationModel.findOneAndUpdate(
         { leadId: lead._id },
         {
@@ -2140,11 +2212,30 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
             lastOutboundLine: targetLineNumber,
             lastOutboundSessionId: targetSessionId,
             unreadCount: 0,
+            lastContactedWhatsAppNumber: welcomePhone,
+            lastContactedLine: targetLineNumber,
+            lastContactedTime: timestamp,
+            lastContactedDirection: "outbound",
+            lastContactedSessionId: targetSessionId,
           },
           $addToSet: { activeLines: targetLineNumber },
         },
         { upsert: true, new: true, setDefaultsOnInsert: true },
       );
+
+      try {
+        await LeadModel.findByIdAndUpdate(lead._id, {
+          $set: {
+            lastContactedWhatsApp: {
+              number: welcomePhone,
+              lineNumber: targetLineNumber,
+              direction: "outbound",
+              contactedAt: timestamp,
+              sessionId: targetSessionId,
+            },
+          },
+        });
+      } catch (e) {}
 
       // Emit socket updates
       const io = getIO();

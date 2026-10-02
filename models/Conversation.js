@@ -22,6 +22,12 @@ const conversationSchema = new mongoose.Schema(
     lastInboundSessionId: { type: String, default: "" },
     lastOutboundSessionId: { type: String, default: "" },
     activeLines: { type: [Number], default: [], index: true },
+    // Tracker: Our business WhatsApp number & line that contacted this lead last
+    lastContactedWhatsAppNumber: { type: String, default: "" },
+    lastContactedLine: { type: Number, enum: [1, 2], default: 1 },
+    lastContactedTime: { type: Date, default: null },
+    lastContactedDirection: { type: String, enum: ["inbound", "outbound"], default: "outbound" },
+    lastContactedSessionId: { type: String, default: "" },
     lastMessage: {
       type: String,
       default: "",
