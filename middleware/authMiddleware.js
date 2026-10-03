@@ -18,6 +18,9 @@ export const protect = async (req, res, next) => {
   } else if (req.headers["x-access-token"]) {
     token = req.headers["x-access-token"];
     tokenSource = "x-access-token";
+  } else if (req.body && req.body.token) {
+    token = String(req.body.token).replace(/^Bearer\s+/i, "").trim();
+    tokenSource = "req.body.token";
   } else if (
     req.headers["x-admin-key"] &&
     (req.headers["x-admin-key"].startsWith("ey") ||

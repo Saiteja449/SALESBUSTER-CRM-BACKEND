@@ -1777,3 +1777,258 @@ export const handleMissedCall = async (req, res) => {
     });
   }
 };
+
+// @desc    Assign sales rep to lead by phone number if he is not already the assigned sales rep
+// @route   POST /api/leads/inbound-call
+// @access  Protected
+export const handleInboundCall = async (req, res) => {
+  console.log("\n==================== [handleInboundCall] START ====================");
+  console.log(`[handleInboundCall] [Step 1] Request received at ${new Date().toISOString()}`);
+  console.log("[handleInboundCall] [Step 1] Request Body:", JSON.stringify(req.body, null, 2));
+  console.log("[handleInboundCall] [Step 1] Auth User from Token:", req.user ? {
+    id: req.user._id || req.user.id,
+    name: req.user.name,
+    email: req.user.email,
+    role: req.user.role,
+  } : "None");
+
+  try {
+    const { LeadModel, UserModel, NotificationModel, FollowupModel } = getModels(req);
+
+    // 1. Extract phone number (accepts phone, number, or phoneNumber)
+    const rawPhone = String(req.body.phone || req.body.number || req.body.phoneNumber || "").trim();
+
+    if (!rawPhone) {
+      console.warn("[handleInboundCall] [Step 1] REJECTED: Phone number is required.");
+      console.log("==================== [handleInboundCall] FAILED ====================\n");
+      return res.status(400).json({
+        success: false,
+        message: "Phone number (phone or number) is required.",
+      });
+    }
+
+    // 2. Resolve target sales rep (from salesRepId, id, salespersonId in body OR from verified auth token)
+    let targetRepId = String(
+      req.body.salesRepId ||
+      req.body.id ||
+      req.body.salespersonId ||
+      req.body.userId ||
+      req.user?._id ||
+      req.user?.id ||
+      ""
+    ).trim();
+
+    if (!targetRepId) {
+      console.warn("[handleInboundCall] [Step 1] REJECTED: Sales rep ID or Bearer token is required.");
+      console.log("==================== [handleInboundCall] FAILED ====================\n");
+      return res.status(400).json({
+        success: false,
+        message: "Sales rep identification is required (pass salesRepId in body or Authorization token in header).",
+      });
+    }
+
+    // Fetch user details for targetRepId
+    let targetRepName = req.user?.name || "Sales Representative";
+    if (mongoose.Types.ObjectId.isValid(targetRepId)) {
+      const repDoc = await UserModel.findById(targetRepId).select("name email role");
+      if (repDoc) {
+        targetRepName = repDoc.name || targetRepName;
+        targetRepId = repDoc._id.toString();
+      }
+    } else {
+      const repDoc = await UserModel.findOne({ name: targetRepId }).select("name email role");
+      if (repDoc) {
+        targetRepName = repDoc.name;
+        targetRepId = repDoc._id.toString();
+      }
+    }
+
+    console.log(`[handleInboundCall] [Step 2] Target Sales Rep: "${targetRepName}" (ID: ${targetRepId})`);
+
+    // 3. Normalize phone number for search (match last 10 digits)
+    const cleanDigits = rawPhone.replace(/\D/g, "");
+    const last10Digits = cleanDigits.length >= 10 ? cleanDigits.slice(-10) : cleanDigits;
+    let normalizedPhone = cleanDigits;
+    if (normalizedPhone.length > 10 && normalizedPhone.startsWith("91")) {
+      normalizedPhone = normalizedPhone.substring(2);
+    }
+
+    const orConditions = [];
+    if (rawPhone) orConditions.push({ phone: rawPhone });
+    if (cleanDigits) orConditions.push({ phone: cleanDigits });
+    if (cleanDigits && !cleanDigits.startsWith("+")) orConditions.push({ phone: `+${cleanDigits}` });
+    if (normalizedPhone) orConditions.push({ phone: normalizedPhone });
+    if (last10Digits.length >= 7) {
+      orConditions.push({ phone: new RegExp(last10Digits + "$") });
+    }
+
+    console.log(`[handleInboundCall] [Step 3] Looking up lead matching phone: "${rawPhone}" (clean10: "${last10Digits}")...`);
+    const lead = await LeadModel.findOne({ $or: orConditions });
+
+    if (!lead) {
+      console.warn(`[handleInboundCall] [Step 3] NOT FOUND: No lead found with phone: ${rawPhone}`);
+      console.log("==================== [handleInboundCall] NOT FOUND ====================\n");
+      return res.status(404).json({
+        success: false,
+        message: `Lead not found with phone number ${rawPhone}.`,
+      });
+    }
+
+    console.log("[handleInboundCall] [Step 4] Lead located:", {
+      id: lead._id,
+      name: lead.name,
+      phone: lead.phone,
+      currentAssignedTo: lead.assignedTo,
+      status: lead.status,
+    });
+
+    const currentAssigneeRaw = String(lead.assignedTo || "").trim();
+
+    // 4. Check if lead is ALREADY assigned to this sales rep
+    const isAlreadyAssigned =
+      currentAssigneeRaw === targetRepId ||
+      (targetRepName && currentAssigneeRaw.toLowerCase() === targetRepName.toLowerCase());
+
+    if (isAlreadyAssigned) {
+      console.log(`[handleInboundCall] [Step 5] Lead is ALREADY assigned to ${targetRepName} (${targetRepId}). No reassignment needed.`);
+      console.log("==================== [handleInboundCall] ALREADY ASSIGNED ====================\n");
+      return res.status(200).json({
+        success: true,
+        isReassigned: false,
+        previousAssignee: null,
+        currentAssignee: {
+          id: targetRepId,
+          name: targetRepName,
+        },
+        message: `Lead is already assigned to ${targetRepName}.`,
+        data: lead,
+      });
+    }
+
+    // 5. Sales rep is NOT the current sales rep -> REASSIGN TO THIS SALES REP!
+    console.log(`[handleInboundCall] [Step 5] Sales rep is NOT current assignee (${currentAssigneeRaw}). Reassigning to ${targetRepName} (${targetRepId})...`);
+
+    let prevRepName = currentAssigneeRaw || "Unassigned";
+    let prevRepId = currentAssigneeRaw;
+
+    if (currentAssigneeRaw && currentAssigneeRaw !== "Unassigned") {
+      if (mongoose.Types.ObjectId.isValid(currentAssigneeRaw)) {
+        const prevUser = await UserModel.findById(currentAssigneeRaw).select("name");
+        if (prevUser) {
+          prevRepName = prevUser.name;
+          prevRepId = prevUser._id.toString();
+        }
+      } else {
+        const prevUser = await UserModel.findOne({ name: currentAssigneeRaw }).select("name");
+        if (prevUser) {
+          prevRepId = prevUser._id.toString();
+        }
+      }
+    }
+
+    // Update assignment
+    lead.assignedTo = targetRepId;
+
+    // Append transfer note to lead notes
+    const now = new Date();
+    const dateFormatted = now.toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+    const timeFormatted = now.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const transferNote = `[Inbound Call Reassignment] Lead reassigned from ${prevRepName} to ${targetRepName} on ${dateFormatted} at ${timeFormatted}.`;
+    lead.notes = lead.notes ? `${transferNote}\n${lead.notes}` : transferNote;
+
+    await lead.save();
+    console.log(`[handleInboundCall] [Step 5] Lead ${lead._id} successfully updated with new assignedTo: ${lead.assignedTo}`);
+
+    // Notify previous rep & sales managers
+    try {
+      const notifTargetUsers = [];
+      if (mongoose.Types.ObjectId.isValid(prevRepId) && prevRepId !== targetRepId) {
+        notifTargetUsers.push(prevRepId);
+      }
+
+      await NotificationModel.create({
+        title: "Lead Reassigned (Customer Inbound Call)",
+        message: `Lead ${lead.name || lead.phone} was reassigned to ${targetRepName}.`,
+        type: "lead_reassigned",
+        targetRoles: ["sales manager"],
+        targetUsers: notifTargetUsers,
+      });
+      console.log(`[handleInboundCall] [Step 5] Notification dispatched for reassignment.`);
+    } catch (nErr) {
+      console.warn("[handleInboundCall] Notification warning:", nErr.message);
+    }
+
+    // Record activity in Followup timeline
+    try {
+      await FollowupModel.create({
+        leadId: lead._id,
+        leadName: lead.name,
+        type: "Lead Reassigned",
+        date: now.toISOString().split("T")[0],
+        time: timeFormatted,
+        priority: "Medium",
+        notes: `Inbound touchpoint: Lead ownership reassigned from ${prevRepName} to ${targetRepName}.`,
+        author: targetRepName,
+        done: true,
+      });
+      console.log(`[handleInboundCall] [Step 5] Followup activity log recorded.`);
+    } catch (fErr) {
+      console.warn("[handleInboundCall] Followup log warning:", fErr.message);
+    }
+
+    // Broadcast real-time update via Socket.IO
+    const io = getIO();
+    if (io) {
+      const orgId = req.user?.organizationId || req.organization?._id;
+      const payload = {
+        leadId: lead._id.toString(),
+        newAssignee: targetRepId,
+        newAssigneeName: targetRepName,
+        previousAssignee: prevRepId,
+        previousAssigneeName: prevRepName,
+        lead,
+      };
+      if (orgId) {
+        io.to(`org_${orgId}`).emit("lead_reassigned", payload);
+        io.to(`org_${orgId}`).emit("lead_updated", { leadId: lead._id, lead });
+      } else {
+        io.emit("lead_reassigned", payload);
+        io.emit("lead_updated", { leadId: lead._id, lead });
+      }
+      console.log("[handleInboundCall] [Step 5] Socket.IO broadcast emitted.");
+    }
+
+    console.log(`[handleInboundCall] [Step 6] Responding with HTTP 200 OK for reassigned lead ID: ${lead._id}`);
+    console.log("==================== [handleInboundCall] SUCCESS ====================\n");
+
+    return res.status(200).json({
+      success: true,
+      isReassigned: true,
+      previousAssignee: {
+        id: prevRepId,
+        name: prevRepName,
+      },
+      currentAssignee: {
+        id: targetRepId,
+        name: targetRepName,
+      },
+      message: `Lead ${lead.name || lead.phone} successfully reassigned from ${prevRepName} to ${targetRepName}.`,
+      data: lead,
+    });
+  } catch (error) {
+    console.error("[handleInboundCall] [ERROR]:", error);
+    console.log("==================== [handleInboundCall] FAILED ====================\n");
+    return res.status(500).json({
+      success: false,
+      message: `Failed to process inbound call reassignment: ${error.message}`,
+    });
+  }
+};
+

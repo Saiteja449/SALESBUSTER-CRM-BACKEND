@@ -13,6 +13,7 @@ import {
   uploadRecordingForLead,
   importExcelLeads,
   handleMissedCall,
+  handleInboundCall,
 } from "../controllers/leadController.js";
 import { protect } from "../middleware/authMiddleware.js";
 
@@ -109,6 +110,9 @@ router.post("/webhook/status", updateStatusByWebhook);
 
 // 5. Missed Call Background Handler (Protected - Auto-schedules in Today's Follow-up & sends WhatsApp)
 router.post("/missed-call", protect, handleMissedCall);
+
+// 6. Inbound Call Lead Handler (Protected - Auto-resolves/reassigns to receiving sales rep)
+router.post("/inbound-call", protect, handleInboundCall);
 
 // 6. Individual lead management & recording operations (Protected)
 router
