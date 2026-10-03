@@ -1807,43 +1807,54 @@ export const handleInboundCall = async (req, res) => {
       });
     }
 
-    // 2. Resolve target sales rep (from salesRepId, id, salespersonId in body OR from verified auth token)
-    let targetRepId = String(
+    // 2. Resolve target sales rep (supports salesRepId, salesPersonId, salesRep, repId, userId, id, name, email, or Bearer token)
+    const rawRepIdentifier = String(
       req.body.salesRepId ||
-      req.body.id ||
+      req.body.salesrepId ||
+      req.body.salesPersonId ||
       req.body.salespersonId ||
+      req.body.salesRep ||
+      req.body.salesrep ||
+      req.body.salesPerson ||
+      req.body.salesperson ||
+      req.body.repId ||
       req.body.userId ||
+      req.body.id ||
       req.user?._id ||
       req.user?.id ||
       ""
     ).trim();
 
-    if (!targetRepId) {
+    if (!rawRepIdentifier) {
       console.warn("[handleInboundCall] [Step 1] REJECTED: Sales rep ID or Bearer token is required.");
       console.log("==================== [handleInboundCall] FAILED ====================\n");
       return res.status(400).json({
         success: false,
-        message: "Sales rep identification is required (pass salesRepId in body or Authorization token in header).",
+        message: "Sales rep identification is required (pass salesRepId/salesRep in body or Authorization token in header).",
       });
     }
 
-    // Fetch user details for targetRepId
-    let targetRepName = req.user?.name || "Sales Representative";
-    if (mongoose.Types.ObjectId.isValid(targetRepId)) {
-      const repDoc = await UserModel.findById(targetRepId).select("name email role");
-      if (repDoc) {
-        targetRepName = repDoc.name || targetRepName;
-        targetRepId = repDoc._id.toString();
-      }
-    } else {
-      const repDoc = await UserModel.findOne({ name: targetRepId }).select("name email role");
-      if (repDoc) {
-        targetRepName = repDoc.name;
-        targetRepId = repDoc._id.toString();
-      }
+    // Fetch user details for target sales rep by ID, Name, or Email
+    let targetRepDoc = null;
+    if (mongoose.Types.ObjectId.isValid(rawRepIdentifier)) {
+      targetRepDoc = await UserModel.findById(rawRepIdentifier).select("name email role");
+    }
+    if (!targetRepDoc) {
+      targetRepDoc = await UserModel.findOne({
+        $or: [
+          { name: new RegExp("^" + rawRepIdentifier + "$", "i") },
+          { email: new RegExp("^" + rawRepIdentifier + "$", "i") },
+        ],
+      }).select("name email role");
+    }
+    if (!targetRepDoc && req.user) {
+      targetRepDoc = req.user;
     }
 
-    console.log(`[handleInboundCall] [Step 2] Target Sales Rep: "${targetRepName}" (ID: ${targetRepId})`);
+    const targetRepId = targetRepDoc ? (targetRepDoc._id || targetRepDoc.id).toString() : rawRepIdentifier;
+    const targetRepName = targetRepDoc?.name || "Sales Representative";
+
+    console.log(`[handleInboundCall] [Step 2] Resolved Target Sales Rep: "${targetRepName}" (ID: ${targetRepId})`);
 
     // 3. Normalize phone number for search (match last 10 digits)
     const cleanDigits = rawPhone.replace(/\D/g, "");
@@ -1863,7 +1874,7 @@ export const handleInboundCall = async (req, res) => {
     }
 
     console.log(`[handleInboundCall] [Step 3] Looking up lead matching phone: "${rawPhone}" (clean10: "${last10Digits}")...`);
-    const lead = await LeadModel.findOne({ $or: orConditions });
+    let lead = await LeadModel.findOne({ $or: orConditions });
 
     if (!lead) {
       console.warn(`[handleInboundCall] [Step 3] NOT FOUND: No lead found with phone: ${rawPhone}`);
@@ -1926,10 +1937,7 @@ export const handleInboundCall = async (req, res) => {
       }
     }
 
-    // Update assignment
-    lead.assignedTo = targetRepId;
-
-    // Append transfer note to lead notes
+    // Format transfer note
     const now = new Date();
     const dateFormatted = now.toLocaleDateString("en-IN", {
       day: "2-digit",
@@ -1941,10 +1949,21 @@ export const handleInboundCall = async (req, res) => {
       minute: "2-digit",
     });
     const transferNote = `[Inbound Call Reassignment] Lead reassigned from ${prevRepName} to ${targetRepName} on ${dateFormatted} at ${timeFormatted}.`;
-    lead.notes = lead.notes ? `${transferNote}\n${lead.notes}` : transferNote;
+    const updatedNotes = lead.notes ? `${transferNote}\n${lead.notes}` : transferNote;
 
-    await lead.save();
-    console.log(`[handleInboundCall] [Step 5] Lead ${lead._id} successfully updated with new assignedTo: ${lead.assignedTo}`);
+    // Use direct atomic findByIdAndUpdate with $set to guarantee MongoDB Mixed type persistence
+    const updatedLead = await LeadModel.findByIdAndUpdate(
+      lead._id,
+      {
+        $set: {
+          assignedTo: targetRepId,
+          notes: updatedNotes,
+        },
+      },
+      { new: true }
+    );
+
+    console.log(`[handleInboundCall] [Step 5] Lead ${updatedLead._id} atomically updated in MongoDB: assignedTo = ${updatedLead.assignedTo}`);
 
     // Notify previous rep & sales managers
     try {
@@ -1955,7 +1974,7 @@ export const handleInboundCall = async (req, res) => {
 
       await NotificationModel.create({
         title: "Lead Reassigned (Customer Inbound Call)",
-        message: `Lead ${lead.name || lead.phone} was reassigned to ${targetRepName}.`,
+        message: `Lead ${updatedLead.name || updatedLead.phone} was reassigned to ${targetRepName}.`,
         type: "lead_reassigned",
         targetRoles: ["sales manager"],
         targetUsers: notifTargetUsers,
@@ -1968,8 +1987,8 @@ export const handleInboundCall = async (req, res) => {
     // Record activity in Followup timeline
     try {
       await FollowupModel.create({
-        leadId: lead._id,
-        leadName: lead.name,
+        leadId: updatedLead._id,
+        leadName: updatedLead.name,
         type: "Lead Reassigned",
         date: now.toISOString().split("T")[0],
         time: timeFormatted,
@@ -1988,24 +2007,24 @@ export const handleInboundCall = async (req, res) => {
     if (io) {
       const orgId = req.user?.organizationId || req.organization?._id;
       const payload = {
-        leadId: lead._id.toString(),
+        leadId: updatedLead._id.toString(),
         newAssignee: targetRepId,
         newAssigneeName: targetRepName,
         previousAssignee: prevRepId,
         previousAssigneeName: prevRepName,
-        lead,
+        lead: updatedLead,
       };
       if (orgId) {
         io.to(`org_${orgId}`).emit("lead_reassigned", payload);
-        io.to(`org_${orgId}`).emit("lead_updated", { leadId: lead._id, lead });
+        io.to(`org_${orgId}`).emit("lead_updated", { leadId: updatedLead._id, lead: updatedLead });
       } else {
         io.emit("lead_reassigned", payload);
-        io.emit("lead_updated", { leadId: lead._id, lead });
+        io.emit("lead_updated", { leadId: updatedLead._id, lead: updatedLead });
       }
       console.log("[handleInboundCall] [Step 5] Socket.IO broadcast emitted.");
     }
 
-    console.log(`[handleInboundCall] [Step 6] Responding with HTTP 200 OK for reassigned lead ID: ${lead._id}`);
+    console.log(`[handleInboundCall] [Step 6] Responding with HTTP 200 OK for reassigned lead ID: ${updatedLead._id}`);
     console.log("==================== [handleInboundCall] SUCCESS ====================\n");
 
     return res.status(200).json({
@@ -2019,8 +2038,8 @@ export const handleInboundCall = async (req, res) => {
         id: targetRepId,
         name: targetRepName,
       },
-      message: `Lead ${lead.name || lead.phone} successfully reassigned from ${prevRepName} to ${targetRepName}.`,
-      data: lead,
+      message: `Lead ${updatedLead.name || updatedLead.phone} successfully reassigned from ${prevRepName} to ${targetRepName}.`,
+      data: updatedLead,
     });
   } catch (error) {
     console.error("[handleInboundCall] [ERROR]:", error);
