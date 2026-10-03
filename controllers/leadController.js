@@ -450,6 +450,29 @@ export const getPaginatedLeads = async (req, res) => {
 };
 
 export const createLead = async (req, res) => {
+  console.log("\n==================== [createLead] START ====================");
+  console.log(`[createLead] [Step 1] Request received at ${new Date().toISOString()}`);
+  console.log("[createLead] [Step 1] Authenticated User:", {
+    id: req.user?._id || req.user?.id,
+    name: req.user?.name,
+    email: req.user?.email,
+    role: req.user?.role,
+    organizationId: req.user?.organizationId || req.organization?._id,
+  });
+  console.log("[createLead] [Step 1] Request Body:", JSON.stringify(req.body, null, 2));
+
+  if (req.file) {
+    console.log("[createLead] [Step 1] Audio recording attached:", {
+      originalname: req.file.originalname,
+      filename: req.file.filename,
+      mimetype: req.file.mimetype,
+      size: `${(req.file.size / 1024).toFixed(2)} KB`,
+      path: req.file.path,
+    });
+  } else {
+    console.log("[createLead] [Step 1] No audio recording attached in request.");
+  }
+
   try {
     const {
       LeadModel,
@@ -457,12 +480,22 @@ export const createLead = async (req, res) => {
       AssignmentStateModel,
       NotificationModel,
     } = getModels(req);
+    console.log("[createLead] [Step 2] Models resolved for tenant:", {
+      LeadModel: LeadModel.modelName,
+      UserModel: UserModel.modelName,
+      AssignmentStateModel: AssignmentStateModel.modelName,
+      NotificationModel: NotificationModel.modelName,
+    });
 
     // Subscription expiry check
+    console.log("[createLead] [Step 3] Checking organization subscription status...");
     if (req.organization?.subscriptionEndDate) {
       const isExpired =
         new Date() > new Date(req.organization.subscriptionEndDate);
+      console.log(`[createLead] [Step 3] Subscription end date: ${req.organization.subscriptionEndDate} (Expired: ${isExpired})`);
       if (isExpired) {
+        console.warn(`[createLead] [Step 3] REJECTED: Organization subscription expired on ${req.organization.subscriptionEndDate}`);
+        console.log("==================== [createLead] EXPIRED ====================\n");
         return res.status(403).json({
           success: false,
           subscriptionExpired: true,
@@ -471,10 +504,14 @@ export const createLead = async (req, res) => {
           ).toLocaleDateString("en-IN")}. Please renew to create new leads.`,
         });
       }
+    } else {
+      console.log("[createLead] [Step 3] No subscription end date limit configured. Proceeding.");
     }
 
     const leadData = req.body || {};
 
+    // Duplicate check
+    console.log("[createLead] [Step 4] Checking for duplicate leads by phone or email...");
     if (leadData.phone || leadData.email) {
       const rawPhone = leadData.phone ? String(leadData.phone).trim() : "";
       const cleanDigits = rawPhone.replace(/\D/g, "");
@@ -484,6 +521,14 @@ export const createLead = async (req, res) => {
       if (normalizedPhone.length > 10 && normalizedPhone.startsWith("91")) {
         normalizedPhone = normalizedPhone.substring(2);
       }
+
+      console.log("[createLead] [Step 4] Contact details parsed for duplicate search:", {
+        rawPhone,
+        cleanDigits,
+        last10Digits,
+        normalizedPhone,
+        email: leadData.email,
+      });
 
       const orConditions = [];
       if (rawPhone) orConditions.push({ phone: rawPhone });
@@ -503,27 +548,44 @@ export const createLead = async (req, res) => {
       }
 
       if (orConditions.length > 0) {
+        console.log("[createLead] [Step 4] Querying database with conditions:", JSON.stringify(orConditions));
         const existingLead = await LeadModel.findOne({ $or: orConditions });
         if (existingLead) {
+          console.warn("[createLead] [Step 4] REJECTED: Duplicate lead found:", {
+            existingId: existingLead._id,
+            name: existingLead.name,
+            phone: existingLead.phone,
+            email: existingLead.email,
+          });
+          console.log("==================== [createLead] DUPLICATE ====================\n");
           return res.status(400).json({
             success: false,
             message: "A lead with this phone number or email already exists.",
           });
         }
+        console.log("[createLead] [Step 4] Duplicate check passed. No existing lead matched.");
       }
+    } else {
+      console.log("[createLead] [Step 4] Neither phone nor email provided, skipping duplicate check.");
     }
 
+    // Lead assignment logic
+    console.log(`[createLead] [Step 5] Resolving lead assignment. User role: "${req.user?.role}", Requested assignedTo: "${leadData.assignedTo}"`);
     if (req.user?.role === "sales person") {
       leadData.assignedTo = (req.user._id || req.user.id).toString();
+      console.log(`[createLead] [Step 5] Creator is sales person. Auto-assigned to self (${leadData.assignedTo})`);
     } else if (!leadData.assignedTo || leadData.assignedTo === "Unassigned") {
+      console.log("[createLead] [Step 5] Lead assignedTo is empty or 'Unassigned'. Checking round-robin distribution...");
       const reps = await UserModel.find({ role: "sales person" }).sort({
         _id: 1,
       });
+      console.log(`[createLead] [Step 5] Found ${reps ? reps.length : 0} eligible sales representatives.`);
       if (reps && reps.length > 0) {
         let state = await AssignmentStateModel.findOne({
           key: "leadAssignment",
         });
         if (!state) {
+          console.log("[createLead] [Step 5] Initializing AssignmentState for 'leadAssignment'.");
           state = await AssignmentStateModel.create({
             key: "leadAssignment",
             lastAssignedIndex: -1,
@@ -538,13 +600,24 @@ export const createLead = async (req, res) => {
         leadData.assignedTo = reps[nextIndex]._id.toString();
         state.lastAssignedIndex = nextIndex;
         await state.save();
+        console.log(`[createLead] [Step 5] Round-robin assigned to: ${reps[nextIndex].name} (ID: ${leadData.assignedTo}, index: ${nextIndex})`);
+      } else {
+        console.log("[createLead] [Step 5] No sales representatives available. Leaving lead Unassigned.");
       }
-    }
-    if (!leadData.joinedAt) {
-      leadData.joinedAt = new Date();
+    } else {
+      console.log(`[createLead] [Step 5] Preserving explicitly provided assignedTo: "${leadData.assignedTo}"`);
     }
 
+    if (!leadData.joinedAt) {
+      leadData.joinedAt = new Date();
+      console.log(`[createLead] [Step 6] Assigned default joinedAt timestamp: ${leadData.joinedAt.toISOString()}`);
+    } else {
+      console.log(`[createLead] [Step 6] Retaining provided joinedAt: ${leadData.joinedAt}`);
+    }
+
+    // Audio upload handling
     if (req.file) {
+      console.log(`[createLead] [Step 7] Processing uploaded audio: ${req.file.originalname}`);
       await processAudioUpload(req.file);
       const host = req.get("host") || "";
       const basePath = "/uploads/";
@@ -552,6 +625,7 @@ export const createLead = async (req, res) => {
         req.headers["x-forwarded-proto"] ||
         (host && !host.includes("localhost") ? "https" : req.protocol);
       const fileUrl = `${protocol}://${host}${basePath}${req.file.filename}`;
+      console.log(`[createLead] [Step 7] Audio processing complete. File URL: ${fileUrl}`);
       leadData.recordings = [
         {
           name: req.body.recordingName || req.file.originalname,
@@ -560,14 +634,20 @@ export const createLead = async (req, res) => {
           uploadedAt: new Date(),
         },
       ];
+      console.log("[createLead] [Step 7] Recording record created:", leadData.recordings[0]);
     }
 
+    // Save lead document
+    console.log("[createLead] [Step 8] Saving new lead to database...");
     const lead = await LeadModel.create(leadData);
+    console.log(`[createLead] [Step 8] Lead saved successfully. ID: ${lead._id}, Name: "${lead.name}", Status: "${lead.status}"`);
 
+    // AI Audio analysis trigger
     if (req.file && ENABLE_AI_AUDIO_ANALYSIS && lead.recordings?.length > 0) {
       const newRecording = lead.recordings[0];
       const orgApiKey = decryptApiKey(req.organization?.aiSettings?.geminiApiKey);
       const orgId = req.organization?._id || req.user?.organizationId;
+      console.log(`[createLead] [Step 9] Triggering background AI audio analysis for recording ${newRecording._id}...`);
       triggerAudioAnalysis(
         lead._id,
         newRecording._id,
@@ -579,87 +659,161 @@ export const createLead = async (req, res) => {
       ).catch((err) =>
         console.error("[AudioAnalysis] Background analysis error (createLead):", err),
       );
+    } else {
+      console.log(`[createLead] [Step 9] Skipping audio analysis (file present: ${!!req.file}, AI enabled: ${ENABLE_AI_AUDIO_ANALYSIS})`);
     }
 
     // Send automated WhatsApp welcome enquiry message for non-manual entry sources (Call, Email, etc.)
+    console.log(`[createLead] [Step 10] Evaluating automated WhatsApp welcome message for source: "${lead.source}"`);
     if (lead.source && lead.source !== "Manual Entry") {
       const orgId = req.user?.organizationId || req.organization?._id || null;
+      console.log(`[createLead] [Step 10] Triggering sendWelcomeEnquiryMessage for lead ${lead._id} (source: ${lead.source}, orgId: ${orgId})`);
       sendWelcomeEnquiryMessage(lead, {
         tenantModels: req.tenantModels,
         organizationId: orgId,
       }).catch((err) =>
         console.error("Error in sendWelcomeEnquiryMessage (createLead):", err),
       );
+    } else {
+      console.log(`[createLead] [Step 10] Skipped WhatsApp welcome message (source is "${lead.source || 'Manual Entry'}")`);
     }
 
+    // Notification handling
+    console.log("[createLead] [Step 11] Resolving assigned rep details for notification...");
     let assignedUserName = "sales representative";
     let targetUsers = [];
     if (lead.assignedTo && lead.assignedTo !== "Unassigned") {
       if (mongoose.Types.ObjectId.isValid(lead.assignedTo)) {
         targetUsers = [lead.assignedTo];
         const assignedUser = await UserModel.findById(lead.assignedTo).select("name");
-        if (assignedUser) assignedUserName = assignedUser.name;
+        if (assignedUser) {
+          assignedUserName = assignedUser.name;
+          console.log(`[createLead] [Step 11] Matched user by ObjectId: ${assignedUserName} (${lead.assignedTo})`);
+        }
       } else {
         const assignedUser = await UserModel.findOne({ name: lead.assignedTo });
         if (assignedUser) {
           targetUsers = [assignedUser._id];
           assignedUserName = assignedUser.name;
+          console.log(`[createLead] [Step 11] Matched user by name: ${assignedUserName} (${assignedUser._id})`);
         } else {
           assignedUserName = lead.assignedTo;
+          console.log(`[createLead] [Step 11] No user record found by name "${lead.assignedTo}". Using raw string.`);
         }
       }
     }
 
-    await NotificationModel.create({
+    console.log("[createLead] [Step 11] Creating in-app notification...");
+    const newNotification = await NotificationModel.create({
       title: "New Lead Added",
       message: `Lead ${lead.name} has been added and assigned to ${assignedUserName}.`,
       type: "new_lead",
       targetRoles: ["sales manager"],
       targetUsers: targetUsers,
     });
+    console.log(`[createLead] [Step 11] Notification created. ID: ${newNotification._id}, targetUsers:`, targetUsers);
 
+    console.log(`[createLead] [Step 12] Responding with HTTP 201 Created for lead ID: ${lead._id}`);
+    console.log("==================== [createLead] SUCCESS ====================\n");
     res.status(201).json({ success: true, data: lead });
   } catch (error) {
+    console.error("[createLead] [ERROR] Exception caught during lead creation:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    console.log("==================== [createLead] FAILED ====================\n");
     res.status(400).json({ success: false, message: error.message });
   }
 };
 
 export const updateLead = async (req, res) => {
+  const { id } = req.params;
+  console.log("\n==================== [updateLead] START ====================");
+  console.log(`[updateLead] [Step 1] Request received at ${new Date().toISOString()} for Lead ID: ${id}`);
+  console.log("[updateLead] [Step 1] Authenticated User:", {
+    id: req.user?._id || req.user?.id,
+    name: req.user?.name,
+    email: req.user?.email,
+    role: req.user?.role,
+    organizationId: req.user?.organizationId || req.organization?._id,
+  });
+  console.log("[updateLead] [Step 1] Update Payload:", JSON.stringify(req.body, null, 2));
+
+  if (req.file) {
+    console.log("[updateLead] [Step 1] Audio recording attached:", {
+      originalname: req.file.originalname,
+      filename: req.file.filename,
+      mimetype: req.file.mimetype,
+      size: `${(req.file.size / 1024).toFixed(2)} KB`,
+      path: req.file.path,
+    });
+  } else {
+    console.log("[updateLead] [Step 1] No audio recording attached in update request.");
+  }
+
   try {
     const { LeadModel, NotificationModel } = getModels(req);
-    const { id } = req.params;
     const updateData = req.body || {};
 
+    console.log(`[updateLead] [Step 2] Finding existing lead with ID: ${id}...`);
     const lead = await LeadModel.findById(id);
 
     if (!lead) {
+      console.warn(`[updateLead] [Step 2] REJECTED: Lead with ID ${id} not found.`);
+      console.log("==================== [updateLead] NOT FOUND ====================\n");
       return res
         .status(404)
         .json({ success: false, message: "Lead not found" });
     }
 
+    console.log("[updateLead] [Step 2] Existing lead located:", {
+      id: lead._id,
+      name: lead.name,
+      phone: lead.phone,
+      email: lead.email,
+      status: lead.status,
+      assignedTo: lead.assignedTo,
+    });
+
     // Role check: sales reps can only update leads assigned to them and cannot reassign
+    console.log(`[updateLead] [Step 3] Checking role permissions for user role: "${req.user?.role}"...`);
     if (req.user?.role === "sales person") {
-      if (!isLeadAssignedToUser(lead, req.user)) {
+      const isAssigned = isLeadAssignedToUser(lead, req.user);
+      console.log(`[updateLead] [Step 3] Sales representative assignment check: ${isAssigned}`);
+      if (!isAssigned) {
+        console.warn(`[updateLead] [Step 3] REJECTED: Sales rep ${req.user?._id} (${req.user?.name}) attempted to update unassigned lead ${id}`);
+        console.log("==================== [updateLead] FORBIDDEN ====================\n");
         return res.status(403).json({
           success: false,
           message: "Access forbidden: You can only update leads assigned to you",
         });
       }
-      delete updateData.assignedTo;
+      if (updateData.assignedTo !== undefined) {
+        console.log(`[updateLead] [Step 3] Stripping 'assignedTo' (${updateData.assignedTo}) from update payload as sales reps cannot reassign leads.`);
+        delete updateData.assignedTo;
+      }
+    } else {
+      console.log(`[updateLead] [Step 3] User role "${req.user?.role}" authorized for all fields.`);
     }
 
     // Handle name field: optional. If non-empty, update it. If empty ("" or whitespace) or null, keep previous name.
+    console.log("[updateLead] [Step 4] Checking name field update...");
     if (updateData.name !== undefined) {
       const trimmedName = String(updateData.name || "").trim();
       if (trimmedName) {
         updateData.name = trimmedName;
+        console.log(`[updateLead] [Step 4] Name field will be updated to: "${trimmedName}"`);
       } else {
+        console.log(`[updateLead] [Step 4] Provided name was empty/whitespace. Retaining existing name: "${lead.name}"`);
         delete updateData.name;
       }
+    } else {
+      console.log("[updateLead] [Step 4] Name field not present in update payload.");
     }
 
+    // Handle file upload
     if (req.file) {
+      console.log(`[updateLead] [Step 5] Processing audio upload: ${req.file.originalname}`);
       await processAudioUpload(req.file);
       const host = req.get("host") || "";
       const basePath = "/uploads/";
@@ -667,6 +821,8 @@ export const updateLead = async (req, res) => {
         req.headers["x-forwarded-proto"] ||
         (host && !host.includes("localhost") ? "https" : req.protocol);
       const fileUrl = `${protocol}://${host}${basePath}${req.file.filename}`;
+      console.log(`[updateLead] [Step 5] Audio file ready at URL: ${fileUrl}`);
+
       const recordingObj = {
         name: req.body.recordingName || req.file.originalname,
         url: fileUrl,
@@ -677,14 +833,22 @@ export const updateLead = async (req, res) => {
         lead.recordings = [];
       }
       lead.recordings.push(recordingObj);
+      console.log("[updateLead] [Step 5] Attached new recording to lead:", recordingObj);
+    } else {
+      console.log("[updateLead] [Step 5] No recording file to process.");
     }
 
+    const previousStatus = lead.status;
+    console.log("[updateLead] [Step 6] Applying update fields to lead model:", updateData);
     lead.set(updateData);
     await lead.save();
+    console.log(`[updateLead] [Step 6] Lead document saved to DB. ID: ${lead._id}, Previous Status: "${previousStatus}", Current Status: "${lead.status}"`);
 
+    // AI Audio analysis trigger for newly uploaded recording
     if (req.file && ENABLE_AI_AUDIO_ANALYSIS) {
       const newRecording = lead.recordings[lead.recordings.length - 1];
       if (newRecording) {
+        console.log(`[updateLead] [Step 7] Triggering background AI audio analysis for recording ${newRecording._id}...`);
         const orgApiKey = decryptApiKey(req.organization?.aiSettings?.geminiApiKey);
         triggerAudioAnalysis(
           lead._id,
@@ -698,30 +862,46 @@ export const updateLead = async (req, res) => {
           console.error("[AudioAnalysis] Background analysis error (updateLead):", err),
         );
       }
+    } else {
+      console.log(`[updateLead] [Step 7] Skipping audio analysis (file present: ${!!req.file}, AI enabled: ${ENABLE_AI_AUDIO_ANALYSIS})`);
     }
 
+    // Status change notification
     if (updateData.status) {
-      await NotificationModel.create({
+      console.log(`[updateLead] [Step 8] Status changed ("${previousStatus}" -> "${lead.status}"). Creating notification for sales managers...`);
+      const statusNotif = await NotificationModel.create({
         title: "Lead Status Updated",
         message: `Lead ${lead.name || lead.phone || "Lead"} status updated to ${lead.status}.`,
         type: "lead_update",
         targetRoles: ["sales manager"],
       });
+      console.log(`[updateLead] [Step 8] Status update notification created. ID: ${statusNotif._id}`);
+    } else {
+      console.log("[updateLead] [Step 8] Status field not modified. Skipping status update notification.");
     }
 
     // When a human user updates this lead, mark any pending AI follow-ups as handled/done
+    console.log("[updateLead] [Step 9] Checking pending AI follow-ups to mark as done...");
     try {
       const { FollowupModel } = getModels(req);
-      await FollowupModel.updateMany(
+      const fuResult = await FollowupModel.updateMany(
         { leadId: id, author: "AI Agent", done: false },
         { $set: { done: true } }
       );
+      console.log("[updateLead] [Step 9] Pending AI follow-ups updated:", fuResult);
     } catch (fuErr) {
-      console.warn("[leadController] Error marking pending AI follow-up as done:", fuErr.message);
+      console.warn("[updateLead] [Step 9] Error marking pending AI follow-up as done:", fuErr.message);
     }
 
+    console.log(`[updateLead] [Step 10] Responding with HTTP 200 OK for updated lead ID: ${lead._id}`);
+    console.log("==================== [updateLead] SUCCESS ====================\n");
     res.json({ success: true, data: lead });
   } catch (error) {
+    console.error(`[updateLead] [ERROR] Exception caught during lead update for ID ${id}:`, {
+      message: error.message,
+      stack: error.stack,
+    });
+    console.log("==================== [updateLead] FAILED ====================\n");
     res.status(400).json({ success: false, message: error.message });
   }
 };
