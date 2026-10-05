@@ -1808,7 +1808,7 @@ export const handleMissedCall = async (req, res) => {
       lead = await LeadModel.create({
         name: callerName,
         phone: rawPhone.startsWith("+") ? rawPhone : `+91${last10Digits}`,
-        source: "Missed Call",
+        source: "Call",
         service: service || "General Enquiry",
         status: "Missed Call",
         nextFollowUp: todayStr,

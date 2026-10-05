@@ -98,7 +98,7 @@ test("handleMissedCall - Creates new lead in Today's Follow-up when lead doesn't
   assert.equal(res.data.data.isNewLead, true);
   assert.equal(createdLeadData.status, "Missed Call");
   assert.equal(createdLeadData.nextFollowUp, todayStr);
-  assert.equal(createdLeadData.source, "Missed Call");
+  assert.equal(createdLeadData.source, "Call");
   assert.equal(createdLeadData.assignedTo, repId);
 
   assert.ok(createdFollowupData, "Followup entry should be created");
