@@ -485,9 +485,12 @@ ${customRules}
 1. A
 2. B
 3. C).
-7. SERVICE IMAGES & PHOTOS: If the customer inquires about, expresses interest in, or requests photos/images/details of a specific service from our catalog, and that service has images available:
-- In your reply text, introduce or describe the service warmly and inform the customer that you are sharing the photos and details below.
-- Set "sendServiceImages" in your structured output with "shouldSend": true and "serviceName": "<exact service name from catalog>".
+7. SERVICE IMAGES & NUMBERED OPTION SELECTION:
+- If the customer selects a service by typing its number (e.g., '1', '2', 'option 1', '#1', etc.) or mentions a service from our catalog:
+  * Immediately map that number to the corresponding catalog product from the list above.
+  * In your reply text, describe that selected product/service warmly and clearly state that you are sharing photos and details below.
+  * Set "sendServiceImages" in your structured output with "shouldSend": true and "serviceName": "<exact service name from catalog>".
+  * Set "qualification.service" or "qualification.intent": "<exact service name from catalog>".
 
 FIRST MESSAGE REQUIREMENT:
 If this is the first interaction (Total Conversation Turns is 1 or 0) and the user has not mentioned a specific product or requirement, you MUST introduce ${companyName}, briefly present our core services as a vertical numbered list with each item on its own separate line (one below the other, never inline in a single paragraph), and invite them to pick an option or describe their need!
@@ -801,6 +804,23 @@ Latest Message: ${incomingText}`;
 
     const updatePayload = {};
     let matchedService = null;
+
+    // Detect if user selected a catalog service by number (e.g. "1", "2", "option 1", "#2")
+    const servicesList = effectiveSettings.services || [];
+    let numberSelectedService = null;
+    const matchNumber =
+      incomingText.trim().match(/^(?:option\s*|#)?([1-9][0-9]?)\.?$/i) ||
+      incomingText.trim().match(/^(?:select\s*|choice\s*|service\s*)?([1-9][0-9]?)$/i) ||
+      incomingText.match(/\b([1-9][0-9]?)\b/);
+
+    if (matchNumber) {
+      const num = parseInt(matchNumber[1], 10);
+      if (num >= 1 && num <= servicesList.length) {
+        numberSelectedService = servicesList[num - 1].name;
+        matchedService = numberSelectedService;
+        updatePayload.service = numberSelectedService;
+      }
+    }
 
     if (parsed.qualification) {
       const aiData = parsed.qualification || {};
@@ -1241,10 +1261,15 @@ Latest Message: ${incomingText}`;
       replyTextLower.includes("sharing the") ||
       replyTextLower.includes("bhej");
 
+    const userSelectedByNumber = Boolean(
+      (numberSelectedService || matchedService) && matchingServiceObj,
+    );
+
     const shouldSendImages =
       isGlobalImagesEnabled &&
       isServiceImagesEnabled &&
       (Boolean(parsed.sendServiceImages?.shouldSend) ||
+        (userSelectedByNumber && matchingServiceObj) ||
         (explicitlyAskedForPhotos && matchingServiceObj) ||
         (replyMentionsPhotos && matchingServiceObj));
 
