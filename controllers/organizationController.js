@@ -1026,6 +1026,7 @@ export const updateMyAISettings = async (req, res) => {
       missedCallMessageEnabled,
       missedCallMessageTemplate,
       missedCallDifferentNumberTemplate,
+      serviceImagesAutoSendEnabled,
     } = req.body;
 
     if (!org.aiSettings) org.aiSettings = {};
@@ -1550,6 +1551,7 @@ export const updateOrgAISettings = async (req, res) => {
       missedCallMessageEnabled,
       missedCallMessageTemplate,
       missedCallDifferentNumberTemplate,
+      serviceImagesAutoSendEnabled,
     } = req.body;
 
     if (!org.aiSettings) org.aiSettings = {};
