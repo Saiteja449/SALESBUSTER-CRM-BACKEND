@@ -299,6 +299,8 @@ export const getPaginatedLeads = async (req, res) => {
           };
         } else if (tab === "NotAttended") {
           q.status = { $regex: new RegExp("^not attended$", "i") };
+        } else if (tab === "MissedCalls") {
+          q.status = { $regex: new RegExp("^missed call$", "i") };
         }
       }
     };
@@ -422,18 +424,27 @@ export const getPaginatedLeads = async (req, res) => {
             },
             { $count: "count" },
           ],
+          MissedCalls: [
+            {
+              $match: {
+                status: { $regex: new RegExp("^missed call$", "i") },
+              },
+            },
+            { $count: "count" },
+          ],
         },
       },
     ]);
 
     const counts = {
-      OldLeads: facetCounts[0].OldLeads[0]?.count || 0,
-      New: facetCounts[0].New[0]?.count || 0,
-      TodayFollowup: facetCounts[0].TodayFollowup[0]?.count || 0,
-      UpcomingFollowup: facetCounts[0].UpcomingFollowup[0]?.count || 0,
-      Converted: facetCounts[0].Converted[0]?.count || 0,
-      NotAttended: facetCounts[0].NotAttended[0]?.count || 0,
-      Lost: facetCounts[0].Lost[0]?.count || 0,
+      OldLeads: facetCounts[0]?.OldLeads?.[0]?.count || 0,
+      New: facetCounts[0]?.New?.[0]?.count || 0,
+      TodayFollowup: facetCounts[0]?.TodayFollowup?.[0]?.count || 0,
+      UpcomingFollowup: facetCounts[0]?.UpcomingFollowup?.[0]?.count || 0,
+      Converted: facetCounts[0]?.Converted?.[0]?.count || 0,
+      NotAttended: facetCounts[0]?.NotAttended?.[0]?.count || 0,
+      Lost: facetCounts[0]?.Lost?.[0]?.count || 0,
+      MissedCalls: facetCounts[0]?.MissedCalls?.[0]?.count || 0,
     };
 
     res.json({
@@ -1623,52 +1634,51 @@ export const handleMissedCall = async (req, res) => {
 
     const assignedUserId = (req.user?._id || req.user?.id || "").toString();
 
+    let callerName = name && name.trim() ? name.trim() : "";
     if (lead) {
-      // Existing Lead: Update status to Follow Up and scheduled for today
-      lead.status = "Follow Up";
-      lead.nextFollowUp = todayStr;
-      lead.followupTime = followupTimeFormatted;
-      lead.preferredContactMethod = "WhatsApp";
-
-      // If lead is unassigned, assign to current user
-      if (!lead.assignedTo || lead.assignedTo === "Unassigned") {
+      if (!callerName) callerName = lead.name || `Caller ${last10Digits.slice(-4)}`;
+      // Existing Lead: Update notes and set status to Missed Call if not already converted
+      if (lead.status !== "Converted") {
+        lead.status = "Missed Call";
+      }
+      if (assignedUserId && (!lead.assignedTo || lead.assignedTo === "Unassigned")) {
         lead.assignedTo = assignedUserId;
       }
 
-      const missedNote = `[Missed Call] Received on ${missedTime.toLocaleDateString()} at ${timeFormatted}. Scheduled for today's follow-up at ${followupTimeFormatted}.`;
+      const missedNote = `[Missed Call] Received on ${missedTime.toLocaleDateString()} at ${timeFormatted}.`;
       lead.notes = lead.notes ? `${missedNote}\n${lead.notes}` : missedNote;
       await lead.save();
     } else {
-      // New Lead: Create fresh lead directly into Today's Follow-up
+      // New Lead: Create fresh lead directly into Missed Calls
       isNewLead = true;
-      const callerName = name && name.trim() ? name.trim() : `Caller ${last10Digits.slice(-4)}`;
+      if (!callerName) callerName = `Caller ${last10Digits.slice(-4)}`;
 
       lead = await LeadModel.create({
         name: callerName,
         phone: rawPhone.startsWith("+") ? rawPhone : `+91${last10Digits}`,
-        source: "Call",
+        source: "Missed Call",
         service: service || "General Enquiry",
-        status: "Follow Up",
+        status: "Missed Call",
         nextFollowUp: todayStr,
         followupTime: followupTimeFormatted,
-        preferredContactMethod: "WhatsApp",
+        preferredContactMethod: "Call",
         priority: "High",
         assignedTo: assignedUserId || "Unassigned",
         joinedAt: missedTime,
-        notes: `New lead created from missed call received on ${missedTime.toLocaleDateString()} at ${timeFormatted}. Scheduled for today's follow-up at ${followupTimeFormatted}.`,
+        notes: `New lead created from missed call received on ${missedTime.toLocaleDateString()} at ${timeFormatted}.`,
       });
     }
 
-    // Upsert Followup record in Followup collection for Today's Followups
+    // Upsert Followup record in Followup collection for reference
     try {
       await FollowupModel.create({
         leadId: lead._id,
         leadName: lead.name,
-        type: "WhatsApp",
+        type: "Call",
         date: todayStr,
         time: followupTimeFormatted,
         priority: "High",
-        notes: `Missed call received at ${timeFormatted}. Automatically scheduled for today's follow-up at ${followupTimeFormatted}.`,
+        notes: `Missed call received at ${timeFormatted}.`,
         author: req.user?.name || "Mobile App",
         done: false,
       });

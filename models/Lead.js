@@ -10,6 +10,12 @@ const leadSchema = new mongoose.Schema(
     phone: {
       type: String,
       required: true,
+      index: true,
+    },
+    phoneNormalized: {
+      type: String,
+      index: true,
+      default: "",
     },
     email: {
       type: String,
@@ -54,6 +60,7 @@ const leadSchema = new mongoose.Schema(
       type: String,
       enum: [
         "New",
+        "Missed Call",
         "Follow Up",
         "Not Interested",
         "Not Attended",
@@ -210,6 +217,15 @@ const leadSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+const normalizeLeadPhone = function () {
+  if (this.phone) {
+    const digits = String(this.phone).replace(/\D/g, "");
+    this.phoneNormalized = digits.length >= 10 ? digits.slice(-10) : digits;
+  }
+};
+leadSchema.pre("validate", normalizeLeadPhone);
+leadSchema.pre("save", normalizeLeadPhone);
 
 // Cascade delete associated records when a lead is deleted
 leadSchema.pre("findOneAndDelete", async function () {

@@ -64,6 +64,16 @@ authUserSchema.set("toJSON", {
   },
 });
 
+authUserSchema.index(
+  { phone: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      phone: { $exists: true, $type: "string", $gt: "" },
+    },
+  }
+);
+
 export { authUserSchema };
 const AuthUser = mongoose.model("AuthUser", authUserSchema);
 export default AuthUser;

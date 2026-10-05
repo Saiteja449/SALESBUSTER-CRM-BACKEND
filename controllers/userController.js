@@ -4,6 +4,10 @@ import Lead from "../models/Lead.js";
 import Notification from "../models/Notification.js";
 import { getMasterModels, generateSecurePassword } from "../services/tenantManager.js";
 import { sendSalesPersonWelcomeEmail } from "../helpers/emailHelper.js";
+import {
+  validateAndNormalizePhone,
+  buildPhoneDuplicateQuery,
+} from "../helpers/phoneHelper.js";
 
 // Helper to resolve models
 const getModels = (req) => {
@@ -93,14 +97,18 @@ export const addSalesPerson = async (req, res) => {
   const cleanMobile = rawMobile.trim();
   const cleanName = name.trim();
 
-  // Validate mobile number digits
-  const cleanDigits = cleanMobile.replace(/\D/g, "");
-  if (cleanDigits.length < 7 || cleanDigits.length > 15) {
+  // Validate and normalize mobile number
+  const phoneValidation = validateAndNormalizePhone(rawMobile);
+  if (!phoneValidation.isValid) {
     return res.status(400).json({
       success: false,
-      message: "Please provide a valid mobile number (7 to 15 digits).",
+      field: "phone",
+      message: phoneValidation.error,
     });
   }
+
+  const normalizedPhone = phoneValidation.normalized;
+  const cleanDigits = phoneValidation.cleanDigits;
 
   const { UserModel, NotificationModel } = getModels(req);
 
@@ -138,27 +146,49 @@ export const addSalesPerson = async (req, res) => {
       }
     }
 
-    // 3. Check if user already exists in this tenant
+    // 3. Check if email already exists in this tenant
     const userExistsInTenant = await UserModel.findOne({ email: cleanEmail });
     if (userExistsInTenant) {
       return res.status(400).json({
         success: false,
+        field: "email",
         message: "A representative with this email already exists in your team!",
       });
     }
 
-    // 4. Check if user exists in master registry
+    // 4. Check if mobile number already exists in this tenant
+    const phoneDuplicateQuery = buildPhoneDuplicateQuery(normalizedPhone, cleanDigits);
+    const phoneExistsInTenant = await UserModel.findOne(phoneDuplicateQuery);
+    if (phoneExistsInTenant) {
+      return res.status(400).json({
+        success: false,
+        field: "phone",
+        message: `A representative with this mobile number (${normalizedPhone}) already exists in your team!`,
+      });
+    }
+
+    // 5. Check if user or phone exists in master registry (AuthUser)
     const { AuthUser } = getMasterModels();
     const existingAuthUser = await AuthUser.findOne({ email: cleanEmail });
     if (existingAuthUser) {
       return res.status(400).json({
         success: false,
+        field: "email",
         message:
           "This email address is already registered in the system. Please use a different email.",
       });
     }
 
-    // 5. Generate secure random temporary password (or use provided fallback)
+    const existingAuthPhone = await AuthUser.findOne(phoneDuplicateQuery);
+    if (existingAuthPhone) {
+      return res.status(400).json({
+        success: false,
+        field: "phone",
+        message: `This mobile number (${normalizedPhone}) is already registered with an account in the system. Each sales representative must have a unique mobile number.`,
+      });
+    }
+
+    // 6. Generate secure random temporary password (or use provided fallback)
     const temporaryPassword = password && password.trim().length >= 6
       ? password.trim()
       : generateSecurePassword(cleanName);
@@ -166,11 +196,11 @@ export const addSalesPerson = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(temporaryPassword, salt);
 
-    // 6. Create in Tenant Database
+    // 7. Create in Tenant Database
     const user = await UserModel.create({
       name: cleanName,
       email: cleanEmail,
-      phone: cleanMobile,
+      phone: normalizedPhone,
       password: hashedPassword,
       role: "sales person",
       organizationId: req.organization?._id || req.user?.organizationId,
@@ -178,12 +208,12 @@ export const addSalesPerson = async (req, res) => {
       status: "active",
     });
 
-    // 7. Register in Master AuthUser database
+    // 8. Register in Master AuthUser database
     await AuthUser.create({
       _id: user._id, // Keep IDs identical
       name: cleanName,
       email: cleanEmail,
-      phone: cleanMobile,
+      phone: normalizedPhone,
       password: hashedPassword,
       role: "sales person",
       organizationId: req.organization?._id || req.user?.organizationId,
@@ -212,7 +242,7 @@ export const addSalesPerson = async (req, res) => {
       emailSent = await sendSalesPersonWelcomeEmail({
         salesPersonName: cleanName,
         salesPersonEmail: cleanEmail,
-        salesPersonMobile: cleanMobile,
+        salesPersonMobile: normalizedPhone,
         temporaryPassword,
         organizationName: orgName,
         loginUrl,
@@ -248,6 +278,25 @@ export const addSalesPerson = async (req, res) => {
     });
   } catch (error) {
     console.error("Error creating user:", error);
+
+    // Handle Mongo duplicate key constraint violations (E11000)
+    if (error.code === 11000) {
+      if (error.keyPattern?.phone || error.message?.includes("phone")) {
+        return res.status(400).json({
+          success: false,
+          field: "phone",
+          message: "This mobile number is already registered in the system. Each sales representative must have a unique mobile number.",
+        });
+      }
+      if (error.keyPattern?.email || error.message?.includes("email")) {
+        return res.status(400).json({
+          success: false,
+          field: "email",
+          message: "This email address is already registered in the system.",
+        });
+      }
+    }
+
     res.status(500).json({
       success: false,
       message: error.message || "Server error while creating sales representative",
