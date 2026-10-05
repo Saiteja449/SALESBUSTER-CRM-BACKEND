@@ -186,6 +186,7 @@ export const getPaginatedLeads = async (req, res) => {
       salespersonId = "",
       status = "All",
       leadTypeTab = "New",
+      clientDate = "",
     } = req.query;
 
     const { LeadModel, UserModel } = getModels(req);
@@ -272,7 +273,16 @@ export const getPaginatedLeads = async (req, res) => {
     if (service !== "All") query.service = service;
     if (status !== "All") query.status = status;
 
-    const todayStr = new Date().toISOString().split("T")[0];
+    // Determine today's date in YYYY-MM-DD: prioritize valid clientDate, otherwise organization timezone or Asia/Kolkata
+    let todayStr = clientDate && /^\d{4}-\d{2}-\d{2}$/.test(clientDate) ? clientDate : "";
+    if (!todayStr) {
+      const orgTimezone = req.organization?.timezone || "Asia/Kolkata";
+      try {
+        todayStr = new Date().toLocaleDateString("en-CA", { timeZone: orgTimezone });
+      } catch (err) {
+        todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      }
+    }
 
     const applyTabFilter = (q, tab) => {
       if (tab === "OldLeads") {
@@ -1649,7 +1659,17 @@ export const handleMissedCall = async (req, res) => {
       orConditions.push({ phone: new RegExp(last10Digits + "$") });
     }
 
-    const todayStr = new Date().toISOString().split("T")[0];
+    const orgTimezone = req.organization?.timezone || "Asia/Kolkata";
+    let todayStr = (req.body?.clientDate && /^\d{4}-\d{2}-\d{2}$/.test(req.body.clientDate))
+      ? req.body.clientDate
+      : "";
+    if (!todayStr) {
+      try {
+        todayStr = new Date().toLocaleDateString("en-CA", { timeZone: orgTimezone });
+      } catch (err) {
+        todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      }
+    }
     const missedTime = callTimestamp ? new Date(callTimestamp) : new Date();
     const timeFormatted = missedTime.toLocaleTimeString("en-US", {
       hour: "2-digit",

@@ -285,18 +285,18 @@ curl -X POST http://localhost:5000/api/whatsapp/message/send \
 ---
 
 ### 3.8 Manager: Test AI Simulation Engine
-Simulates incoming customer messages without needing a real WhatsApp phone.
+Simulates incoming customer messages without needing a real WhatsApp phone. Supports testing numbered service selections (e.g., `"1"`, `"2"`, `"option 1"`), service name inquiries, and automated catalog photo dispatch.
 
 - **Route:** `POST /api/whatsapp/test-ai`
 - **Access:** Sales Manager / Super Admin only
 
-#### cURL
+#### cURL (Test Selecting Service By Number)
 ```bash
 curl -X POST http://localhost:5000/api/whatsapp/test-ai \
   -H "Authorization: Bearer <MANAGER_JWT_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "Do you have Punganur cows under 3 feet height? I am in Chennai."
+    "message": "1"
   }'
 ```
 
@@ -305,29 +305,47 @@ curl -X POST http://localhost:5000/api/whatsapp/test-ai \
 {
   "incoming": {
     "_id": "6701c101b2c3d4e5f6a7b901",
-    "text": "Do you have Punganur cows under 3 feet height? I am in Chennai.",
+    "text": "1",
     "direction": "incoming",
     "timestamp": "2026-10-05T13:00:00.000Z"
   },
   "outgoing": {
     "_id": "6701c105b2c3d4e5f6a7b902",
-    "text": "Yes! Our purebred Punganur dwarf cows are typically 2.2 to 2.8 feet in height. We can arrange safe transport to Chennai.",
+    "text": "Great choice! Our purebred Punganur Dwarf Cows are known for their sweet temperament and dwarf stature (under 2.8 feet). I have shared the photos and details below!",
     "direction": "outgoing",
     "timestamp": "2026-10-05T13:00:04.000Z"
   },
   "aiQualification": {
-    "city": "Chennai",
-    "intent": "Punganur Cow",
-    "interestScore": 8
+    "city": "",
+    "intent": "Punganur Dwarf Cow",
+    "interestScore": 8,
+    "urgency": "Medium"
   },
-  "leadId": "6701b901b2c3d4e5f6a7b8e1"
+  "qualificationFields": [],
+  "leadId": "6701b901b2c3d4e5f6a7b8e1",
+  "sendServiceImages": {
+    "shouldSend": true,
+    "serviceName": "Punganur Dwarf Cow"
+  },
+  "serviceImages": [
+    {
+      "url": "/uploads/services/service-1728135100000-0.jpg",
+      "title": "Punganur Dwarf Cow - Front View",
+      "description": "Purebred female, 2.4 ft height, certified pedigree"
+    },
+    {
+      "url": "/uploads/services/service-1728135100000-1.jpg",
+      "title": "Punganur Dwarf Cow - Side View",
+      "description": "Healthy second lactation stage"
+    }
+  ]
 }
 ```
 
 ---
 
 ### 3.9 Manager: Update Global WhatsApp Settings
-Controls master AI automation and automated welcome templates.
+Controls master AI automation, automated welcome message templates, and global auto-send for service catalog images.
 
 - **Route:** `POST /api/whatsapp/settings`
 - **Access:** Sales Manager / Super Admin only
@@ -339,6 +357,7 @@ curl -X POST http://localhost:5000/api/whatsapp/settings \
   -H "Content-Type: application/json" \
   -d '{
     "globalAIEnabled": true,
+    "serviceImagesAutoSendEnabled": true,
     "welcomeMessageTemplate": "Hello {name}! Welcome to {companyName}. We received your enquiry for {service}.",
     "welcomeMessageFallbackService": "Punganur Mini Cow"
   }'
@@ -350,6 +369,7 @@ curl -X POST http://localhost:5000/api/whatsapp/settings \
   "success": true,
   "data": {
     "globalAIEnabled": true,
+    "serviceImagesAutoSendEnabled": true,
     "welcomeMessageTemplate": "Hello {name}! Welcome to {companyName}. We received your enquiry for {service}.",
     "welcomeMessageFallbackService": "Punganur Mini Cow",
     "updatedBy": "Sales Manager",
@@ -537,8 +557,52 @@ curl -X GET http://localhost:5000/api/whatsapp/conversation/6701a0a1b2c3d4e5f6a7
     "senderName": "Ramesh Sharma",
     "direction": "incoming",
     "messageType": "text",
-    "text": "Can you share the photo of the cow?",
+    "text": "1",
     "timestamp": "2026-10-05T12:48:00.000Z"
+  },
+  {
+    "_id": "6701a2c4e5f6a7b8c9d0e1f3",
+    "messageId": "3EB0FED987654321CBA1",
+    "leadId": "6701a0a1b2c3d4e5f6a7b8c9",
+    "sender": "system",
+    "senderName": "AI Assistant",
+    "direction": "outgoing",
+    "messageType": "text",
+    "text": "Excellent choice! Here are the photos and details of our Punganur Dwarf Cow:",
+    "timestamp": "2026-10-05T12:48:03.000Z",
+    "aiGenerated": true,
+    "delivered": true,
+    "status": "sent"
+  },
+  {
+    "_id": "6701a2c4e5f6a7b8c9d0e1f4",
+    "messageId": "img_1728135005000_0",
+    "leadId": "6701a0a1b2c3d4e5f6a7b8c9",
+    "sender": "system",
+    "senderName": "AI Assistant",
+    "direction": "outgoing",
+    "messageType": "image",
+    "mediaUrl": "/uploads/services/service-1728135100000-0.jpg",
+    "text": "Purebred female, 2.4 ft height, certified pedigree",
+    "timestamp": "2026-10-05T12:48:05.000Z",
+    "aiGenerated": true,
+    "delivered": true,
+    "status": "sent"
+  },
+  {
+    "_id": "6701a2c4e5f6a7b8c9d0e1f5",
+    "messageId": "img_1728135007000_1",
+    "leadId": "6701a0a1b2c3d4e5f6a7b8c9",
+    "sender": "system",
+    "senderName": "AI Assistant",
+    "direction": "outgoing",
+    "messageType": "image",
+    "mediaUrl": "/uploads/services/service-1728135100000-1.jpg",
+    "text": "Healthy second lactation stage",
+    "timestamp": "2026-10-05T12:48:07.000Z",
+    "aiGenerated": true,
+    "delivered": true,
+    "status": "sent"
   }
 ]
 ```
@@ -648,3 +712,51 @@ The following endpoints reject Sales Persons with `403 Forbidden`:
    ```json
    { "success": false, "message": "Access denied: Only managers or administrators can update global WhatsApp settings." }
    ```
+
+---
+
+## 5. Automated Service Catalog Images Specification
+
+The CRM features an automated catalog visual dispatch engine. When a prospect engages with the AI assistant on WhatsApp, the system automatically introduces the matching service and sends the catalog images directly to the prospect's chat.
+
+### 5.1 Trigger Conditions
+The AI sends catalog images under the following trigger conditions:
+1. **Numbered Catalog Option Selection**: The user enters an option number corresponding to the catalog service list (e.g., `1`, `2`, `option 1`, `#1`). The backend directly matches the index to the organization's service list and activates image dispatch.
+2. **Service Name Inquiry**: The user types the product/service name (e.g., `"Gir Cow"`, `"Punganur Dwarf Cow"`).
+3. **Explicit Photo Request**: The user asks for media using visual keywords (`photo`, `image`, `pic`, `look`, `dikhao`, `bhejo`).
+
+### 5.2 Control Toggles
+Image dispatch is guarded by two levels of controls:
+- **Organization Global Setting**: `organization.aiSettings.serviceImagesAutoSendEnabled` (`true` by default). Can be configured via `POST /api/whatsapp/settings` or `POST /api/organizations/ai-settings`.
+- **Per-Service Setting**: `service.sendImagesEnabled` (`true` by default). Configured per catalog item. If a specific service has `sendImagesEnabled: false`, images for that item are omitted.
+
+### 5.3 Dispatch Behavior & Message Format
+1. **Text Reply First**: The AI first dispatches a conversational text response introducing the service and informing the prospect that images are being shared.
+2. **Sequential Image Delivery**: Each image from the service's `images` array (`url`, `title`, `description`) is sent as a WhatsApp media message with its caption:
+   - Delay: `1200ms` between consecutive images to avoid spam detection.
+   - Socket.IO: Emits `new_message` to the lead room (`lead._id`) and `conversation_updated` to the organization room (`org_<orgId>`) for real-time frontend chat sync.
+3. **Message Model Structure (`outgoing image`)**:
+   ```json
+   {
+     "_id": "6701a2c4e5f6a7b8c9d0e1f4",
+     "messageId": "img_1728135005000_0",
+     "leadId": "6701a0a1b2c3d4e5f6a7b8c9",
+     "sender": "system",
+     "senderName": "AI Assistant",
+     "direction": "outgoing",
+     "messageType": "image",
+     "mediaUrl": "/uploads/services/service-1728135100000-0.jpg",
+     "text": "Purebred female, 2.4 ft height, certified pedigree",
+     "timestamp": "2026-10-05T12:48:05.000Z",
+     "aiGenerated": true,
+     "delivered": true,
+     "status": "sent"
+   }
+   ```
+
+### 5.4 Lead Welcome Message Rules
+- Automated Welcome Messages (`sendWelcomeEnquiryMessage`) are automatically sent for new inbound inquiries (e.g. Website Form, Meta Ads, Email, Mobile App).
+- **Exclusions**: Welcome messages are **strictly skipped** when `lead.source` is:
+  - `Call` (or contains `"call"` - e.g. Missed Calls handled by dedicated Missed Call alerts).
+  - `Manual Entry`.
+

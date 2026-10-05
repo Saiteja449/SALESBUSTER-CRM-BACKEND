@@ -50,7 +50,7 @@ test("handleMissedCall - Returns 400 if received SIM number ('number') is missin
 
 test("handleMissedCall - Creates new lead in Today's Follow-up when lead doesn't exist", async () => {
   const repId = new mongoose.Types.ObjectId().toString();
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
   let createdLeadData = null;
   let createdFollowupData = null;
@@ -109,7 +109,7 @@ test("handleMissedCall - Creates new lead in Today's Follow-up when lead doesn't
 test("handleMissedCall - Updates existing lead to Today's Follow-up", async () => {
   const repId = new mongoose.Types.ObjectId().toString();
   const existingLeadId = new mongoose.Types.ObjectId().toString();
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
   let savedLead = false;
   const mockExistingLead = {

@@ -878,6 +878,14 @@ export const testAI = async (req, res) => {
       aiQualification: updatedLead.aiQualification,
       qualificationFields: req.organization?.aiSettings?.qualificationFields || [],
       leadId: lead._id,
+      sendServiceImages:
+        typeof aiResponseResult === "object" && aiResponseResult !== null
+          ? aiResponseResult.sendServiceImages || null
+          : null,
+      serviceImages:
+        typeof aiResponseResult === "object" && aiResponseResult !== null
+          ? aiResponseResult.serviceImagesToSend || []
+          : [],
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
