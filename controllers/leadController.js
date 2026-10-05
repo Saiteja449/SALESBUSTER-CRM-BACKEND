@@ -49,6 +49,57 @@ const isLeadAssignedToUser = (lead, user) => {
   return false;
 };
 
+// Helper to normalize service and services inputs (handles JSON strings, arrays, comma-delimited strings)
+export const normalizeServiceInput = (serviceInput, servicesInput) => {
+  let extractedService = "";
+  let extractedServices = [];
+
+  const parseRaw = (val) => {
+    if (!val) return [];
+    if (Array.isArray(val)) return val.map((s) => String(s).trim()).filter(Boolean);
+    if (typeof val === "string") {
+      const trimmed = val.trim();
+      if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (Array.isArray(parsed)) {
+            return parsed.map((s) => String(s).trim()).filter(Boolean);
+          }
+        } catch (e) {
+          // ignore error and proceed
+        }
+      }
+      return trimmed
+        .split(",")
+        .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+        .filter(Boolean);
+    }
+    return [String(val).trim()];
+  };
+
+  const fromServices = parseRaw(servicesInput);
+  const fromService = parseRaw(serviceInput);
+
+  if (fromService.length > 0 && fromService[0] !== "General Enquiry") {
+    extractedService = fromService[0];
+    extractedServices = fromServices.length > 0 ? fromServices : fromService;
+  } else if (fromServices.length > 0 && fromServices[0] !== "General Enquiry") {
+    extractedService = fromServices[0];
+    extractedServices = fromServices;
+  } else if (fromService.length > 0) {
+    extractedService = fromService[0];
+    extractedServices = fromServices.length > 0 ? fromServices : [extractedService];
+  } else if (fromServices.length > 0) {
+    extractedService = fromServices[0];
+    extractedServices = fromServices;
+  } else {
+    extractedService = "General Enquiry";
+    extractedServices = ["General Enquiry"];
+  }
+
+  return { service: extractedService, services: extractedServices };
+};
+
 // Helper for background audio transcription & analysis
 const triggerAudioAnalysis = async (
   leadId,
@@ -536,6 +587,15 @@ export const createLead = async (req, res) => {
 
     const leadData = req.body || {};
 
+    // Normalize service and services input
+    const { service: normService, services: normServices } = normalizeServiceInput(
+      leadData.service,
+      leadData.services
+    );
+    leadData.service = normService;
+    leadData.services = normServices;
+    console.log(`[createLead] [Step 3.5] Resolved service: "${leadData.service}", services:`, leadData.services);
+
     // Duplicate check
     console.log("[createLead] [Step 4] Checking for duplicate leads by phone or email...");
     if (leadData.phone || leadData.email) {
@@ -800,6 +860,16 @@ export const updateLead = async (req, res) => {
   try {
     const { LeadModel, NotificationModel } = getModels(req);
     const updateData = req.body || {};
+
+    if (updateData.service !== undefined || updateData.services !== undefined) {
+      const { service: normService, services: normServices } = normalizeServiceInput(
+        updateData.service,
+        updateData.services
+      );
+      updateData.service = normService;
+      updateData.services = normServices;
+      console.log(`[updateLead] [Step 1.5] Resolved service: "${updateData.service}", services:`, updateData.services);
+    }
 
     console.log(`[updateLead] [Step 2] Finding existing lead with ID: ${id}...`);
     const lead = await LeadModel.findById(id);

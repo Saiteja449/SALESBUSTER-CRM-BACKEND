@@ -46,6 +46,10 @@ const leadSchema = new mongoose.Schema(
       default: "General Enquiry",
       trim: true,
     },
+    services: {
+      type: [String],
+      default: [],
+    },
 
     assignedTo: {
       type: mongoose.Schema.Types.Mixed,

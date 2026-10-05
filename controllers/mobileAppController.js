@@ -3,6 +3,7 @@ import User from "../models/User.js";
 import AssignmentState from "../models/AssignmentState.js";
 import { getIO } from "../socket/socket.js";
 import { sendWelcomeEnquiryMessage } from "../whatsapp/whatsappService.js";
+import { normalizeServiceInput } from "./leadController.js";
 
 const getModels = (req) => ({
   LeadModel: req.tenantModels?.Lead || Lead,
@@ -12,7 +13,7 @@ const getModels = (req) => ({
 
 export const receiveMobileAppLead = async (req, res) => {
   try {
-    const { name, phone, email, service } = req.body;
+    const { name, phone, email, service, services } = req.body;
 
     const errors = [];
     if (!name || name.trim() === "") errors.push("Name is required");
@@ -54,28 +55,17 @@ export const receiveMobileAppLead = async (req, res) => {
       });
     }
 
-    const mapService = (incomingService) => {
-      if (!incomingService) return "General Enquiry";
-      const valid = [
-        "General Enquiry",
-        "Passenger Lift",
-        "MRL Lift",
-        "Hydraulic Lift",
-        "Hospital Bed Lift",
-        "Elevator Maintenance & AMC",
-        "Elevator Modernization",
-      ];
-      const match = valid.find(
-        (v) => v.toLowerCase() === incomingService.trim().toLowerCase(),
-      );
-      return match || "General Enquiry";
-    };
+    const { service: normService, services: normServices } = normalizeServiceInput(
+      service,
+      services
+    );
 
     const leadData = {
       name: name,
       phone: phone,
       email: email || "",
-      service: mapService(service),
+      service: normService,
+      services: normServices,
       source: "Mobile App",
       status: "New",
       assignedTo: "Unassigned",
