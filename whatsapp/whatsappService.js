@@ -1540,11 +1540,23 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
 
         // If service images were requested/matched, dispatch each image with its description
         if (serviceImagesToSend.length > 0) {
-          console.log(`[WhatsApp AI] Dispatching ${serviceImagesToSend.length} service image(s) for lead ${lead.phone}...`);
-          for (const img of serviceImagesToSend) {
+          console.log(
+            `[WhatsApp AI] Dispatching ${serviceImagesToSend.length} service image(s) for lead ${lead.phone}...`
+          );
+          for (let imgIdx = 0; imgIdx < serviceImagesToSend.length; imgIdx++) {
+            const img = serviceImagesToSend[imgIdx];
+            if (!img || !img.url) {
+              console.warn(
+                `[WhatsApp AI] Skipping image index ${imgIdx} for lead ${lead.phone}: missing url.`
+              );
+              continue;
+            }
+
             try {
-              // Stagger sends by 800ms to preserve order and avoid spam triggers
-              await new Promise((resolve) => setTimeout(resolve, 800));
+              // Stagger sends by 2200ms (1000ms for first) to give Baileys media pipeline
+              // enough time to upload to WhatsApp MMG servers without socket collision or 429 rate limit
+              const delayMs = imgIdx === 0 ? 1000 : 2200;
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
 
               let imageSource = null;
               if (img.url && (img.url.startsWith("/uploads/") || img.url.startsWith("uploads/"))) {
@@ -1565,12 +1577,17 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
 
               const captionText = img.description || img.title || "";
 
+              console.log(
+                `[WhatsApp AI] Sending service image ${imgIdx + 1}/${serviceImagesToSend.length} (${img.url}) for lead ${lead.phone}...`
+              );
+
               const imgSendResult = await sock.sendMessage(remoteJid, {
                 ...imagePayload,
                 caption: captionText,
               });
 
-              const imgOutgoingId = imgSendResult.key.id;
+              const imgOutgoingId =
+                imgSendResult?.key?.id || `img_${Date.now()}_${imgIdx}`;
               const imgTimestamp = new Date();
 
               const imgMessageRecord = await MessageModel.create({
@@ -1611,8 +1628,15 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
                   io.emit("conversation_updated", convUpdatePayload);
                 }
               }
+
+              console.log(
+                `[WhatsApp AI] Successfully sent image ${imgIdx + 1}/${serviceImagesToSend.length} (Msg ID: ${imgOutgoingId})`
+              );
             } catch (imgErr) {
-              console.error(`[WhatsApp AI] Error sending service image ${img.url}:`, imgErr);
+              console.error(
+                `[WhatsApp AI] Error sending service image ${imgIdx + 1}/${serviceImagesToSend.length} (${img?.url}):`,
+                imgErr?.message || imgErr
+              );
             }
           }
         }

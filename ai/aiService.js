@@ -1266,7 +1266,11 @@ Latest Message: ${incomingText}`;
       }
 
       if (!alreadySentRecently) {
-        serviceImagesToSend = matchingServiceObj.images;
+        serviceImagesToSend = Array.isArray(matchingServiceObj.images)
+          ? matchingServiceObj.images.map((img) =>
+              typeof img?.toObject === "function" ? img.toObject() : { ...img },
+            )
+          : [];
       }
     }
 

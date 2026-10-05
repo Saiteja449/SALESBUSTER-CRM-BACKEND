@@ -1114,9 +1114,15 @@ export const updateMyAISettings = async (req, res) => {
       org.aiSettings.agentPersona = agentPersona.trim();
     if (customInstructions !== undefined)
       org.aiSettings.customInstructions = customInstructions.trim();
-    if (Array.isArray(services)) org.aiSettings.services = services;
-    if (Array.isArray(qualificationFields))
+    if (Array.isArray(services)) {
+      org.aiSettings.services = services;
+      org.markModified("aiSettings");
+      org.markModified("aiSettings.services");
+    }
+    if (Array.isArray(qualificationFields)) {
       org.aiSettings.qualificationFields = qualificationFields;
+      org.markModified("aiSettings");
+    }
     if (qdrantCollection !== undefined)
       org.aiSettings.qdrantCollection = qdrantCollection.trim();
     if (dailyQuotaLimit !== undefined) {
@@ -1562,9 +1568,15 @@ export const updateOrgAISettings = async (req, res) => {
       org.aiSettings.agentPersona = agentPersona.trim();
     if (customInstructions !== undefined)
       org.aiSettings.customInstructions = customInstructions.trim();
-    if (Array.isArray(services)) org.aiSettings.services = services;
-    if (Array.isArray(qualificationFields))
+    if (Array.isArray(services)) {
+      org.aiSettings.services = services;
+      org.markModified("aiSettings");
+      org.markModified("aiSettings.services");
+    }
+    if (Array.isArray(qualificationFields)) {
       org.aiSettings.qualificationFields = qualificationFields;
+      org.markModified("aiSettings");
+    }
     if (qdrantCollection !== undefined)
       org.aiSettings.qdrantCollection = qdrantCollection.trim();
     if (dailyQuotaLimit !== undefined) {
