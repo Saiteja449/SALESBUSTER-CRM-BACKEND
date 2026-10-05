@@ -1581,6 +1581,16 @@ export const handleMissedCall = async (req, res) => {
       service = "General Enquiry",
     } = req.body;
 
+    console.log(`[Missed Call] Received POST /api/leads/missed-call:`, {
+      caller: phone,
+      receivedSim: number,
+      name,
+      simSlot: req.body.simSlot ?? req.body.slotIndex ?? req.body.simIndex ?? null,
+      isDifferentSim: req.body.isDifferentSim ?? req.body.isDifferentNumber ?? null,
+      hasCustomMessage: Boolean(customMessage && customMessage.trim()),
+      user: req.user ? { id: req.user._id || req.user.id, role: req.user.role, phone: req.user.phone } : null,
+    });
+
     if (!phone) {
       return res.status(400).json({
         success: false,
@@ -1659,8 +1669,16 @@ export const handleMissedCall = async (req, res) => {
     // 4) Auth token user (if role is sales person)
     // 5) Existing lead assignedTo (if assigned to a sales person)
     // ================================================================
+    const normalizedUserRole = String(req.user?.role || "").toLowerCase().trim();
+    const isRepUser =
+      normalizedUserRole === "sales person" ||
+      normalizedUserRole === "sales rep" ||
+      normalizedUserRole === "sales representative" ||
+      normalizedUserRole === "rep" ||
+      Boolean(req.user?.isSalesPerson);
+
     let resolvedRep = null;
-    if (req.user?.role === "sales person" || req.user?.role === "sales rep") {
+    if (isRepUser) {
       resolvedRep = req.user;
     }
 
@@ -1783,7 +1801,7 @@ export const handleMissedCall = async (req, res) => {
     let isNewLead = false;
     const assignedUserId =
       resolvedRepId ||
-      (req.user?.role === "sales person" ? (req.user._id || req.user.id)?.toString() : "") ||
+      (isRepUser ? (req.user._id || req.user.id)?.toString() : "") ||
       (req.user?._id || req.user?.id || "").toString();
 
     let callerName = name && name.trim() ? name.trim() : "";
@@ -1851,6 +1869,8 @@ export const handleMissedCall = async (req, res) => {
     let whatsappSent = false;
     let whatsappError = null;
     let dispatchedMessageText = "";
+    let isSameNumberResult = null;
+    let activeConnectedPhoneResult = "";
 
     if (sendWhatsApp) {
       try {
@@ -1920,7 +1940,7 @@ export const handleMissedCall = async (req, res) => {
             let targetSessionId = null;
             if (resolvedRepId) {
               targetSessionId = orgId ? `org_${orgId}_user_${resolvedRepId}` : `user_${resolvedRepId}`;
-            } else if (req.user?.role === "sales person") {
+            } else if (isRepUser) {
               const uId = (req.user._id || req.user.id).toString();
               targetSessionId = orgId ? `org_${orgId}_user_${uId}` : `user_${uId}`;
             } else if (orgId) {
@@ -1958,7 +1978,34 @@ export const handleMissedCall = async (req, res) => {
             const cleanConnected = String(activeConnectedPhone || "").replace(/\D/g, "");
             const connectedLast10 = cleanConnected.length >= 10 ? cleanConnected.slice(-10) : cleanConnected;
 
-            const isSameNumber = Boolean(receivedLast10 && connectedLast10 && receivedLast10 === connectedLast10);
+            const simSlotVal = req.body.simSlot ?? req.body.slotIndex ?? req.body.simIndex ?? null;
+            const isExplicitDifferentSim = Boolean(
+              req.body.isDifferentNumber ||
+              req.body.isDifferentSim ||
+              req.body.differentSim ||
+              (simSlotVal !== null && (Number(simSlotVal) === 2 || String(simSlotVal).toLowerCase() === "sim 2" || String(simSlotVal).toLowerCase() === "sim2"))
+            );
+
+            let isSameNumber = Boolean(receivedLast10 && connectedLast10 && receivedLast10 === connectedLast10);
+            if (isExplicitDifferentSim) {
+              isSameNumber = false;
+            }
+            isSameNumberResult = isSameNumber;
+            activeConnectedPhoneResult = activeConnectedPhone;
+
+            console.log(`[Missed Call Template Selection]`, {
+              receivedSimInPayload: number,
+              receivedLast10,
+              whatsAppConnectedPhone: activeConnectedPhone,
+              connectedLast10,
+              simSlotVal,
+              isExplicitDifferentSim,
+              isSameNumber,
+              hasCustomMessage: Boolean(customMessage && customMessage.trim()),
+              templateChosen: (customMessage && customMessage.trim())
+                ? "CUSTOM_MESSAGE"
+                : (isSameNumber ? "SAME_NUMBER" : "DIFFERENT_NUMBER"),
+            });
 
             let welcomeText = "";
             if (customMessage && customMessage.trim()) {
@@ -2032,6 +2079,10 @@ export const handleMissedCall = async (req, res) => {
         whatsappSent,
         whatsappError,
         dispatchedMessageText,
+        isSameNumber: isSameNumberResult,
+        activeConnectedPhone: activeConnectedPhoneResult,
+        receivedSimNumber: number,
+        templateType: (customMessage && customMessage.trim()) ? "custom" : (isSameNumberResult ? "same_number" : "different_number"),
       },
     });
   } catch (error) {
