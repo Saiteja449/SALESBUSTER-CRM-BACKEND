@@ -83,16 +83,6 @@ export const createFollowup = async (req, res) => {
 
     const { FollowupModel, LeadModel } = getModels(req);
 
-    // If sales rep, enforce that the lead is assigned to them
-    if (req.user?.role === "sales person" && leadId && LeadModel) {
-      const lead = await LeadModel.findById(leadId);
-      if (lead && !isLeadAssignedToUser(lead, req.user)) {
-        return res.status(403).json({
-          success: false,
-          message: "Access forbidden: You can only schedule follow-ups for leads assigned to you",
-        });
-      }
-    }
 
     const cleanText = (val, fallback = "") => {
       if (val === null || val === undefined) return fallback;
@@ -253,16 +243,6 @@ export const updateFollowup = async (req, res) => {
       return res.status(404).json({ success: false, message: "Followup not found" });
     }
 
-    // Role check: sales reps can only update followups for leads assigned to them
-    if (req.user?.role === "sales person" && followup.leadId && LeadModel) {
-      const lead = await LeadModel.findById(followup.leadId);
-      if (lead && !isLeadAssignedToUser(lead, req.user)) {
-        return res.status(403).json({
-          success: false,
-          message: "Access forbidden: You can only update follow-ups for leads assigned to you",
-        });
-      }
-    }
 
     followup.done =
       req.body.done !== undefined ? req.body.done : followup.done;
@@ -428,17 +408,6 @@ export const handleAIFollowup = async (req, res) => {
         .json({ success: false, message: "AI Follow-up not found" });
     }
 
-    // Role check: sales reps can only resolve followups for leads assigned to them
-    if (req.user?.role === "sales person" && followup.leadId && LeadModel) {
-      const lead = await LeadModel.findById(followup.leadId);
-      if (lead && !isLeadAssignedToUser(lead, req.user)) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Access forbidden: You can only resolve follow-ups for leads assigned to you",
-        });
-      }
-    }
 
     // Mark current followup as done
     followup.done = true;

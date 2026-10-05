@@ -583,10 +583,25 @@ export const createLead = async (req, res) => {
             phone: existingLead.phone,
             email: existingLead.email,
           });
-          console.log("==================== [createLead] DUPLICATE ====================\n");
+          let duplicateMsg = `This phone number (${existingLead.phone}) is already registered in your database for lead "${existingLead.name}" (Status: ${existingLead.status || "New"}).`;
+          if (
+            leadData.email &&
+            existingLead.email &&
+            existingLead.email.toLowerCase() === leadData.email.toLowerCase() &&
+            existingLead.phone !== rawPhone
+          ) {
+            duplicateMsg = `This email address (${existingLead.email}) is already registered for lead "${existingLead.name}".`;
+          }
+
           return res.status(400).json({
             success: false,
-            message: "A lead with this phone number or email already exists.",
+            message: duplicateMsg,
+            duplicateLead: {
+              _id: existingLead._id,
+              name: existingLead.name,
+              phone: existingLead.phone,
+              status: existingLead.status,
+            },
           });
         }
         console.log("[createLead] [Step 4] Duplicate check passed. No existing lead matched.");
@@ -806,22 +821,17 @@ export const updateLead = async (req, res) => {
       assignedTo: lead.assignedTo,
     });
 
-    // Role check: sales reps can only update leads assigned to them and cannot reassign
+    // Role check: sales reps can update leads; prevent sales reps from arbitrarily reassigning
     console.log(`[updateLead] [Step 3] Checking role permissions for user role: "${req.user?.role}"...`);
     if (req.user?.role === "sales person") {
-      const isAssigned = isLeadAssignedToUser(lead, req.user);
-      console.log(`[updateLead] [Step 3] Sales representative assignment check: ${isAssigned}`);
-      if (!isAssigned) {
-        console.warn(`[updateLead] [Step 3] REJECTED: Sales rep ${req.user?._id} (${req.user?.name}) attempted to update unassigned lead ${id}`);
-        console.log("==================== [updateLead] FORBIDDEN ====================\n");
-        return res.status(403).json({
-          success: false,
-          message: "Access forbidden: You can only update leads assigned to you",
-        });
-      }
       if (updateData.assignedTo !== undefined) {
         console.log(`[updateLead] [Step 3] Stripping 'assignedTo' (${updateData.assignedTo}) from update payload as sales reps cannot reassign leads.`);
         delete updateData.assignedTo;
+      }
+      // If lead is unassigned, auto-assign to the active sales rep handling this update
+      if (!lead.assignedTo || lead.assignedTo === "Unassigned") {
+        lead.assignedTo = (req.user._id || req.user.id).toString();
+        console.log(`[updateLead] [Step 3] Auto-assigning unassigned lead to active sales rep: ${lead.assignedTo}`);
       }
     } else {
       console.log(`[updateLead] [Step 3] User role "${req.user?.role}" authorized for all fields.`);
@@ -1105,13 +1115,7 @@ export const analyzeRecording = async (req, res) => {
         .status(404)
         .json({ success: false, message: "Lead not found" });
 
-    // Role check: sales reps can only trigger analysis for leads assigned to them
-    if (req.user?.role === "sales person" && !isLeadAssignedToUser(lead, req.user)) {
-      return res.status(403).json({
-        success: false,
-        message: "Access forbidden: You can only analyze recordings for leads assigned to you",
-      });
-    }
+    // Authorized users can trigger analysis for recordings
 
     const recording = lead.recordings.id(recordingId);
     if (!recording)
@@ -1206,12 +1210,10 @@ export const uploadRecordingForLead = async (req, res) => {
       });
     }
 
-    // Role check: sales reps can only upload recordings for leads assigned to them
-    if (req.user?.role === "sales person" && !isLeadAssignedToUser(lead, req.user)) {
-      return res.status(403).json({
-        success: false,
-        message: "Access forbidden: You can only upload recordings for leads assigned to you",
-      });
+    // If lead is unassigned and sales person uploads recording, auto-assign to them
+    if (req.user?.role === "sales person" && (!lead.assignedTo || lead.assignedTo === "Unassigned")) {
+      lead.assignedTo = (req.user._id || req.user.id).toString();
+      await lead.save();
     }
 
     if (!req.file) {
@@ -2301,7 +2303,7 @@ export const handleInboundCall = async (req, res) => {
           notes: updatedNotes,
         },
       },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     console.log(`[handleInboundCall] [Step 5] Lead ${updatedLead._id} atomically updated in MongoDB: assignedTo = ${updatedLead.assignedTo}`);
