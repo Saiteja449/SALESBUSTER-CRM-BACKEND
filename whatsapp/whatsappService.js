@@ -1446,7 +1446,12 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
     }
 
     // Call Gemini Agent with tenant models and organization context
-    const replyText = await generateAIResponse(lead._id, incomingText, models, orgId);
+    const aiResult = await generateAIResponse(lead._id, incomingText, models, orgId);
+    const replyText = typeof aiResult === "object" && aiResult !== null ? aiResult.reply : aiResult;
+    const serviceImagesToSend =
+      typeof aiResult === "object" && aiResult !== null && Array.isArray(aiResult.serviceImagesToSend)
+        ? aiResult.serviceImagesToSend
+        : [];
 
     // Disable AI mode if fallback message is returned
     const fallbackMessage =
@@ -1532,8 +1537,87 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
             io.emit("conversation_updated", updatePayload);
           }
         }
+
+        // If service images were requested/matched, dispatch each image with its description
+        if (serviceImagesToSend.length > 0) {
+          console.log(`[WhatsApp AI] Dispatching ${serviceImagesToSend.length} service image(s) for lead ${lead.phone}...`);
+          for (const img of serviceImagesToSend) {
+            try {
+              // Stagger sends by 800ms to preserve order and avoid spam triggers
+              await new Promise((resolve) => setTimeout(resolve, 800));
+
+              let imageSource = null;
+              if (img.url && (img.url.startsWith("/uploads/") || img.url.startsWith("uploads/"))) {
+                const cleanRelPath = img.url.replace(/^\//, "");
+                const localFullPath = path.join(__dirname, "..", cleanRelPath);
+                if (fs.existsSync(localFullPath)) {
+                  imageSource = fs.readFileSync(localFullPath);
+                }
+              }
+
+              const fullImageUrl = img.url.startsWith("http")
+                ? img.url
+                : `${process.env.BACKEND_URL || "http://localhost:5000"}${img.url.startsWith("/") ? "" : "/"}${img.url}`;
+
+              const imagePayload = imageSource
+                ? { image: imageSource }
+                : { image: { url: fullImageUrl } };
+
+              const captionText = img.description || img.title || "";
+
+              const imgSendResult = await sock.sendMessage(remoteJid, {
+                ...imagePayload,
+                caption: captionText,
+              });
+
+              const imgOutgoingId = imgSendResult.key.id;
+              const imgTimestamp = new Date();
+
+              const imgMessageRecord = await MessageModel.create({
+                messageId: imgOutgoingId,
+                leadId: lead._id,
+                sender: "system",
+                senderName: "AI Assistant",
+                direction: "outgoing",
+                messageType: "image",
+                mediaUrl: img.url,
+                text: captionText,
+                timestamp: imgTimestamp,
+                aiGenerated: true,
+                delivered: true,
+                read: false,
+                status: "sent",
+              });
+
+              await ConversationModel.findOneAndUpdate(
+                { leadId: lead._id },
+                {
+                  lastMessage: captionText ? `[Image] ${captionText}` : "[Image]",
+                  lastMessageTime: imgTimestamp,
+                },
+                { upsert: true }
+              );
+
+              if (io) {
+                io.to(lead._id.toString()).emit("new_message", imgMessageRecord);
+                const convUpdatePayload = {
+                  leadId: lead._id,
+                  lastMessage: captionText ? `[Image] ${captionText}` : "[Image]",
+                  lastMessageTime: imgTimestamp,
+                };
+                if (orgId) {
+                  io.to(`org_${orgId}`).emit("conversation_updated", convUpdatePayload);
+                } else {
+                  io.emit("conversation_updated", convUpdatePayload);
+                }
+              }
+            } catch (imgErr) {
+              console.error(`[WhatsApp AI] Error sending service image ${img.url}:`, imgErr);
+            }
+          }
+        }
       } finally {
-        // Clear automated send flag after message is fully saved and broadcast
+        // Clear automated send flag after all messages are sent
         automatedSendInProgress.delete(leadIdStr);
       }
     } else {

@@ -436,12 +436,16 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
     (async () => {
       try {
         console.log(`[WhatsAppWebhook] Generating AI response for lead ${cleanPhone}...`);
-        const aiResponseText = await generateAIResponse(
+        const aiResponseResult = await generateAIResponse(
           lead._id,
           messageText,
           tenantModels,
           org
         );
+        const aiResponseText =
+          typeof aiResponseResult === "object" && aiResponseResult !== null
+            ? aiResponseResult.reply
+            : aiResponseResult;
 
         if (!aiResponseText || !aiResponseText.trim()) return;
 

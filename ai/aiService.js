@@ -277,6 +277,20 @@ export const buildQualificationSchema = (
       .string()
       .default("")
       .describe("Next step for the sales team."),
+    sendServiceImages: z
+      .object({
+        shouldSend: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Set to true if user asks about, inquires about, or requests photos/images/looks of a specific service from our catalog, and that service has images available.",
+          ),
+        serviceName: z
+          .string()
+          .default("")
+          .describe("Exact name of the service from catalog to send images for."),
+      })
+      .default({ shouldSend: false, serviceName: "" }),
     triggerActions: z
       .object({
         createFollowUp: z
@@ -363,7 +377,11 @@ export const buildSystemPrompt = ({
           const sName = typeof s === "string" ? s : s.name;
           const sDesc =
             typeof s === "object" && s.description ? `: ${s.description}` : "";
-          return `${idx + 1}. ${sName}${sDesc}`;
+          const imgCount =
+            typeof s === "object" && Array.isArray(s.images) && s.images.length > 0
+              ? ` [Has ${s.images.length} Image(s) with descriptions available]`
+              : "";
+          return `${idx + 1}. ${sName}${sDesc}${imgCount}`;
         })
         .join("\n");
   }
@@ -458,6 +476,9 @@ ${customRules}
 1. A
 2. B
 3. C).
+7. SERVICE IMAGES & PHOTOS: If the customer inquires about, expresses interest in, or requests photos/images/details of a specific service from our catalog, and that service has images available:
+- In your reply text, introduce or describe the service warmly and inform the customer that you are sharing the photos and details below.
+- Set "sendServiceImages" in your structured output with "shouldSend": true and "serviceName": "<exact service name from catalog>".
 
 FIRST MESSAGE REQUIREMENT:
 If this is the first interaction (Total Conversation Turns is 1 or 0) and the user has not mentioned a specific product or requirement, you MUST introduce ${companyName}, briefly present our core services as a vertical numbered list with each item on its own separate line (one below the other, never inline in a single paragraph), and invite them to pick an option or describe their need!
@@ -1164,13 +1185,104 @@ Latest Message: ${incomingText}`;
       });
     }
 
-    return (
-      parsed.reply ||
-      "I'm sorry, but I'm unable to assist with this request right now. I'll connect you with one of our team members, who will continue assisting you shortly."
+    // Determine if service images should be dispatched
+    let serviceImagesToSend = [];
+    const targetServiceName =
+      parsed.sendServiceImages?.serviceName ||
+      matchedService ||
+      updatePayload.service ||
+      lead.service;
+
+    const catalogServices = effectiveSettings.services || [];
+    const matchingServiceObj = catalogServices.find(
+      (s) =>
+        s.name &&
+        targetServiceName &&
+        s.name.trim().toLowerCase() === targetServiceName.trim().toLowerCase(),
     );
+
+    const userTextLower = (incomingText || "").toLowerCase();
+    const explicitlyAskedForPhotos =
+      userTextLower.includes("photo") ||
+      userTextLower.includes("image") ||
+      userTextLower.includes("pic") ||
+      userTextLower.includes("picture") ||
+      userTextLower.includes("look") ||
+      userTextLower.includes("bhejo") ||
+      userTextLower.includes("dikhao") ||
+      userTextLower.includes("dekho");
+
+    const shouldSendImages =
+      Boolean(parsed.sendServiceImages?.shouldSend) ||
+      (explicitlyAskedForPhotos && matchingServiceObj);
+
+    if (
+      shouldSendImages &&
+      matchingServiceObj &&
+      Array.isArray(matchingServiceObj.images) &&
+      matchingServiceObj.images.length > 0
+    ) {
+      // Check anti-spam: Did we already send these images to this lead in the last 12 hours?
+      let alreadySentRecently = false;
+      if (!explicitlyAskedForPhotos) {
+        try {
+          const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
+          const serviceImageUrls = matchingServiceObj.images
+            .map((img) => img.url)
+            .filter(Boolean);
+          const MessageModel = tenantModels?.Message || Message;
+          const recentImageMsg = await MessageModel.findOne({
+            leadId,
+            messageType: "image",
+            mediaUrl: { $in: serviceImageUrls },
+            timestamp: { $gte: twelveHoursAgo },
+          });
+          if (recentImageMsg) {
+            alreadySentRecently = true;
+          }
+        } catch (checkErr) {
+          console.warn(
+            "[AI Service] Error checking recently sent service images:",
+            checkErr.message,
+          );
+        }
+      }
+
+      if (!alreadySentRecently) {
+        serviceImagesToSend = matchingServiceObj.images;
+      }
+    }
+
+    const replyOutput =
+      parsed.reply ||
+      "I'm sorry, but I'm unable to assist with this request right now. I'll connect you with one of our team members, who will continue assisting you shortly.";
+
+    return {
+      reply: replyOutput,
+      serviceImagesToSend,
+      serviceName: matchingServiceObj?.name || targetServiceName || "",
+      toString() {
+        return this.reply;
+      },
+      valueOf() {
+        return this.reply;
+      },
+    };
   } catch (error) {
     console.error("Error in AI Service generateAIResponse:", error);
-    return "I'm sorry, but I'm unable to assist with this request right now. I'll connect you with one of our team members, who will continue assisting you shortly.";
+    const fallbackText =
+      "I'm sorry, but I'm unable to assist with this request right now. I'll connect you with one of our team members, who will continue assisting you shortly.";
+    return {
+      reply: fallbackText,
+      serviceImagesToSend: [],
+      serviceName: "",
+      toString() {
+        return this.reply;
+      },
+      valueOf() {
+        return this.reply;
+      },
+    };
   }
 };
 

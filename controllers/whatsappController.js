@@ -849,12 +849,16 @@ export const testAI = async (req, res) => {
       timestamp: new Date(),
     });
 
-    const aiResponseText = await generateAIResponse(
+    const aiResponseResult = await generateAIResponse(
       lead._id,
       message,
       req.tenantModels,
       req.organization,
     );
+    const aiResponseText =
+      typeof aiResponseResult === "object" && aiResponseResult !== null
+        ? aiResponseResult.reply
+        : aiResponseResult;
 
     // Save outgoing
     const outgoing = await MessageModel.create({

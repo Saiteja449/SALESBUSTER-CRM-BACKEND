@@ -1742,3 +1742,34 @@ export const deleteOrgKnowledgeDoc = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// @desc    Upload an image for a service
+// @route   POST /api/organizations/my-org/services/upload-image
+// @access  Protected (Manager or Owner)
+export const uploadServiceImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "No image file provided",
+      });
+    }
+
+    const relativeUrl = `/uploads/services/${req.file.filename}`;
+
+    res.status(200).json({
+      success: true,
+      message: "Service image uploaded successfully",
+      url: relativeUrl,
+      fileName: req.file.filename,
+      originalName: req.file.originalname,
+      size: req.file.size,
+    });
+  } catch (error) {
+    console.error("Error in uploadServiceImage:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to upload service image",
+    });
+  }
+};

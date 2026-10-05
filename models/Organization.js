@@ -1,5 +1,31 @@
 import mongoose from "mongoose";
 
+// Sub-Schema for Service Images & Descriptions
+export const serviceImageSubSchema = new mongoose.Schema(
+  {
+    url: {
+      type: String,
+      required: [true, "Image URL or path is required"],
+      trim: true,
+    },
+    title: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    description: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    order: {
+      type: Number,
+      default: 0,
+    },
+  },
+  { _id: true }
+);
+
 // Formal Sub-Schema for Organization Services Catalog
 export const serviceSubSchema = new mongoose.Schema(
   {
@@ -27,6 +53,10 @@ export const serviceSubSchema = new mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true,
+    },
+    images: {
+      type: [serviceImageSubSchema],
+      default: [],
     },
   },
   { _id: true }

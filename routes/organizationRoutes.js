@@ -23,6 +23,7 @@ import {
   deleteOrgKnowledgeDoc,
   getOrganizationServices,
   getOrganizationSettings,
+  uploadServiceImage,
 } from "../controllers/organizationController.js";
 import { protect, verifySuperAdmin } from "../middleware/authMiddleware.js";
 
@@ -47,6 +48,34 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB max
+});
+
+// Multer storage for service images
+const serviceUploadDir = "uploads/services/";
+if (!fs.existsSync(serviceUploadDir)) {
+  fs.mkdirSync(serviceUploadDir, { recursive: true });
+}
+
+const serviceStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, serviceUploadDir);
+  },
+  filename: function (req, file, cb) {
+    const sanitized = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+    cb(null, `svc_${Date.now()}_${sanitized}`);
+  },
+});
+
+const uploadServiceImageMulter = multer({
+  storage: serviceStorage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only image files (JPG, PNG, WEBP) are allowed!"), false);
+    }
+  },
 });
 
 // Role-based authorization guard for administrative actions
@@ -83,6 +112,22 @@ router.delete(
   protect,
   requireManagerOrOwner,
   deleteKnowledgeDoc,
+);
+
+// Service Image Upload Endpoints
+router.post(
+  "/my-org/services/upload-image",
+  protect,
+  requireManagerOrOwner,
+  uploadServiceImageMulter.single("image"),
+  uploadServiceImage,
+);
+router.post(
+  "/services/upload-image",
+  protect,
+  requireManagerOrOwner,
+  uploadServiceImageMulter.single("image"),
+  uploadServiceImage,
 );
 
 // Mobile App Friendly Organization Endpoints
