@@ -1156,6 +1156,9 @@ export const updateMyAISettings = async (req, res) => {
           ? missedCallDifferentNumberTemplate.trim()
           : "";
     }
+    if (serviceImagesAutoSendEnabled !== undefined) {
+      org.aiSettings.serviceImagesAutoSendEnabled = Boolean(serviceImagesAutoSendEnabled);
+    }
 
     await org.save();
 
@@ -1600,6 +1603,9 @@ export const updateOrgAISettings = async (req, res) => {
         typeof missedCallDifferentNumberTemplate === "string"
           ? missedCallDifferentNumberTemplate.trim()
           : "";
+    }
+    if (serviceImagesAutoSendEnabled !== undefined) {
+      org.aiSettings.serviceImagesAutoSendEnabled = Boolean(serviceImagesAutoSendEnabled);
     }
 
     await org.save();

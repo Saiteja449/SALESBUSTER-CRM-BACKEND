@@ -54,6 +54,10 @@ export const serviceSubSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    sendImagesEnabled: {
+      type: Boolean,
+      default: true,
+    },
     images: {
       type: [serviceImageSubSchema],
       default: [],
@@ -250,6 +254,10 @@ const organizationSchema = new mongoose.Schema(
         default: "",
         trim: true,
       },
+      serviceImagesAutoSendEnabled: {
+        type: Boolean,
+        default: true,
+      },
       qdrantCollection: {
         type: String,
         default: "",
@@ -433,6 +441,7 @@ export const getDefaultAISettings = (orgName = "") => {
     missedCallMessageEnabled: true,
     missedCallMessageTemplate: "",
     missedCallDifferentNumberTemplate: "",
+    serviceImagesAutoSendEnabled: true,
     dailyAiUsage: {
       date: new Date().toISOString().slice(0, 10),
       chatApiCalls: 0,

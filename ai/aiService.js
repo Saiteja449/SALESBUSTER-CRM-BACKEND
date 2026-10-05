@@ -368,6 +368,9 @@ export const buildSystemPrompt = ({
     timeZone: "Asia/Kolkata",
   });
 
+  const isGlobalImagesEnabled =
+    effectiveSettings.serviceImagesAutoSendEnabled !== false;
+
   let servicesBlock = "";
   if (services.length > 0) {
     servicesBlock =
@@ -377,8 +380,14 @@ export const buildSystemPrompt = ({
           const sName = typeof s === "string" ? s : s.name;
           const sDesc =
             typeof s === "object" && s.description ? `: ${s.description}` : "";
+          const isServiceImagesEnabled =
+            typeof s === "object" ? s.sendImagesEnabled !== false : true;
           const imgCount =
-            typeof s === "object" && Array.isArray(s.images) && s.images.length > 0
+            isGlobalImagesEnabled &&
+            isServiceImagesEnabled &&
+            typeof s === "object" &&
+            Array.isArray(s.images) &&
+            s.images.length > 0
               ? ` [Has ${s.images.length} Image(s) with descriptions available]`
               : "";
           return `${idx + 1}. ${sName}${sDesc}${imgCount}`;
@@ -787,6 +796,7 @@ Latest Message: ${incomingText}`;
     });
 
     const updatePayload = {};
+    let matchedService = null;
 
     if (parsed.qualification) {
       const aiData = parsed.qualification || {};
@@ -816,7 +826,6 @@ Latest Message: ${incomingText}`;
       const services = effectiveSettings.services || [];
       const rawIntent =
         aiData.intent || aiData.service || aiData.liftType || "";
-      let matchedService = null;
 
       // 1. Direct name match
       if (rawIntent) {
@@ -1187,10 +1196,13 @@ Latest Message: ${incomingText}`;
 
     // Determine if service images should be dispatched
     let serviceImagesToSend = [];
+    const isGlobalImagesEnabled =
+      effectiveSettings.serviceImagesAutoSendEnabled !== false;
+
     const targetServiceName =
       parsed.sendServiceImages?.serviceName ||
-      matchedService ||
       updatePayload.service ||
+      matchedService ||
       lead.service;
 
     const catalogServices = effectiveSettings.services || [];
@@ -1200,6 +1212,9 @@ Latest Message: ${incomingText}`;
         targetServiceName &&
         s.name.trim().toLowerCase() === targetServiceName.trim().toLowerCase(),
     );
+
+    const isServiceImagesEnabled =
+      matchingServiceObj?.sendImagesEnabled !== false;
 
     const userTextLower = (incomingText || "").toLowerCase();
     const explicitlyAskedForPhotos =
@@ -1213,8 +1228,10 @@ Latest Message: ${incomingText}`;
       userTextLower.includes("dekho");
 
     const shouldSendImages =
-      Boolean(parsed.sendServiceImages?.shouldSend) ||
-      (explicitlyAskedForPhotos && matchingServiceObj);
+      isGlobalImagesEnabled &&
+      isServiceImagesEnabled &&
+      (Boolean(parsed.sendServiceImages?.shouldSend) ||
+        (explicitlyAskedForPhotos && matchingServiceObj));
 
     if (
       shouldSendImages &&
