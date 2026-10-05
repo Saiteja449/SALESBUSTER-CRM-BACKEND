@@ -1600,15 +1600,16 @@ export const handleMissedCall = async (req, res) => {
       FollowupModel,
       MessageModel,
       UserModel,
+      WhatsAppSessionModel,
     } = getModels(req);
 
-    const orgId = req.user?.organizationId
+    let orgId = req.user?.organizationId
       ? req.user.organizationId.toString()
       : req.organization?._id
         ? req.organization._id.toString()
         : null;
 
-    // Clean and normalize phone number
+    // Clean and normalize caller phone number
     const rawPhone = String(phone).trim();
     const cleanDigits = rawPhone.replace(/\D/g, "");
     const last10Digits =
@@ -1617,6 +1618,11 @@ export const handleMissedCall = async (req, res) => {
     if (normalizedPhone.length > 10 && normalizedPhone.startsWith("91")) {
       normalizedPhone = normalizedPhone.substring(2);
     }
+
+    // Clean and normalize received SIM number
+    const cleanReceived = String(number).replace(/\D/g, "");
+    const receivedLast10 =
+      cleanReceived.length >= 10 ? cleanReceived.slice(-10) : cleanReceived;
 
     // Build flexible phone query matching
     const orConditions = [];
@@ -1643,9 +1649,142 @@ export const handleMissedCall = async (req, res) => {
     });
 
     let lead = await LeadModel.findOne({ $or: orConditions });
-    let isNewLead = false;
 
-    const assignedUserId = (req.user?._id || req.user?.id || "").toString();
+    // ================================================================
+    // SALES REP RESOLUTION
+    // Resolve the receiving sales representative:
+    // 1) Explicit rep ID in request body (salesRepId, salesPersonId, repId, userId)
+    // 2) Received SIM phone matching UserModel phone
+    // 3) Received SIM phone matching WhatsAppSession connectedPhone
+    // 4) Auth token user (if role is sales person)
+    // 5) Existing lead assignedTo (if assigned to a sales person)
+    // ================================================================
+    let resolvedRep = null;
+    if (req.user?.role === "sales person" || req.user?.role === "sales rep") {
+      resolvedRep = req.user;
+    }
+
+    const canQueryUsers = Boolean(req?.tenantModels?.User || (mongoose.connection?.readyState === 1 && UserModel));
+    const canQuerySessions = Boolean(
+      req?.tenantModels?.WhatsAppSession ||
+      (mongoose.connection?.readyState === 1 && (WhatsAppSessionModel || WhatsAppSession))
+    );
+
+    const rawRepIdentifier = String(
+      req.body.salesRepId ||
+      req.body.salesrepId ||
+      req.body.salesPersonId ||
+      req.body.salespersonId ||
+      req.body.salesRep ||
+      req.body.repId ||
+      ""
+    ).trim();
+
+    if (!resolvedRep && rawRepIdentifier && canQueryUsers) {
+      if (mongoose.Types.ObjectId.isValid(rawRepIdentifier)) {
+        resolvedRep = await UserModel.findById(rawRepIdentifier)
+          .select("name email phone role organizationId")
+          .lean();
+      }
+      if (!resolvedRep) {
+        resolvedRep = await UserModel.findOne({
+          $or: [
+            { name: new RegExp("^" + rawRepIdentifier + "$", "i") },
+            { email: new RegExp("^" + rawRepIdentifier + "$", "i") },
+          ],
+        })
+          .select("name email phone role organizationId")
+          .lean();
+      }
+    }
+
+    if (!resolvedRep && receivedLast10 && canQueryUsers) {
+      resolvedRep = await UserModel.findOne({
+        phone: { $regex: receivedLast10 + "$" },
+        role: { $in: ["sales person", "sales rep", "rep"] },
+      })
+        .select("name email phone role organizationId")
+        .lean();
+
+      if (!resolvedRep) {
+        const anyUser = await UserModel.findOne({
+          phone: { $regex: receivedLast10 + "$" },
+        })
+          .select("name email phone role organizationId")
+          .lean();
+        if (anyUser && !["super_admin", "admin", "sales manager"].includes(anyUser.role)) {
+          resolvedRep = anyUser;
+        }
+      }
+    }
+
+    if (!resolvedRep && receivedLast10 && (canQuerySessions || typeof getWhatsAppStatus === "function")) {
+      try {
+        if (canQuerySessions) {
+          const SessionModel =
+            WhatsAppSessionModel ||
+            req?.tenantModels?.WhatsAppSession ||
+            (mongoose.connection?.readyState === 1 ? WhatsAppSession : null);
+          if (SessionModel) {
+            const matchingSession = await SessionModel.findOne({
+              sessionId: { $regex: "_user_" },
+              connectedPhone: { $regex: receivedLast10 + "$" },
+            }).lean();
+            if (matchingSession && matchingSession.sessionId && canQueryUsers) {
+              const repMatch = matchingSession.sessionId.match(/_user_([a-fA-F0-9]{24})/);
+              if (repMatch && UserModel) {
+                resolvedRep = await UserModel.findById(repMatch[1])
+                  .select("name email phone role organizationId")
+                  .lean();
+              }
+            }
+          }
+        }
+        if (!resolvedRep && typeof getWhatsAppStatus === "function") {
+          const memStatuses = getWhatsAppStatus(orgId) || [];
+          const memMatch = memStatuses.find(
+            (m) =>
+              m.sessionId?.includes("_user_") &&
+              String(m.connectedPhone || "").replace(/\D/g, "").endsWith(receivedLast10)
+          );
+          if (memMatch && memMatch.sessionId && canQueryUsers) {
+            const repMatch = memMatch.sessionId.match(/_user_([a-fA-F0-9]{24})/);
+            if (repMatch && UserModel) {
+              resolvedRep = await UserModel.findById(repMatch[1])
+                .select("name email phone role organizationId")
+                .lean();
+            }
+          }
+        }
+      } catch (sessFindErr) {
+        console.warn("[Missed Call] Error resolving rep from WhatsAppSession:", sessFindErr.message);
+      }
+    }
+
+    if (!resolvedRep && lead?.assignedTo && canQueryUsers) {
+      if (mongoose.Types.ObjectId.isValid(lead.assignedTo)) {
+        const assignedDoc = await UserModel.findById(lead.assignedTo)
+          .select("name email phone role organizationId")
+          .lean();
+        if (assignedDoc && ["sales person", "sales rep", "rep"].includes(assignedDoc.role)) {
+          resolvedRep = assignedDoc;
+        }
+      }
+    }
+
+    if (!orgId && resolvedRep?.organizationId) {
+      orgId = resolvedRep.organizationId.toString();
+    }
+
+    const resolvedRepId = resolvedRep ? (resolvedRep._id || resolvedRep.id)?.toString() : null;
+    const resolvedRepName = resolvedRep?.name || null;
+    const isRepOwnedMissedCall = Boolean(resolvedRep);
+
+    let isNewLead = false;
+    const assignedUserId =
+      resolvedRepId ||
+      (req.user?.role === "sales person" ? (req.user._id || req.user.id)?.toString() : "") ||
+      (req.user?._id || req.user?.id || "").toString();
 
     let callerName = name && name.trim() ? name.trim() : "";
     if (lead) {
@@ -1692,7 +1831,7 @@ export const handleMissedCall = async (req, res) => {
         time: followupTimeFormatted,
         priority: "High",
         notes: `Missed call received at ${timeFormatted}.`,
-        author: req.user?.name || "Mobile App",
+        author: resolvedRepName || req.user?.name || "Mobile App",
         done: false,
       });
     } catch (fErr) {
@@ -1774,21 +1913,25 @@ export const handleMissedCall = async (req, res) => {
               `[Missed Call] Automated missed call messages are disabled in organization settings. Skipping WhatsApp.`
             );
           } else {
-            const senderName = req.user?.name || "Sales Team";
+            const senderName = resolvedRepName || req.user?.name || "Sales Team";
 
-            // Try rep's personal session first; fallback to organization primary line
+            // Target session determination:
+            // If this call belongs to a Sales Rep, strictly route to rep's personal session!
             let targetSessionId = null;
-            if (req.user?.role === "sales person") {
-              targetSessionId = orgId ? `org_${orgId}_user_${req.user._id}` : `user_${req.user._id}`;
+            if (resolvedRepId) {
+              targetSessionId = orgId ? `org_${orgId}_user_${resolvedRepId}` : `user_${resolvedRepId}`;
+            } else if (req.user?.role === "sales person") {
+              const uId = (req.user._id || req.user.id).toString();
+              targetSessionId = orgId ? `org_${orgId}_user_${uId}` : `user_${uId}`;
             } else if (orgId) {
               targetSessionId = `org_${orgId}`;
             }
 
-            // Determine active connected phone number for the sales rep's target session
+            // Determine active connected phone number for the target session
             let activeConnectedPhone = "";
             try {
               if (typeof getWhatsAppStatus === "function") {
-                const memoryStatuses = getWhatsAppStatus(orgId);
+                const memoryStatuses = getWhatsAppStatus(orgId) || [];
                 const mem = memoryStatuses.find((m) => m.sessionId === targetSessionId);
                 if (mem?.connectedPhone) {
                   activeConnectedPhone = mem.connectedPhone;
@@ -1796,6 +1939,7 @@ export const handleMissedCall = async (req, res) => {
               }
               if (!activeConnectedPhone && targetSessionId) {
                 const SessionModel =
+                  WhatsAppSessionModel ||
                   req.tenantModels?.WhatsAppSession ||
                   (mongoose.connection?.readyState === 1 ? WhatsAppSession : null);
                 if (SessionModel) {
@@ -1811,9 +1955,6 @@ export const handleMissedCall = async (req, res) => {
             }
 
             // Normalize both numbers to compare digits
-            const cleanReceived = String(number).replace(/\D/g, "");
-            const receivedLast10 = cleanReceived.length >= 10 ? cleanReceived.slice(-10) : cleanReceived;
-
             const cleanConnected = String(activeConnectedPhone || "").replace(/\D/g, "");
             const connectedLast10 = cleanConnected.length >= 10 ? cleanConnected.slice(-10) : cleanConnected;
 
@@ -1862,22 +2003,13 @@ export const handleMissedCall = async (req, res) => {
               );
               whatsappSent = true;
             } catch (sessionErr) {
-              // If rep's personal session is offline, fallback to org primary line
-              if (targetSessionId && orgId && targetSessionId !== `org_${orgId}`) {
-                console.log(
-                  `[Missed Call] Rep session ${targetSessionId} offline. Attempting fallback to organization line org_${orgId}...`
+              // Strictly do NOT fall back to the Sales Manager / organization line if this call belongs to a Sales Rep!
+              if (isRepOwnedMissedCall || (targetSessionId && targetSessionId.includes("_user_"))) {
+                console.warn(
+                  `[Missed Call] Rep personal session ${targetSessionId} failed/offline: ${sessionErr.message}. Strictly preventing fallback to manager line org_${orgId}.`
                 );
-                await sendMessageFromCRM(
-                  lead._id,
-                  welcomeText,
-                  senderName,
-                  {
-                    organizationId: orgId,
-                    tenantModels: req.tenantModels,
-                    sessionId: `org_${orgId}`,
-                  }
-                );
-                whatsappSent = true;
+                whatsappError = sessionErr.message;
+                whatsappSent = false;
               } else {
                 throw sessionErr;
               }

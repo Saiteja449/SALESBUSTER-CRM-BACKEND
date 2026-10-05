@@ -279,3 +279,127 @@ test("handleMissedCall - Disabled in SystemSettings: skips WhatsApp message disp
   assert.equal(res.data.data.dispatchedMessageText, "");
   assert.equal(res.data.data.whatsappSent, false);
 });
+
+test("handleMissedCall - Sales Manager token logs missed call on Rep SIM: resolves Rep and routes to rep session without manager line fallback", async () => {
+  const managerId = new mongoose.Types.ObjectId().toString();
+  const repId = new mongoose.Types.ObjectId().toString();
+  const orgId = new mongoose.Types.ObjectId().toString();
+  let createdLead = null;
+
+  const mockRepUser = {
+    _id: repId,
+    name: "Rep Bob",
+    phone: "+919876500005",
+    role: "sales person",
+    organizationId: orgId,
+  };
+
+  const req = {
+    body: {
+      phone: "+919123456780",
+      number: "+919876500005", // Received on Bob's SIM
+      name: "Prospective Customer",
+      sendWhatsApp: true,
+    },
+    user: {
+      _id: managerId,
+      name: "Sales Manager Charlie",
+      role: "sales manager",
+      organizationId: orgId,
+    },
+    tenantModels: {
+      Lead: {
+        findOne: async () => null,
+        create: async (data) => {
+          createdLead = { _id: new mongoose.Types.ObjectId().toString(), ...data };
+          return createdLead;
+        },
+      },
+      Followup: { create: async () => ({}) },
+      Message: { findOne: async () => null },
+      User: {
+        findById: async () => mockRepUser,
+        findOne: () => ({
+          select: () => ({
+            lean: async () => mockRepUser,
+          }),
+        }),
+      },
+      WhatsAppSession: {
+        findOne: () => ({
+          lean: async () => ({
+            sessionId: `org_${orgId}_user_${repId}`,
+            connectedPhone: "919876500005",
+          }),
+        }),
+      },
+    },
+  };
+  const res = createMockRes();
+
+  await handleMissedCall(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.success, true);
+  // Lead should be assigned to the sales rep Bob, not the sales manager Charlie
+  assert.equal(createdLead.assignedTo, repId);
+  // Rep's offline session error should NOT cause fallback send from manager line org_<orgId>
+  assert.equal(res.data.data.whatsappSent, false);
+  assert.ok(res.data.data.whatsappError);
+});
+
+test("handleMissedCall - Explicit salesRepId in request body routes lead and session to that rep", async () => {
+  const managerId = new mongoose.Types.ObjectId().toString();
+  const repId = new mongoose.Types.ObjectId().toString();
+  const orgId = new mongoose.Types.ObjectId().toString();
+  let createdLead = null;
+
+  const mockRepUser = {
+    _id: repId,
+    name: "Rep Dana",
+    phone: "+919876500099",
+    role: "sales person",
+    organizationId: orgId,
+  };
+
+  const req = {
+    body: {
+      phone: "+919123456781",
+      number: "+919876500099",
+      salesRepId: repId,
+      name: "Client Eva",
+      sendWhatsApp: false,
+    },
+    user: {
+      _id: managerId,
+      name: "Manager Mike",
+      role: "sales manager",
+      organizationId: orgId,
+    },
+    tenantModels: {
+      Lead: {
+        findOne: async () => null,
+        create: async (data) => {
+          createdLead = { _id: new mongoose.Types.ObjectId().toString(), ...data };
+          return createdLead;
+        },
+      },
+      Followup: { create: async () => ({}) },
+      Message: { findOne: async () => null },
+      User: {
+        findById: () => ({
+          select: () => ({
+            lean: async () => mockRepUser,
+          }),
+        }),
+      },
+    },
+  };
+  const res = createMockRes();
+
+  await handleMissedCall(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(createdLead.assignedTo, repId);
+});
+
