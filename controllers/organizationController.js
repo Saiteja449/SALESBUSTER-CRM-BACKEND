@@ -1766,22 +1766,38 @@ export const deleteOrgKnowledgeDoc = async (req, res) => {
 // @access  Protected (Manager or Owner)
 export const uploadServiceImage = async (req, res) => {
   try {
-    if (!req.file) {
+    const files =
+      Array.isArray(req.files) && req.files.length > 0
+        ? req.files
+        : req.file
+          ? [req.file]
+          : [];
+
+    if (files.length === 0) {
       return res.status(400).json({
         success: false,
         message: "No image file provided",
       });
     }
 
-    const relativeUrl = `/uploads/services/${req.file.filename}`;
+    const uploaded = files.map((f) => ({
+      url: `/uploads/services/${f.filename}`,
+      fileName: f.filename,
+      originalName: f.originalname,
+      title: f.originalname.replace(/\.[^/.]+$/, ""),
+      description: "",
+      size: f.size,
+    }));
 
     res.status(200).json({
       success: true,
-      message: "Service image uploaded successfully",
-      url: relativeUrl,
-      fileName: req.file.filename,
-      originalName: req.file.originalname,
-      size: req.file.size,
+      message: `${files.length} service image(s) uploaded successfully`,
+      url: uploaded[0].url,
+      images: uploaded,
+      files: uploaded,
+      fileName: files[0].filename,
+      originalName: files[0].originalname,
+      size: files[0].size,
     });
   } catch (error) {
     console.error("Error in uploadServiceImage:", error);

@@ -575,6 +575,10 @@ export const generateAIResponse = async (
           : defaults.qualificationFields,
       qdrantCollection:
         organization?.aiSettings?.qdrantCollection || defaults.qdrantCollection,
+      serviceImagesAutoSendEnabled:
+        organization?.aiSettings?.serviceImagesAutoSendEnabled !== undefined
+          ? organization.aiSettings.serviceImagesAutoSendEnabled
+          : true,
     };
 
     // Auto-assign representative if unassigned
@@ -1227,11 +1231,22 @@ Latest Message: ${incomingText}`;
       userTextLower.includes("dikhao") ||
       userTextLower.includes("dekho");
 
+    const replyTextLower = (parsed.reply || "").toLowerCase();
+    const replyMentionsPhotos =
+      replyTextLower.includes("photo") ||
+      replyTextLower.includes("image") ||
+      replyTextLower.includes("picture") ||
+      replyTextLower.includes("pic") ||
+      replyTextLower.includes("attached") ||
+      replyTextLower.includes("sharing the") ||
+      replyTextLower.includes("bhej");
+
     const shouldSendImages =
       isGlobalImagesEnabled &&
       isServiceImagesEnabled &&
       (Boolean(parsed.sendServiceImages?.shouldSend) ||
-        (explicitlyAskedForPhotos && matchingServiceObj));
+        (explicitlyAskedForPhotos && matchingServiceObj) ||
+        (replyMentionsPhotos && matchingServiceObj));
 
     if (
       shouldSendImages &&
@@ -1239,39 +1254,9 @@ Latest Message: ${incomingText}`;
       Array.isArray(matchingServiceObj.images) &&
       matchingServiceObj.images.length > 0
     ) {
-      // Check anti-spam: Did we already send these images to this lead in the last 12 hours?
-      let alreadySentRecently = false;
-      if (!explicitlyAskedForPhotos) {
-        try {
-          const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
-          const serviceImageUrls = matchingServiceObj.images
-            .map((img) => img.url)
-            .filter(Boolean);
-          const MessageModel = tenantModels?.Message || Message;
-          const recentImageMsg = await MessageModel.findOne({
-            leadId,
-            messageType: "image",
-            mediaUrl: { $in: serviceImageUrls },
-            timestamp: { $gte: twelveHoursAgo },
-          });
-          if (recentImageMsg) {
-            alreadySentRecently = true;
-          }
-        } catch (checkErr) {
-          console.warn(
-            "[AI Service] Error checking recently sent service images:",
-            checkErr.message,
-          );
-        }
-      }
-
-      if (!alreadySentRecently) {
-        serviceImagesToSend = Array.isArray(matchingServiceObj.images)
-          ? matchingServiceObj.images.map((img) =>
-              typeof img?.toObject === "function" ? img.toObject() : { ...img },
-            )
-          : [];
-      }
+      serviceImagesToSend = matchingServiceObj.images.map((img) =>
+        typeof img?.toObject === "function" ? img.toObject() : { ...img },
+      );
     }
 
     const replyOutput =

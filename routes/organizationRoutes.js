@@ -119,14 +119,14 @@ router.post(
   "/my-org/services/upload-image",
   protect,
   requireManagerOrOwner,
-  uploadServiceImageMulter.single("image"),
+  uploadServiceImageMulter.any(),
   uploadServiceImage,
 );
 router.post(
   "/services/upload-image",
   protect,
   requireManagerOrOwner,
-  uploadServiceImageMulter.single("image"),
+  uploadServiceImageMulter.any(),
   uploadServiceImage,
 );
 
