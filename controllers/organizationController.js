@@ -910,6 +910,13 @@ export const getMyAISettings = async (req, res) => {
       knowledgeDocs: aiSettings.knowledgeDocs || [],
       welcomeMessageTemplate: aiSettings.welcomeMessageTemplate || "",
       welcomeMessageFallbackService: aiSettings.welcomeMessageFallbackService || "",
+      missedCallMessageEnabled:
+        aiSettings.missedCallMessageEnabled !== undefined
+          ? aiSettings.missedCallMessageEnabled
+          : true,
+      missedCallMessageTemplate: aiSettings.missedCallMessageTemplate || "",
+      missedCallDifferentNumberTemplate:
+        aiSettings.missedCallDifferentNumberTemplate || "",
       dailyAiUsage: aiSettings.dailyAiUsage || defaults.dailyAiUsage,
     };
 
@@ -1016,6 +1023,9 @@ export const updateMyAISettings = async (req, res) => {
       dailyQuotaLimit,
       welcomeMessageTemplate,
       welcomeMessageFallbackService,
+      missedCallMessageEnabled,
+      missedCallMessageTemplate,
+      missedCallDifferentNumberTemplate,
     } = req.body;
 
     if (!org.aiSettings) org.aiSettings = {};
@@ -1131,6 +1141,21 @@ export const updateMyAISettings = async (req, res) => {
           ? welcomeMessageFallbackService.trim()
           : "";
     }
+    if (missedCallMessageEnabled !== undefined) {
+      org.aiSettings.missedCallMessageEnabled = Boolean(missedCallMessageEnabled);
+    }
+    if (missedCallMessageTemplate !== undefined) {
+      org.aiSettings.missedCallMessageTemplate =
+        typeof missedCallMessageTemplate === "string"
+          ? missedCallMessageTemplate.trim()
+          : "";
+    }
+    if (missedCallDifferentNumberTemplate !== undefined) {
+      org.aiSettings.missedCallDifferentNumberTemplate =
+        typeof missedCallDifferentNumberTemplate === "string"
+          ? missedCallDifferentNumberTemplate.trim()
+          : "";
+    }
 
     await org.save();
 
@@ -1138,7 +1163,10 @@ export const updateMyAISettings = async (req, res) => {
     if (
       org.tenantDbName &&
       (welcomeMessageTemplate !== undefined ||
-        welcomeMessageFallbackService !== undefined)
+        welcomeMessageFallbackService !== undefined ||
+        missedCallMessageEnabled !== undefined ||
+        missedCallMessageTemplate !== undefined ||
+        missedCallDifferentNumberTemplate !== undefined)
     ) {
       try {
         const tenantModels = getTenantModels(org.tenantDbName);
@@ -1157,6 +1185,21 @@ export const updateMyAISettings = async (req, res) => {
             tenantSettings.welcomeMessageFallbackService =
               typeof welcomeMessageFallbackService === "string"
                 ? welcomeMessageFallbackService.trim()
+                : "";
+          }
+          if (missedCallMessageEnabled !== undefined) {
+            tenantSettings.missedCallMessageEnabled = Boolean(missedCallMessageEnabled);
+          }
+          if (missedCallMessageTemplate !== undefined) {
+            tenantSettings.missedCallMessageTemplate =
+              typeof missedCallMessageTemplate === "string"
+                ? missedCallMessageTemplate.trim()
+                : "";
+          }
+          if (missedCallDifferentNumberTemplate !== undefined) {
+            tenantSettings.missedCallDifferentNumberTemplate =
+              typeof missedCallDifferentNumberTemplate === "string"
+                ? missedCallDifferentNumberTemplate.trim()
                 : "";
           }
           await tenantSettings.save();
@@ -1456,6 +1499,13 @@ export const getOrgAISettings = async (req, res) => {
       knowledgeDocs: aiSettings.knowledgeDocs || [],
       welcomeMessageTemplate: aiSettings.welcomeMessageTemplate || "",
       welcomeMessageFallbackService: aiSettings.welcomeMessageFallbackService || "",
+      missedCallMessageEnabled:
+        aiSettings.missedCallMessageEnabled !== undefined
+          ? aiSettings.missedCallMessageEnabled
+          : true,
+      missedCallMessageTemplate: aiSettings.missedCallMessageTemplate || "",
+      missedCallDifferentNumberTemplate:
+        aiSettings.missedCallDifferentNumberTemplate || "",
       dailyAiUsage: aiSettings.dailyAiUsage || defaults.dailyAiUsage,
     };
 
@@ -1488,6 +1538,9 @@ export const updateOrgAISettings = async (req, res) => {
       dailyQuotaLimit,
       welcomeMessageTemplate,
       welcomeMessageFallbackService,
+      missedCallMessageEnabled,
+      missedCallMessageTemplate,
+      missedCallDifferentNumberTemplate,
     } = req.body;
 
     if (!org.aiSettings) org.aiSettings = {};
@@ -1533,6 +1586,21 @@ export const updateOrgAISettings = async (req, res) => {
           ? welcomeMessageFallbackService.trim()
           : "";
     }
+    if (missedCallMessageEnabled !== undefined) {
+      org.aiSettings.missedCallMessageEnabled = Boolean(missedCallMessageEnabled);
+    }
+    if (missedCallMessageTemplate !== undefined) {
+      org.aiSettings.missedCallMessageTemplate =
+        typeof missedCallMessageTemplate === "string"
+          ? missedCallMessageTemplate.trim()
+          : "";
+    }
+    if (missedCallDifferentNumberTemplate !== undefined) {
+      org.aiSettings.missedCallDifferentNumberTemplate =
+        typeof missedCallDifferentNumberTemplate === "string"
+          ? missedCallDifferentNumberTemplate.trim()
+          : "";
+    }
 
     await org.save();
 
@@ -1540,7 +1608,10 @@ export const updateOrgAISettings = async (req, res) => {
     if (
       org.tenantDbName &&
       (welcomeMessageTemplate !== undefined ||
-        welcomeMessageFallbackService !== undefined)
+        welcomeMessageFallbackService !== undefined ||
+        missedCallMessageEnabled !== undefined ||
+        missedCallMessageTemplate !== undefined ||
+        missedCallDifferentNumberTemplate !== undefined)
     ) {
       try {
         const tenantModels = getTenantModels(org.tenantDbName);
@@ -1559,6 +1630,21 @@ export const updateOrgAISettings = async (req, res) => {
             tenantSettings.welcomeMessageFallbackService =
               typeof welcomeMessageFallbackService === "string"
                 ? welcomeMessageFallbackService.trim()
+                : "";
+          }
+          if (missedCallMessageEnabled !== undefined) {
+            tenantSettings.missedCallMessageEnabled = Boolean(missedCallMessageEnabled);
+          }
+          if (missedCallMessageTemplate !== undefined) {
+            tenantSettings.missedCallMessageTemplate =
+              typeof missedCallMessageTemplate === "string"
+                ? missedCallMessageTemplate.trim()
+                : "";
+          }
+          if (missedCallDifferentNumberTemplate !== undefined) {
+            tenantSettings.missedCallDifferentNumberTemplate =
+              typeof missedCallDifferentNumberTemplate === "string"
+                ? missedCallDifferentNumberTemplate.trim()
                 : "";
           }
           await tenantSettings.save();

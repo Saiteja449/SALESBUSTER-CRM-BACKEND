@@ -206,6 +206,20 @@ const organizationSchema = new mongoose.Schema(
         default: "",
         trim: true,
       },
+      missedCallMessageEnabled: {
+        type: Boolean,
+        default: true,
+      },
+      missedCallMessageTemplate: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      missedCallDifferentNumberTemplate: {
+        type: String,
+        default: "",
+        trim: true,
+      },
       qdrantCollection: {
         type: String,
         default: "",
@@ -386,6 +400,9 @@ export const getDefaultAISettings = (orgName = "") => {
     knowledgeDocs: [],
     welcomeMessageTemplate: "",
     welcomeMessageFallbackService: "",
+    missedCallMessageEnabled: true,
+    missedCallMessageTemplate: "",
+    missedCallDifferentNumberTemplate: "",
     dailyAiUsage: {
       date: new Date().toISOString().slice(0, 10),
       chatApiCalls: 0,

@@ -7,12 +7,15 @@ import Notification from "../models/Notification.js";
 import Conversation from "../models/Conversation.js";
 import Message from "../models/Message.js";
 import AILog from "../models/AILog.js";
+import SystemSettings from "../models/SystemSettings.js";
+import WhatsAppSession from "../models/WhatsAppSession.js";
+import { getMasterModels } from "../services/tenantManager.js";
 import { getIO } from "../socket/socket.js";
 import fs from "fs";
 import path from "path";
 import { processAudioUpload } from "../utils/audioConverter.js";
 import { analyzeAudioFile } from "../services/audioAnalysisService.js";
-import { sendWelcomeEnquiryMessage, sendMessageFromCRM } from "../whatsapp/whatsappService.js";
+import { sendWelcomeEnquiryMessage, sendMessageFromCRM, getWhatsAppStatus } from "../whatsapp/whatsappService.js";
 import { decryptApiKey } from "../utils/encryption.js";
 import { recordAiUsage } from "../services/aiUsageService.js";
 import * as XLSX from "xlsx";
@@ -31,6 +34,8 @@ const getModels = (req) => ({
   ConversationModel: req?.tenantModels?.Conversation || Conversation,
   MessageModel: req?.tenantModels?.Message || Message,
   AILogModel: req?.tenantModels?.AILog || AILog,
+  SystemSettingsModel: req?.tenantModels?.SystemSettings || SystemSettings,
+  WhatsAppSessionModel: req?.tenantModels?.WhatsAppSession || WhatsAppSession,
 });
 
 // Helper to verify lead assignment for sales representatives
@@ -1567,6 +1572,7 @@ export const handleMissedCall = async (req, res) => {
   try {
     const {
       phone,
+      number,
       name,
       callTimestamp,
       durationSeconds = 0,
@@ -1579,6 +1585,13 @@ export const handleMissedCall = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Phone number is required for missed call processing.",
+      });
+    }
+
+    if (!number || !String(number).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Received SIM phone number ('number') is required.",
       });
     }
 
@@ -1698,6 +1711,7 @@ export const handleMissedCall = async (req, res) => {
     // Automated Background WhatsApp Welcome Message Dispatch
     let whatsappSent = false;
     let whatsappError = null;
+    let dispatchedMessageText = "";
 
     if (sendWhatsApp) {
       try {
@@ -1713,39 +1727,129 @@ export const handleMissedCall = async (req, res) => {
             `[Missed Call] Outgoing message was already sent to lead ${lead._id} in the last 5 minutes. Skipping duplicate WhatsApp welcome.`
           );
         } else {
-          const welcomeText =
-            customMessage && customMessage.trim()
-              ? customMessage.trim()
-              : `Hello! 👋 We have received your call, but we couldn't connect. We will call you back shortly. In the meantime, if you have any questions, you can ask right here! 💬`;
-
-          const senderName = req.user?.name || "Sales Team";
-
-          // Try rep's personal session first; fallback to organization primary line
-          let targetSessionId = null;
-          if (req.user?.role === "sales person") {
-            targetSessionId = orgId ? `org_${orgId}_user_${req.user._id}` : `user_${req.user._id}`;
-          } else if (orgId) {
-            targetSessionId = `org_${orgId}`;
-          }
+          // Retrieve missed call configuration from tenant SystemSettings or Organization
+          let missedCallEnabled = true;
+          let sameNumberTemplate = "";
+          let differentNumberTemplate = "";
 
           try {
-            await sendMessageFromCRM(
-              lead._id,
-              welcomeText,
-              senderName,
-              {
-                organizationId: orgId,
-                tenantModels: req.tenantModels,
-                sessionId: targetSessionId,
+            const SystemSettingsModel = req?.tenantModels?.SystemSettings;
+            if (SystemSettingsModel || (mongoose.connection?.readyState === 1 && SystemSettings)) {
+              const TargetSysModel = SystemSettingsModel || SystemSettings;
+              const resSys = TargetSysModel.findOne();
+              const sysSettings = typeof resSys?.lean === "function" ? await resSys.lean() : await resSys;
+              if (sysSettings) {
+                if (sysSettings.missedCallMessageEnabled !== undefined) {
+                  missedCallEnabled = sysSettings.missedCallMessageEnabled;
+                }
+                if (sysSettings.missedCallMessageTemplate) {
+                  sameNumberTemplate = sysSettings.missedCallMessageTemplate;
+                }
+                if (sysSettings.missedCallDifferentNumberTemplate) {
+                  differentNumberTemplate = sysSettings.missedCallDifferentNumberTemplate;
+                }
               }
+            }
+            if (orgId && mongoose.connection?.readyState === 1 && (!sameNumberTemplate || !differentNumberTemplate)) {
+              const { Organization } = getMasterModels();
+              const orgDoc = await Organization.findById(orgId).select("aiSettings name").lean();
+              if (orgDoc?.aiSettings) {
+                if (orgDoc.aiSettings.missedCallMessageEnabled !== undefined && sameNumberTemplate === "") {
+                  missedCallEnabled = orgDoc.aiSettings.missedCallMessageEnabled;
+                }
+                if (!sameNumberTemplate && orgDoc.aiSettings.missedCallMessageTemplate) {
+                  sameNumberTemplate = orgDoc.aiSettings.missedCallMessageTemplate;
+                }
+                if (!differentNumberTemplate && orgDoc.aiSettings.missedCallDifferentNumberTemplate) {
+                  differentNumberTemplate = orgDoc.aiSettings.missedCallDifferentNumberTemplate;
+                }
+              }
+            }
+          } catch (sErr) {
+            console.warn("[Missed Call] Error fetching missed call settings:", sErr.message);
+          }
+
+          if (!missedCallEnabled) {
+            console.log(
+              `[Missed Call] Automated missed call messages are disabled in organization settings. Skipping WhatsApp.`
             );
-            whatsappSent = true;
-          } catch (sessionErr) {
-            // If rep's personal session is offline, fallback to org primary line
-            if (targetSessionId && orgId && targetSessionId !== `org_${orgId}`) {
-              console.log(
-                `[Missed Call] Rep session ${targetSessionId} offline. Attempting fallback to organization line org_${orgId}...`
-              );
+          } else {
+            const senderName = req.user?.name || "Sales Team";
+
+            // Try rep's personal session first; fallback to organization primary line
+            let targetSessionId = null;
+            if (req.user?.role === "sales person") {
+              targetSessionId = orgId ? `org_${orgId}_user_${req.user._id}` : `user_${req.user._id}`;
+            } else if (orgId) {
+              targetSessionId = `org_${orgId}`;
+            }
+
+            // Determine active connected phone number for the sales rep's target session
+            let activeConnectedPhone = "";
+            try {
+              if (typeof getWhatsAppStatus === "function") {
+                const memoryStatuses = getWhatsAppStatus(orgId);
+                const mem = memoryStatuses.find((m) => m.sessionId === targetSessionId);
+                if (mem?.connectedPhone) {
+                  activeConnectedPhone = mem.connectedPhone;
+                }
+              }
+              if (!activeConnectedPhone && targetSessionId) {
+                const SessionModel =
+                  req.tenantModels?.WhatsAppSession ||
+                  (mongoose.connection?.readyState === 1 ? WhatsAppSession : null);
+                if (SessionModel) {
+                  const q = SessionModel.findOne({ sessionId: targetSessionId });
+                  const dbSession = typeof q?.lean === "function" ? await q.lean() : await q;
+                  if (dbSession?.connectedPhone) {
+                    activeConnectedPhone = dbSession.connectedPhone;
+                  }
+                }
+              }
+            } catch (pErr) {
+              console.warn("[Missed Call] Error retrieving active WhatsApp connected phone:", pErr.message);
+            }
+
+            // Normalize both numbers to compare digits
+            const cleanReceived = String(number).replace(/\D/g, "");
+            const receivedLast10 = cleanReceived.length >= 10 ? cleanReceived.slice(-10) : cleanReceived;
+
+            const cleanConnected = String(activeConnectedPhone || "").replace(/\D/g, "");
+            const connectedLast10 = cleanConnected.length >= 10 ? cleanConnected.slice(-10) : cleanConnected;
+
+            const isSameNumber = Boolean(receivedLast10 && connectedLast10 && receivedLast10 === connectedLast10);
+
+            let welcomeText = "";
+            if (customMessage && customMessage.trim()) {
+              welcomeText = customMessage.trim();
+            } else if (isSameNumber) {
+              // Same number: Do NOT include/attach the secondary number
+              const rawTpl =
+                sameNumberTemplate ||
+                `Hello {{name}}! 👋 We have received your call, but we couldn't connect. We will call you back shortly. In the meantime, if you have any questions, you can ask right here! 💬`;
+              welcomeText = rawTpl
+                .replace(/\{\{\s*name\s*\}\}/gi, callerName || "there")
+                .replace(/\{\{\s*company\s*\}\}/gi, req.organization?.name || "Our Team")
+                .replace(/\{\{\s*service\s*\}\}/gi, service || "General Enquiry");
+            } else {
+              // Different number: Mention that the customer contacted this number and this is also my/our number
+              const formattedNumber = String(number).trim().startsWith("+")
+                ? String(number).trim()
+                : (cleanReceived.length === 10 ? `+91 ${cleanReceived}` : String(number).trim());
+
+              const rawTpl =
+                differentNumberTemplate ||
+                `Hello {{name}}! 👋 You have contacted {{number}}, this is also my number. We couldn't connect right now, but we will call you back shortly. Feel free to message us right here on WhatsApp! 💬`;
+              welcomeText = rawTpl
+                .replace(/\{\{\s*name\s*\}\}/gi, callerName || "there")
+                .replace(/\{\{\s*number\s*\}\}/gi, formattedNumber)
+                .replace(/\{\{\s*company\s*\}\}/gi, req.organization?.name || "Our Team")
+                .replace(/\{\{\s*service\s*\}\}/gi, service || "General Enquiry");
+            }
+
+            dispatchedMessageText = welcomeText;
+
+            try {
               await sendMessageFromCRM(
                 lead._id,
                 welcomeText,
@@ -1753,12 +1857,30 @@ export const handleMissedCall = async (req, res) => {
                 {
                   organizationId: orgId,
                   tenantModels: req.tenantModels,
-                  sessionId: `org_${orgId}`,
+                  sessionId: targetSessionId,
                 }
               );
               whatsappSent = true;
-            } else {
-              throw sessionErr;
+            } catch (sessionErr) {
+              // If rep's personal session is offline, fallback to org primary line
+              if (targetSessionId && orgId && targetSessionId !== `org_${orgId}`) {
+                console.log(
+                  `[Missed Call] Rep session ${targetSessionId} offline. Attempting fallback to organization line org_${orgId}...`
+                );
+                await sendMessageFromCRM(
+                  lead._id,
+                  welcomeText,
+                  senderName,
+                  {
+                    organizationId: orgId,
+                    tenantModels: req.tenantModels,
+                    sessionId: `org_${orgId}`,
+                  }
+                );
+                whatsappSent = true;
+              } else {
+                throw sessionErr;
+              }
             }
           }
         }
@@ -1777,6 +1899,7 @@ export const handleMissedCall = async (req, res) => {
         todayFollowupDate: todayStr,
         whatsappSent,
         whatsappError,
+        dispatchedMessageText,
       },
     });
   } catch (error) {

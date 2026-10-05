@@ -18,6 +18,18 @@ const systemSettingsSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    missedCallMessageEnabled: {
+      type: Boolean,
+      default: true,
+    },
+    missedCallMessageTemplate: {
+      type: String,
+      default: "",
+    },
+    missedCallDifferentNumberTemplate: {
+      type: String,
+      default: "",
+    },
     updatedBy: {
       type: String,
       default: "System",
