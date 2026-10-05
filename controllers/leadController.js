@@ -679,9 +679,14 @@ export const createLead = async (req, res) => {
       console.log(`[createLead] [Step 9] Skipping audio analysis (file present: ${!!req.file}, AI enabled: ${ENABLE_AI_AUDIO_ANALYSIS})`);
     }
 
-    // Send automated WhatsApp welcome enquiry message for non-manual entry sources (Call, Email, etc.)
+    // Send automated WhatsApp welcome enquiry message for non-manual and non-call sources (Web Form, Email, Meta Ads, etc.)
+    const normalizedLeadSource = (lead.source || "").trim().toLowerCase();
     console.log(`[createLead] [Step 10] Evaluating automated WhatsApp welcome message for source: "${lead.source}"`);
-    if (lead.source && lead.source !== "Manual Entry") {
+    if (
+      lead.source &&
+      normalizedLeadSource !== "manual entry" &&
+      !normalizedLeadSource.includes("call")
+    ) {
       const orgId = req.user?.organizationId || req.organization?._id || null;
       console.log(`[createLead] [Step 10] Triggering sendWelcomeEnquiryMessage for lead ${lead._id} (source: ${lead.source}, orgId: ${orgId})`);
       sendWelcomeEnquiryMessage(lead, {

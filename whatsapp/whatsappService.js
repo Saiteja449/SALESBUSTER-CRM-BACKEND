@@ -2021,8 +2021,8 @@ export const formatWelcomeMessage = (
 
 /**
  * Send an automated WhatsApp welcome message for brand new enquiry leads.
- * Triggered only for external sources (Web Form, Call, Email, Meta Ads, Mobile App).
- * NOT sent for Manual Entry or if previous messages already exist for this lead.
+ * Triggered only for external sources (Web Form, Email, Meta Ads, Mobile App).
+ * NOT sent for Manual Entry, Call, or if previous messages already exist for this lead.
  */
 export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
   try {
@@ -2049,8 +2049,16 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
       return null;
     }
 
-    // Exclude manual entry
-    if (lead.source === "Manual Entry") {
+    // Exclude manual entry and call sources
+    const normalizedSource = (lead.source || "").trim().toLowerCase();
+    if (
+      normalizedSource === "manual entry" ||
+      normalizedSource === "call" ||
+      normalizedSource.includes("call")
+    ) {
+      console.log(
+        `[WhatsApp Welcome] Skipping welcome message for source: "${lead.source}" (phone: ${lead.phone})`,
+      );
       return null;
     }
 
