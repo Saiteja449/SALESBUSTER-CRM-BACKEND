@@ -39,6 +39,10 @@ const userSchema = mongoose.Schema(
       enum: ["active", "inactive"],
       default: "active",
     },
+    aiAutoReplyEnabled: {
+      type: Boolean,
+      default: true,
+    },
   },
   {
     timestamps: true,

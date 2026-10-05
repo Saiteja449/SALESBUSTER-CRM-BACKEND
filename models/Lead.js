@@ -90,7 +90,7 @@ const leadSchema = new mongoose.Schema(
     },
     preferredContactMethod: {
       type: String,
-      enum: ["Email", "SMS", "WhatsApp", "Phone", ""],
+      enum: ["Email", "SMS", "WhatsApp", "Phone", "Call",""],
       default: "",
     },
     priority: {

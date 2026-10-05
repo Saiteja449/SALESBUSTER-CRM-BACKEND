@@ -10,6 +10,7 @@ import {
   toggleAI,
   getGlobalSettings,
   updateGlobalSettings,
+  toggleMyAIAutoReply,
   testAI,
   getTestAIHistory,
   summarizeConversation,
@@ -41,6 +42,7 @@ router.use(protect);
 // Settings & Controls (Mutations restricted to manager/admin)
 router.get("/settings", getGlobalSettings);
 router.post("/settings", requireManagerOrOwner, updateGlobalSettings);
+router.post("/my-ai-toggle", toggleMyAIAutoReply);
 
 // Session Control
 router.post("/connect", connectClient);

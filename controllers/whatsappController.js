@@ -15,6 +15,7 @@ import {
   clearAIPauseForLead,
 } from "../whatsapp/whatsappService.js";
 import { getMasterModels } from "../services/tenantManager.js";
+import { getIO } from "../socket/socket.js";
 
 const getModels = (req) => ({
   LeadModel: req.tenantModels?.Lead || Lead,
@@ -932,6 +933,39 @@ export const getGlobalSettings = async (req, res) => {
     const effectiveFallbackService =
       settings.welcomeMessageFallbackService || orgData?.aiSettings?.welcomeMessageFallbackService || "";
 
+    const userRepEnabled = req.user?.aiAutoReplyEnabled !== false;
+    const isMasterDisabled = !settings.globalAIEnabled;
+    const effectiveAIEnabled = Boolean(settings.globalAIEnabled && userRepEnabled);
+
+    let teamRepAISettings = [];
+    const isManagerOrAdmin =
+      req.user?.role === "sales manager" ||
+      req.user?.role === "super_admin" ||
+      req.user?.isOrgOwner;
+
+    if (isManagerOrAdmin) {
+      try {
+        const { UserModel } = getModels(req);
+        if (UserModel && typeof UserModel.find === "function") {
+          const reps = await UserModel.find({
+            role: "sales person",
+            status: { $ne: "inactive" },
+          })
+            .select("name email phone aiAutoReplyEnabled")
+            .lean();
+          teamRepAISettings = (reps || []).map((r) => ({
+            id: r._id.toString(),
+            name: r.name,
+            email: r.email,
+            phone: r.phone,
+            aiAutoReplyEnabled: r.aiAutoReplyEnabled !== false,
+          }));
+        }
+      } catch (repErr) {
+        console.warn("[getGlobalSettings] Error fetching rep AI statuses:", repErr.message);
+      }
+    }
+
     res.status(200).json({
       success: true,
       data: {
@@ -941,7 +975,106 @@ export const getGlobalSettings = async (req, res) => {
         companyName,
         primaryService,
         defaultTemplate: DEFAULT_WELCOME_MESSAGE_TEMPLATE,
+        repAIEnabled: userRepEnabled,
+        isMasterDisabled,
+        effectiveAIEnabled,
+        teamRepAISettings,
       },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Toggle individual sales representative AI Auto-Reply setting
+// @route   POST /api/whatsapp/my-ai-toggle
+// @access  Protected (Sales rep toggles own; Manager can toggle own or any rep)
+export const toggleMyAIAutoReply = async (req, res) => {
+  try {
+    const isManagerOrAdmin =
+      req.user?.role === "sales manager" ||
+      req.user?.role === "super_admin" ||
+      req.user?.isOrgOwner;
+
+    let targetUserId = req.user?._id;
+
+    if (req.body?.repId) {
+      if (!isManagerOrAdmin && req.body.repId.toString() !== req.user?._id?.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: "Access forbidden: You can only manage your own AI auto-reply setting.",
+        });
+      }
+      targetUserId = req.body.repId;
+    }
+
+    if (!targetUserId) {
+      return res.status(400).json({ success: false, message: "User ID is required." });
+    }
+
+    const { UserModel } = getModels(req);
+    const existingUser = await UserModel.findById(targetUserId);
+    if (!existingUser) {
+      return res.status(404).json({ success: false, message: "Representative not found." });
+    }
+
+    let newStatus;
+    if (req.body?.enabled !== undefined) {
+      newStatus = Boolean(req.body.enabled);
+    } else if (req.body?.aiAutoReplyEnabled !== undefined) {
+      newStatus = Boolean(req.body.aiAutoReplyEnabled);
+    } else {
+      newStatus = existingUser.aiAutoReplyEnabled === false ? true : false;
+    }
+
+    existingUser.aiAutoReplyEnabled = newStatus;
+    if (typeof existingUser.save === "function") {
+      await existingUser.save();
+    } else if (typeof UserModel.findByIdAndUpdate === "function") {
+      await UserModel.findByIdAndUpdate(targetUserId, { aiAutoReplyEnabled: newStatus });
+    }
+
+    // Also sync to master AuthUser if database is connected
+    if (mongoose.connection?.readyState === 1) {
+      try {
+        const { AuthUser } = getMasterModels();
+        if (AuthUser && typeof AuthUser.findByIdAndUpdate === "function") {
+          await AuthUser.findByIdAndUpdate(targetUserId, {
+            aiAutoReplyEnabled: newStatus,
+          });
+        }
+      } catch (mErr) {
+        console.warn("[toggleMyAIAutoReply] Error updating master AuthUser:", mErr.message);
+      }
+    }
+
+    // Emit real-time notification
+    try {
+      const io = getIO();
+      const orgId = req.user?.organizationId || req.organization?._id;
+      if (io) {
+        const payload = {
+          userId: targetUserId.toString(),
+          aiAutoReplyEnabled: newStatus,
+        };
+        io.to(`user_${targetUserId}`).emit("rep_ai_settings_updated", payload);
+        if (orgId) {
+          io.to(`org_${orgId}`).emit("rep_ai_settings_updated", payload);
+        }
+      }
+    } catch (ioErr) {
+      console.warn("[toggleMyAIAutoReply] Error emitting socket update:", ioErr.message);
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        userId: targetUserId.toString(),
+        aiAutoReplyEnabled: newStatus,
+      },
+      message: newStatus
+        ? "AI auto-reply enabled for your assigned leads."
+        : "AI auto-reply paused for your assigned leads.",
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

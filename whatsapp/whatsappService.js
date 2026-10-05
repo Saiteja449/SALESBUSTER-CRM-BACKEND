@@ -3,6 +3,7 @@ import makeWASocket, {
   downloadMediaMessage,
   fetchLatestBaileysVersion,
 } from "@whiskeysockets/baileys";
+import mongoose from "mongoose";
 import { useMongoDBAuthState } from "./useMongoDBAuthState.js";
 import pino from "pino";
 import fs from "fs";
@@ -627,6 +628,56 @@ export const logoutWhatsApp = async (sessionId) => {
   updateSessionStatus(sessionId, "disconnected", "", "", "");
 };
 
+/**
+ * Evaluates whether AI Auto-Reply is permitted for an individual sales representative.
+ * Returns true if the lead is unassigned or if the assigned rep has aiAutoReplyEnabled !== false.
+ * Returns false only if the assigned representative has explicitly disabled their personal AI auto-reply.
+ */
+export const isRepAIAutoReplyEnabled = async (lead, sessionId, models) => {
+  try {
+    let repUserId = null;
+    if (sessionId && sessionId.includes("_user_")) {
+      repUserId = sessionId.split("_user_")[1];
+    } else if (sessionId && sessionId.startsWith("user_")) {
+      repUserId = sessionId.replace("user_", "");
+    } else if (lead?.assignedTo && lead.assignedTo !== "Unassigned") {
+      repUserId = typeof lead.assignedTo === "object"
+        ? (lead.assignedTo._id || lead.assignedTo.id || "").toString()
+        : lead.assignedTo.toString();
+    }
+
+    if (!repUserId || repUserId === "Unassigned") {
+      // Unassigned leads follow organization master switch
+      return true;
+    }
+
+    const UserModel = models?.User || User;
+    let repUser = null;
+    if (UserModel) {
+      if (typeof UserModel.findById === "function") {
+        const q = UserModel.findById(repUserId);
+        const withSelect = q?.select ? q.select("aiAutoReplyEnabled name") : q;
+        repUser = typeof withSelect?.lean === "function" ? await withSelect.lean() : await withSelect;
+      }
+      if (!repUser && typeof UserModel.findOne === "function") {
+        const q = UserModel.findOne({
+          $or: [{ _id: repUserId }, { name: repUserId }],
+        });
+        const withSelect = q?.select ? q.select("aiAutoReplyEnabled name") : q;
+        repUser = typeof withSelect?.lean === "function" ? await withSelect.lean() : await withSelect;
+      }
+    }
+
+    if (repUser && repUser.aiAutoReplyEnabled === false) {
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn("[AI Auto-Reply] Error evaluating rep AI setting:", err.message);
+    return true;
+  }
+};
+
 const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
   try {
     const models = await getModelsForSession(sessionId);
@@ -1110,11 +1161,14 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
     // 6. Asynchronously trigger AI agent response with 4-second debounce
     const settings = await getSystemSettings(models);
     const isAiPaused = lead.aiPausedUntil && new Date(lead.aiPausedUntil) > new Date();
+    const repAllowed = await isRepAIAutoReplyEnabled(lead, sessionId, models);
+
     if (
       !isFromMe &&
       lead.aiEnabled &&
       !isAiPaused &&
       settings.globalAIEnabled &&
+      repAllowed &&
       textContent &&
       textContent.trim()
     ) {
@@ -1126,7 +1180,11 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       );
     } else if (!isFromMe && lead.aiEnabled && !settings.globalAIEnabled) {
       console.log(
-        `[DEBUG] Global AI is paused. Skipping AI auto-reply for lead ID: ${lead._id}`,
+        `[DEBUG] Global AI is paused by Sales Manager. Skipping AI auto-reply for lead ID: ${lead._id}`,
+      );
+    } else if (!isFromMe && lead.aiEnabled && !repAllowed) {
+      console.log(
+        `[DEBUG] Sales Rep personal AI auto-reply is disabled. Skipping AI auto-reply for lead ID: ${lead._id}`,
       );
     }
   } catch (error) {
@@ -1357,6 +1415,18 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
         console.log(`[AI SNOOZE] AI response aborted for lead ${lead._id}. AI paused or disabled.`);
         return;
       }
+    }
+
+    const settings = await getSystemSettings(models);
+    if (!settings.globalAIEnabled) {
+      console.log(`[AI Auto-Reply] Aborted: Global AI is disabled by Sales Manager.`);
+      return;
+    }
+
+    const isRepAllowed = await isRepAIAutoReplyEnabled(freshLead || lead, sessionId, models);
+    if (!isRepAllowed) {
+      console.log(`[AI Auto-Reply] Aborted: Sales Rep personal AI auto-reply is disabled.`);
+      return;
     }
 
     // Emit typing status over socket.io
