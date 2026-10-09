@@ -12,11 +12,11 @@ const token = jwt.sign(
     isOrgOwner: true,
   },
   JWT_SECRET,
-  { expiresIn: "1d" }
+  { expiresIn: "1d" },
 );
 
 async function checkStatus() {
-  const url = "https://api.salesbuster.ai/api/whatsapp/status";
+  const url = "https://betaapi.salesbuster.ai/api/whatsapp/status";
   try {
     const res = await fetch(url, {
       headers: {

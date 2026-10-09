@@ -6,14 +6,15 @@ This document provides ready-to-run **cURL commands** (both Bash and Windows Pow
 
 ## Base URLs & Endpoints
 
-| Environment | Base URL |
-| :--- | :--- |
-| **Local Development** | `http://localhost:5000/api` |
-| **Production** | `https://api.salesbuster.ai/api` |
+| Environment           | Base URL                             |
+| :-------------------- | :----------------------------------- |
+| **Local Development** | `http://localhost:5000/api`          |
+| **Production**        | `https://betaapi.salesbuster.ai/api` |
 
 ### API Endpoints
-- `POST /api/organizations/provision` *(Recommended / Explicit)*
-- `POST /api/organizations` *(Standard REST)*
+
+- `POST /api/organizations/provision` _(Recommended / Explicit)_
+- `POST /api/organizations` _(Standard REST)_
 
 ---
 
@@ -22,16 +23,20 @@ This document provides ready-to-run **cURL commands** (both Bash and Windows Pow
 Super Admin endpoints require administrative credentials. Provide either of the following in request headers:
 
 ### Option A: Super Admin Bearer JWT Token (Recommended)
+
 ```http
 Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>
 ```
-*(Obtain this token by logging in via `POST /api/auth/login` with your Super Admin account).*
+
+_(Obtain this token by logging in via `POST /api/auth/login` with your Super Admin account)._
 
 ### Option B: Super Admin API Key (Backend-to-Backend)
+
 ```http
 x-admin-key: salesbuster_super_admin_secret_key_2026
 ```
-*(Configurable via `ADMIN_API_KEY` in the backend `.env`).*
+
+_(Configurable via `ADMIN_API_KEY` in the backend `.env`)._
 
 ---
 
@@ -41,8 +46,9 @@ x-admin-key: salesbuster_super_admin_secret_key_2026
 - **Field Value**: `"subscriptionPlan": "quarterly"`
 
 ### cURL (Bash / Linux / macOS)
+
 ```bash
-curl -X POST "https://api.salesbuster.ai/api/organizations/provision" \
+curl -X POST "https://betaapi.salesbuster.ai/api/organizations/provision" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>" \
   -d '{
@@ -61,8 +67,9 @@ curl -X POST "https://api.salesbuster.ai/api/organizations/provision" \
 ```
 
 ### cURL using `x-admin-key`
+
 ```bash
-curl -X POST "https://api.salesbuster.ai/api/organizations/provision" \
+curl -X POST "https://betaapi.salesbuster.ai/api/organizations/provision" \
   -H "Content-Type: application/json" \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026" \
   -d '{
@@ -81,6 +88,7 @@ curl -X POST "https://api.salesbuster.ai/api/organizations/provision" \
 ```
 
 ### Windows PowerShell
+
 ```powershell
 $headers = @{
     "Content-Type"  = "application/json"
@@ -101,10 +109,11 @@ $body = @{
     notes                 = "Growth tier - quarterly billing cycle"
 } | ConvertTo-Json
 
-Invoke-RestMethod -Uri "https://api.salesbuster.ai/api/organizations/provision" -Method Post -Headers $headers -Body $body
+Invoke-RestMethod -Uri "https://betaapi.salesbuster.ai/api/organizations/provision" -Method Post -Headers $headers -Body $body
 ```
 
 ### Success Response (`201 Created`)
+
 ```json
 {
   "success": true,
@@ -141,11 +150,12 @@ Invoke-RestMethod -Uri "https://api.salesbuster.ai/api/organizations/provision" 
 ## 2. Annually Plan (12 Months Validity)
 
 - **Subscription Duration**: 12 calendar months (e.g., `2026-09-09` &rarr; `2027-09-09T23:59:59.999Z`)
-- **Field Value**: `"subscriptionPlan": "annually"` *(or `"annual"`)*
+- **Field Value**: `"subscriptionPlan": "annually"` _(or `"annual"`)_
 
 ### cURL (Bash / Linux / macOS)
+
 ```bash
-curl -X POST "https://api.salesbuster.ai/api/organizations/provision" \
+curl -X POST "https://betaapi.salesbuster.ai/api/organizations/provision" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>" \
   -d '{
@@ -164,8 +174,9 @@ curl -X POST "https://api.salesbuster.ai/api/organizations/provision" \
 ```
 
 ### cURL using `x-admin-key`
+
 ```bash
-curl -X POST "https://api.salesbuster.ai/api/organizations/provision" \
+curl -X POST "https://betaapi.salesbuster.ai/api/organizations/provision" \
   -H "Content-Type: application/json" \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026" \
   -d '{
@@ -184,6 +195,7 @@ curl -X POST "https://api.salesbuster.ai/api/organizations/provision" \
 ```
 
 ### Windows PowerShell
+
 ```powershell
 $headers = @{
     "Content-Type"  = "application/json"
@@ -204,10 +216,11 @@ $body = @{
     notes                 = "Enterprise Tier - 12 month prepayment"
 } | ConvertTo-Json
 
-Invoke-RestMethod -Uri "https://api.salesbuster.ai/api/organizations/provision" -Method Post -Headers $headers -Body $body
+Invoke-RestMethod -Uri "https://betaapi.salesbuster.ai/api/organizations/provision" -Method Post -Headers $headers -Body $body
 ```
 
 ### Success Response (`201 Created`)
+
 ```json
 {
   "success": true,
@@ -243,19 +256,19 @@ Invoke-RestMethod -Uri "https://api.salesbuster.ai/api/organizations/provision" 
 
 ## Request Body Field Specifications
 
-| Field | Type | Required | Default | Description |
-| :--- | :--- | :---: | :--- | :--- |
-| `name` | `string` | **Yes** | — | Organization / Company name. |
-| `email` | `string` | **Yes** | — | Billing and owner email address. Must be unique. |
-| `mobile` | `string` | **Yes** | — | Primary contact mobile number. |
-| `seats` | `number` | **Yes** | — | Number of user seats allocated (must be an integer &ge; 1). |
-| `amountPaid` | `number` | **Yes** | — | Total payment received (must be &ge; 0). |
-| `subscriptionPlan` | `string` | **Yes** | `"monthly"` | Subscription billing cycle: `"quarterly"`, `"annually"` (or `"monthly"`). |
-| `pricingPerSeat` | `number` | No | `amountPaid / seats` | Unit price per seat. Automatically calculated if omitted. |
-| `paymentMethod` | `string` | No | `"Manual"` | Mode of payment (e.g. `"UPI"`, `"Bank Transfer"`, `"Stripe"`, `"Cash"`). |
-| `subscriptionStartDate` | `string` | No | Current timestamp | ISO 8601 start date (e.g. `"2026-09-09T00:00:00.000Z"`). |
-| `website` | `string` | No | `""` | Company website URL. |
-| `notes` | `string` | No | `""` | Internal notes or comments regarding the account. |
+| Field                   | Type     | Required | Default              | Description                                                               |
+| :---------------------- | :------- | :------: | :------------------- | :------------------------------------------------------------------------ |
+| `name`                  | `string` | **Yes**  | —                    | Organization / Company name.                                              |
+| `email`                 | `string` | **Yes**  | —                    | Billing and owner email address. Must be unique.                          |
+| `mobile`                | `string` | **Yes**  | —                    | Primary contact mobile number.                                            |
+| `seats`                 | `number` | **Yes**  | —                    | Number of user seats allocated (must be an integer &ge; 1).               |
+| `amountPaid`            | `number` | **Yes**  | —                    | Total payment received (must be &ge; 0).                                  |
+| `subscriptionPlan`      | `string` | **Yes**  | `"monthly"`          | Subscription billing cycle: `"quarterly"`, `"annually"` (or `"monthly"`). |
+| `pricingPerSeat`        | `number` |    No    | `amountPaid / seats` | Unit price per seat. Automatically calculated if omitted.                 |
+| `paymentMethod`         | `string` |    No    | `"Manual"`           | Mode of payment (e.g. `"UPI"`, `"Bank Transfer"`, `"Stripe"`, `"Cash"`).  |
+| `subscriptionStartDate` | `string` |    No    | Current timestamp    | ISO 8601 start date (e.g. `"2026-09-09T00:00:00.000Z"`).                  |
+| `website`               | `string` |    No    | `""`                 | Company website URL.                                                      |
+| `notes`                 | `string` |    No    | `""`                 | Internal notes or comments regarding the account.                         |
 
 ---
 
@@ -280,6 +293,7 @@ Upon executing the provision API, the backend automatically performs the followi
 ## Error Responses
 
 ### 1. Missing Required Fields (`400 Bad Request`)
+
 ```json
 {
   "success": false,
@@ -288,6 +302,7 @@ Upon executing the provision API, the backend automatically performs the followi
 ```
 
 ### 2. Email Already Exists (`400 Bad Request`)
+
 ```json
 {
   "success": false,
@@ -296,6 +311,7 @@ Upon executing the provision API, the backend automatically performs the followi
 ```
 
 ### 3. Invalid Subscription Plan (`400 Bad Request`)
+
 ```json
 {
   "success": false,
@@ -304,6 +320,7 @@ Upon executing the provision API, the backend automatically performs the followi
 ```
 
 ### 4. Unauthorized / Invalid Token (`401 Unauthorized`)
+
 ```json
 {
   "success": false,
@@ -312,6 +329,7 @@ Upon executing the provision API, the backend automatically performs the followi
 ```
 
 ### 5. Non-Admin Access (`403 Forbidden`)
+
 ```json
 {
   "success": false,

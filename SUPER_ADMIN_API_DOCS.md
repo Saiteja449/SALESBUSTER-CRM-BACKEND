@@ -6,15 +6,16 @@ This document provides ready-to-use **cURL commands**, request payloads, headers
 
 ## Base URLs & Authentication
 
-- **Production Base URL**: `https://api.salesbuster.ai/api`
+- **Production Base URL**: `https://betaapi.salesbuster.ai/api`
 - **Local Dev Base URL**: `http://localhost:5000/api`
 
 ### Authentication Methods
+
 Super Admin endpoints support either of the following authentication methods:
 
 1. **Admin Secret API Key (Recommended for Admin Service / Backend-to-Backend)**:
    - Header: `x-admin-key: salesbuster_super_admin_secret_key_2026`
-   *(Configurable via `ADMIN_API_KEY` in backend `.env`)*
+     _(Configurable via `ADMIN_API_KEY` in backend `.env`)_
 
 2. **Bearer JWT Token (For logged-in Super Admin users)**:
    - Header: `Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>`
@@ -26,8 +27,9 @@ Super Admin endpoints support either of the following authentication methods:
 Logs in the Super Administrator and returns a Bearer JWT Token with `role: "super_admin"`. This token can be used in the `Authorization: Bearer <TOKEN>` header for all subsequent administrative endpoints.
 
 ### cURL Request:
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/auth/login \
+curl -X POST https://betaapi.salesbuster.ai/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "admin@gmail",
@@ -36,6 +38,7 @@ curl -X POST https://api.salesbuster.ai/api/auth/login \
 ```
 
 ### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -63,17 +66,20 @@ Creates an isolated client tenant, initializes their private database (`sb_tenan
 > **No Password Required**: Do **not** send a password in the request. The backend auto-generates a complex password and emails it to the owner.
 
 ### Supported Subscription Plans:
+
 - `"monthly"`: 1 calendar month validity (default)
 - `"quarterly"`: 3 calendar months validity
 - `"annually"`: 12 calendar months validity
 
 ### Endpoints:
+
 - `POST /api/organizations` (Recommended REST endpoint)
 - `POST /api/organizations/provision` (Legacy / explicit endpoint)
 
 ### cURL Request (Using Super Admin Bearer JWT Token - Recommended):
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/organizations/provision \
+curl -X POST https://betaapi.salesbuster.ai/api/organizations/provision \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>" \
   -d '{
@@ -93,8 +99,9 @@ curl -X POST https://api.salesbuster.ai/api/organizations/provision \
 ```
 
 ### Alternative cURL Request (Using Admin Secret Key):
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/organizations/provision \
+curl -X POST https://betaapi.salesbuster.ai/api/organizations/provision \
   -H "Content-Type: application/json" \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026" \
   -d '{
@@ -114,6 +121,7 @@ curl -X POST https://api.salesbuster.ai/api/organizations/provision \
 ```
 
 ### Success Response (`201 Created`):
+
 ```json
 {
   "success": true,
@@ -151,12 +159,14 @@ curl -X POST https://api.salesbuster.ai/api/organizations/provision \
 Returns a list of all client organizations with live seat utilization (`usedSeats / totalSeats`), remaining available seats, and subscription expiry flags.
 
 ### cURL Request:
+
 ```bash
-curl -X GET https://api.salesbuster.ai/api/organizations \
+curl -X GET https://betaapi.salesbuster.ai/api/organizations \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026"
 ```
 
 ### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -211,12 +221,14 @@ curl -X GET https://api.salesbuster.ai/api/organizations \
 Fetches deep metrics for a single organization by its ID.
 
 ### cURL Request:
+
 ```bash
-curl -X GET https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001 \
+curl -X GET https://betaapi.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001 \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026"
 ```
 
 ### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -251,8 +263,9 @@ curl -X GET https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
 Upgrades or scales down the licensed sales representative seat count for an organization.
 
 ### cURL Request:
+
 ```bash
-curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/seats \
+curl -X PUT https://betaapi.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/seats \
   -H "Content-Type: application/json" \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026" \
   -d '{
@@ -261,6 +274,7 @@ curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
 ```
 
 ### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -283,8 +297,9 @@ curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
 Renews or extends the subscription period. Automatically calculates duration based on `subscriptionPlan` (`monthly` &rarr; +1 mo, `quarterly` &rarr; +3 mos, `annually` &rarr; +12 mos) or custom `months` from current expiration date (or today if expired). Also updates the organization's plan if `subscriptionPlan` is provided.
 
 ### cURL Request:
+
 ```bash
-curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/renew \
+curl -X PUT https://betaapi.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/renew \
   -H "Content-Type: application/json" \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026" \
   -d '{
@@ -295,6 +310,7 @@ curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
 ```
 
 ### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -319,8 +335,9 @@ curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
 Activates, suspends, or deactivates an organization. When an organization is suspended, logins and lead creation are immediately locked for all its members.
 
 ### cURL Request:
+
 ```bash
-curl -X PATCH https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/status \
+curl -X PATCH https://betaapi.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/status \
   -H "Content-Type: application/json" \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026" \
   -d '{
@@ -328,9 +345,10 @@ curl -X PATCH https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0
   }'
 ```
 
-*(Options for `status`: `"active"`, `"inactive"`, `"suspended"`)*
+_(Options for `status`: `"active"`, `"inactive"`, `"suspended"`)_
 
 ### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -350,12 +368,14 @@ curl -X PATCH https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0
 Regenerates a new initial temporary password, updates both Master and Tenant databases, and resends the welcome onboarding email to the owner.
 
 ### cURL Request:
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/resend-welcome \
+curl -X POST https://betaapi.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/resend-welcome \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026"
 ```
 
 ### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -376,12 +396,14 @@ curl -X POST https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d00
 Used by the Tenant CRM frontend (`/organization` page) to fetch live metrics and details for the logged-in Organization Owner.
 
 ### cURL Request:
+
 ```bash
-curl -X GET https://api.salesbuster.ai/api/organizations/my-org \
+curl -X GET https://betaapi.salesbuster.ai/api/organizations/my-org \
   -H "Authorization: Bearer <ORGANIZATION_OWNER_JWT_TOKEN>"
 ```
 
 ### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -413,17 +435,20 @@ curl -X GET https://api.salesbuster.ai/api/organizations/my-org \
 
 ## 9. Update WhatsApp Connection Limit (`PUT /api/organizations/:id/whatsapp-limit`)
 
-Configures the maximum number of WhatsApp Baileys connection lines for an organization tenant. 
+Configures the maximum number of WhatsApp Baileys connection lines for an organization tenant.
+
 - `1` (or `"single"`): **Single Line (1 Device)**
 - `2` (or `"double"` / `"dual"`): **Dual Lines (2 Devices)**
 
 > [!NOTE]
+>
 > - **Downgrade Safety**: If downgrading an organization from `2` &rarr; `1` while Device 2 (`org_<orgId>_device_2`) is currently connected, the backend automatically logs out and terminates the secondary WhatsApp session.
 > - **Real-time Synchronization**: The backend immediately emits an `organization_updated` socket event to the organization room (`org_<orgId>`), so active client sessions adjust without requiring a manual refresh.
 
 ### cURL Request (Using Super Admin JWT):
+
 ```bash
-curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/whatsapp-limit \
+curl -X PUT https://betaapi.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/whatsapp-limit \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>" \
   -d '{
@@ -432,8 +457,9 @@ curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
 ```
 
 ### Alternative cURL Request (Using Admin API Key & String Mode):
+
 ```bash
-curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/whatsapp-limit \
+curl -X PUT https://betaapi.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/whatsapp-limit \
   -H "Content-Type: application/json" \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026" \
   -d '{
@@ -442,20 +468,25 @@ curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
 ```
 
 ### Accepted Request Body Formats:
+
 ```json
 { "whatsappLineLimit": 1 }
 ```
+
 ```json
 { "whatsappLineLimit": 2 }
 ```
+
 ```json
 { "whatsappConnectionMode": "single" }
 ```
+
 ```json
 { "whatsappConnectionMode": "double" }
 ```
 
 ### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -479,25 +510,29 @@ curl -X PUT https://api.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d000
 Uploads a new Android application package (`.apk`). **Every time a new APK is uploaded, the backend automatically deletes the previous APK file from disk to conserve storage space, purges obsolete records, and stores the new release.**
 
 ### Endpoints:
+
 - `POST /api/app-release/upload` (Recommended)
 - `POST /api/mobile-app/apk/upload` (Mobile-app namespace alias)
 
 ### Headers:
+
 - `Content-Type: multipart/form-data`
 - `Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>` OR `x-admin-key: salesbuster_super_admin_secret_key_2026`
 
 ### Form-Data Fields:
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `file` (or `apk`) | File (binary) | **Yes** | The `.apk` application binary (up to 200 MB). |
-| `version` | Text | No | Semantic version string (e.g. `"1.0.4"`). Defaults to `"1.0.0"`. |
-| `versionCode` | Number | No | Android numeric build number (e.g. `4`). Defaults to `1`. |
-| `minSupportedVersion` | Text | No | Minimum app version required (e.g. `"1.0.0"`). |
-| `releaseNotes` | Text | No | Description of changes, bug fixes, or new features. |
+
+| Field                 | Type          | Required | Description                                                      |
+| --------------------- | ------------- | -------- | ---------------------------------------------------------------- |
+| `file` (or `apk`)     | File (binary) | **Yes**  | The `.apk` application binary (up to 200 MB).                    |
+| `version`             | Text          | No       | Semantic version string (e.g. `"1.0.4"`). Defaults to `"1.0.0"`. |
+| `versionCode`         | Number        | No       | Android numeric build number (e.g. `4`). Defaults to `1`.        |
+| `minSupportedVersion` | Text          | No       | Minimum app version required (e.g. `"1.0.0"`).                   |
+| `releaseNotes`        | Text          | No       | Description of changes, bug fixes, or new features.              |
 
 ### cURL Request (Using Super Admin JWT):
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/app-release/upload \
+curl -X POST https://betaapi.salesbuster.ai/api/app-release/upload \
   -H "Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>" \
   -F "file=@/path/to/app-release.apk" \
   -F "version=1.0.4" \
@@ -506,8 +541,9 @@ curl -X POST https://api.salesbuster.ai/api/app-release/upload \
 ```
 
 ### Alternative cURL Request (Using Admin API Key):
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/app-release/upload \
+curl -X POST https://betaapi.salesbuster.ai/api/app-release/upload \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026" \
   -F "file=@/path/to/app-release.apk" \
   -F "version=1.0.4" \
@@ -516,6 +552,7 @@ curl -X POST https://api.salesbuster.ai/api/app-release/upload \
 ```
 
 ### Success Response (`201 Created`):
+
 ```json
 {
   "success": true,
@@ -530,8 +567,8 @@ curl -X POST https://api.salesbuster.ai/api/app-release/upload \
     "fileName": "1726501234567-app_release.apk",
     "fileSize": 45218900,
     "fileSizeFormatted": "43.12 MB",
-    "downloadUrl": "https://api.salesbuster.ai/api/mobile-app/apk/download",
-    "fileUrl": "https://api.salesbuster.ai/uploads/apk/1726501234567-app_release.apk",
+    "downloadUrl": "https://betaapi.salesbuster.ai/api/mobile-app/apk/download",
+    "fileUrl": "https://betaapi.salesbuster.ai/uploads/apk/1726501234567-app_release.apk",
     "uploadedByName": "Super Admin",
     "uploadedAt": "2026-09-16T17:35:00.000Z"
   }
@@ -541,21 +578,27 @@ curl -X POST https://api.salesbuster.ai/api/app-release/upload \
 ---
 
 ### Check Current Uploaded APK Info (`GET /api/app-release/latest`)
+
 Returns the active release metadata for administrative dashboards or mobile in-app update prompts:
+
 ```bash
-curl -X GET https://api.salesbuster.ai/api/app-release/latest
+curl -X GET https://betaapi.salesbuster.ai/api/app-release/latest
 ```
 
 ### Direct Download Endpoint for Android Devices (`GET /api/mobile-app/apk/download`)
+
 Triggers an immediate file download of the `.apk` on Android phones/browsers with `application/vnd.android.package-archive`:
+
 ```bash
-curl -O -J https://api.salesbuster.ai/api/mobile-app/apk/download
+curl -O -J https://betaapi.salesbuster.ai/api/mobile-app/apk/download
 ```
 
 ### Delete Active APK (`DELETE /api/app-release`)
+
 Removes the current APK file from disk and clears the database record:
+
 ```bash
-curl -X DELETE https://api.salesbuster.ai/api/app-release \
+curl -X DELETE https://betaapi.salesbuster.ai/api/app-release \
   -H "x-admin-key: salesbuster_super_admin_secret_key_2026"
 ```
 
@@ -563,11 +606,10 @@ curl -X DELETE https://api.salesbuster.ai/api/app-release \
 
 ## Error Handling Reference
 
-| Status Code | Description | Example Response |
-|---|---|---|
-| `400 Bad Request` | Missing required fields, non-apk file, or file >200MB | `{"success": false, "message": "Only .apk files are allowed."}` |
-| `401 Unauthorized` | Missing or invalid auth token/key | `{"success": false, "message": "Not authorized, token failed"}` |
-| `403 Forbidden` | Super Admin privileges required | `{"success": false, "message": "Access forbidden: Super Administrator privileges required"}` |
-| `404 Not Found` | No APK uploaded yet | `{"success": false, "message": "No APK release has been uploaded yet."}` |
-| `500 Server Error`| Disk write or database error | `{"success": false, "message": "Server error while processing APK upload"}` |
-
+| Status Code        | Description                                           | Example Response                                                                             |
+| ------------------ | ----------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `400 Bad Request`  | Missing required fields, non-apk file, or file >200MB | `{"success": false, "message": "Only .apk files are allowed."}`                              |
+| `401 Unauthorized` | Missing or invalid auth token/key                     | `{"success": false, "message": "Not authorized, token failed"}`                              |
+| `403 Forbidden`    | Super Admin privileges required                       | `{"success": false, "message": "Access forbidden: Super Administrator privileges required"}` |
+| `404 Not Found`    | No APK uploaded yet                                   | `{"success": false, "message": "No APK release has been uploaded yet."}`                     |
+| `500 Server Error` | Disk write or database error                          | `{"success": false, "message": "Server error while processing APK upload"}`                  |

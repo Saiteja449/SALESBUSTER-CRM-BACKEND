@@ -48,7 +48,10 @@ export const extractTemplateVariables = (components) => {
     }
   }
 
-  return { count, variableNames: variableNames.sort((a, b) => Number(a) - Number(b)) };
+  return {
+    count,
+    variableNames: variableNames.sort((a, b) => Number(a) - Number(b)),
+  };
 };
 
 /**
@@ -56,24 +59,24 @@ export const extractTemplateVariables = (components) => {
  */
 export const getCloudStatus = async (req, res) => {
   try {
-    if (
-      req.user?.role === "sales person" &&
-      !req.user?.isOrgOwner
-    ) {
+    if (req.user?.role === "sales person" && !req.user?.isOrgOwner) {
       return res.status(403).json({
         success: false,
-        message: "Access forbidden: Manager or Administrator privileges required",
+        message:
+          "Access forbidden: Manager or Administrator privileges required",
       });
     }
 
     const org = req.organization;
     if (!org) {
-      return res.status(404).json({ success: false, message: "Organization not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Organization not found." });
     }
 
     const cloud = org.whatsappCloudSettings || {};
     const orgId = org._id ? org._id.toString() : "";
-    const webhookCallbackUrl = `https://api.salesbuster.ai/api/whatsapp/cloud/webhook/${orgId}`;
+    const webhookCallbackUrl = `https://betaapi.salesbuster.ai/api/whatsapp/cloud/webhook/${orgId}`;
 
     res.status(200).json({
       success: true,
@@ -89,9 +92,13 @@ export const getCloudStatus = async (req, res) => {
         messagingLimitTier: cloud.messagingLimitTier || "TIER_1K",
         messagesPerSecond: cloud.messagesPerSecond || 5,
         hasToken: !!cloud.accessTokenEncrypted,
-        maskedToken: cloud.accessTokenEncrypted ? maskApiKey(decryptApiKey(cloud.accessTokenEncrypted)) : "",
+        maskedToken: cloud.accessTokenEncrypted
+          ? maskApiKey(decryptApiKey(cloud.accessTokenEncrypted))
+          : "",
         hasWebhookVerifyToken: !!cloud.webhookVerifyToken,
-        maskedWebhookVerifyToken: cloud.webhookVerifyToken ? maskApiKey(cloud.webhookVerifyToken) : "",
+        maskedWebhookVerifyToken: cloud.webhookVerifyToken
+          ? maskApiKey(cloud.webhookVerifyToken)
+          : "",
         lastSyncedAt: cloud.lastSyncedAt || null,
       },
     });
@@ -116,13 +123,17 @@ export const connectCloudAccount = async (req, res) => {
     const { Organization } = getMasterModels();
     const org = await Organization.findById(req.organization._id);
     if (!org) {
-      return res.status(404).json({ success: false, message: "Organization not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Organization not found." });
     }
 
     // Use provided token or fall back to previously saved encrypted token
     let tokenToUse = accessToken ? accessToken.trim() : "";
     if (!tokenToUse && org.whatsappCloudSettings?.accessTokenEncrypted) {
-      tokenToUse = decryptApiKey(org.whatsappCloudSettings.accessTokenEncrypted);
+      tokenToUse = decryptApiKey(
+        org.whatsappCloudSettings.accessTokenEncrypted,
+      );
     }
 
     if (!tokenToUse) {
@@ -150,7 +161,9 @@ export const connectCloudAccount = async (req, res) => {
       accessTokenEncrypted: encryptedToken,
       qualityRating: verified.qualityRating || "UNKNOWN",
       messagingLimitTier: verified.messagingLimitTier || "TIER_1K",
-      messagesPerSecond: messagesPerSecond ? Math.min(80, Math.max(1, parseInt(messagesPerSecond))) : 5,
+      messagesPerSecond: messagesPerSecond
+        ? Math.min(80, Math.max(1, parseInt(messagesPerSecond)))
+        : 5,
       webhookVerifyToken: org.whatsappCloudSettings?.webhookVerifyToken || "",
       lastSyncedAt: new Date(),
     };
@@ -186,7 +199,9 @@ export const disconnectCloudAccount = async (req, res) => {
     const { Organization } = getMasterModels();
     const org = await Organization.findById(req.organization._id);
     if (!org) {
-      return res.status(404).json({ success: false, message: "Organization not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Organization not found." });
     }
 
     org.whatsappCloudSettings = {
@@ -222,10 +237,16 @@ export const syncTemplates = async (req, res) => {
     const org = req.organization;
     const cloud = org?.whatsappCloudSettings;
 
-    if (!cloud || !cloud.isConfigured || !cloud.wabaId || !cloud.accessTokenEncrypted) {
+    if (
+      !cloud ||
+      !cloud.isConfigured ||
+      !cloud.wabaId ||
+      !cloud.accessTokenEncrypted
+    ) {
       return res.status(400).json({
         success: false,
-        message: "WhatsApp Cloud API is not connected. Please connect credentials first.",
+        message:
+          "WhatsApp Cloud API is not connected. Please connect credentials first.",
       });
     }
 
@@ -253,7 +274,7 @@ export const syncTemplates = async (req, res) => {
       const doc = await WhatsAppTemplate.findOneAndUpdate(
         { name: mt.name, language: templateData.language },
         templateData,
-        { upsert: true, new: true }
+        { upsert: true, new: true },
       );
       syncedTemplates.push(doc);
     }
@@ -303,10 +324,16 @@ export const createTemplate = async (req, res) => {
     const org = req.organization;
     const cloud = org?.whatsappCloudSettings;
 
-    if (!cloud || !cloud.isConfigured || !cloud.wabaId || !cloud.accessTokenEncrypted) {
+    if (
+      !cloud ||
+      !cloud.isConfigured ||
+      !cloud.wabaId ||
+      !cloud.accessTokenEncrypted
+    ) {
       return res.status(400).json({
         success: false,
-        message: "WhatsApp Cloud API is not connected. Please configure your Meta credentials in Settings first.",
+        message:
+          "WhatsApp Cloud API is not connected. Please configure your Meta credentials in Settings first.",
       });
     }
 
@@ -318,14 +345,19 @@ export const createTemplate = async (req, res) => {
       try {
         templatePayload = JSON.parse(req.body.template);
       } catch (e) {
-        return res.status(400).json({ success: false, message: "Invalid JSON in template field." });
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid JSON in template field." });
       }
     }
 
-    let { name, category, language, components, sampleVariables } = templatePayload;
+    let { name, category, language, components, sampleVariables } =
+      templatePayload;
 
     if (!name || typeof name !== "string") {
-      return res.status(400).json({ success: false, message: "Template name is required." });
+      return res
+        .status(400)
+        .json({ success: false, message: "Template name is required." });
     }
 
     // Sanitize name: Meta requires lowercase letters, numbers, and underscores only
@@ -344,7 +376,9 @@ export const createTemplate = async (req, res) => {
     }
 
     const validCategories = ["MARKETING", "UTILITY", "AUTHENTICATION"];
-    const templateCategory = validCategories.includes(category) ? category : "MARKETING";
+    const templateCategory = validCategories.includes(category)
+      ? category
+      : "MARKETING";
     const templateLanguage = language || "en_US";
 
     let metaComponents = Array.isArray(components) ? [...components] : [];
@@ -357,7 +391,7 @@ export const createTemplate = async (req, res) => {
         accessToken,
         req.file.buffer,
         mimeType,
-        originalName
+        originalName,
       );
 
       const headerIdx = metaComponents.findIndex((c) => c.type === "HEADER");
@@ -375,14 +409,17 @@ export const createTemplate = async (req, res) => {
       const varMatches = bodyText.match(/\{\{(\d+)\}\}/g);
       if (varMatches && varMatches.length > 0) {
         const uniqueVars = Array.from(new Set(varMatches)).sort((a, b) => {
-          return parseInt(a.replace(/\D/g, "")) - parseInt(b.replace(/\D/g, ""));
+          return (
+            parseInt(a.replace(/\D/g, "")) - parseInt(b.replace(/\D/g, ""))
+          );
         });
 
         const samplesArray = [];
         uniqueVars.forEach((v, idx) => {
           const varNum = v.replace(/\D/g, "");
           const val =
-            (sampleVariables && (sampleVariables[varNum] || sampleVariables[idx])) ||
+            (sampleVariables &&
+              (sampleVariables[varNum] || sampleVariables[idx])) ||
             `Sample${varNum}`;
           samplesArray.push(String(val));
         });
@@ -400,7 +437,8 @@ export const createTemplate = async (req, res) => {
       const varMatches = headerText.match(/\{\{(\d+)\}\}/g);
       if (varMatches && varMatches.length > 0) {
         const sampleVal =
-          (sampleVariables && (sampleVariables["header"] || sampleVariables["h1"])) ||
+          (sampleVariables &&
+            (sampleVariables["header"] || sampleVariables["h1"])) ||
           "Header Sample";
         metaComponents[headerIdx].example = {
           header_text: [String(sampleVal)],
@@ -416,7 +454,11 @@ export const createTemplate = async (req, res) => {
     };
 
     // Submit to Meta Graph API
-    const metaResult = await createMessageTemplate(cloud.wabaId, accessToken, metaRequestData);
+    const metaResult = await createMessageTemplate(
+      cloud.wabaId,
+      accessToken,
+      metaRequestData,
+    );
 
     // Save to local tenant database
     const { WhatsAppTemplate } = req.tenantModels;
@@ -435,7 +477,7 @@ export const createTemplate = async (req, res) => {
         variableNames,
         lastSyncedAt: new Date(),
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true },
     );
 
     res.status(201).json({
@@ -463,7 +505,12 @@ export const deleteTemplate = async (req, res) => {
     const org = req.organization;
     const cloud = org?.whatsappCloudSettings;
 
-    if (!cloud || !cloud.isConfigured || !cloud.wabaId || !cloud.accessTokenEncrypted) {
+    if (
+      !cloud ||
+      !cloud.isConfigured ||
+      !cloud.wabaId ||
+      !cloud.accessTokenEncrypted
+    ) {
       return res.status(400).json({
         success: false,
         message: "WhatsApp Cloud API is not connected.",
@@ -475,7 +522,9 @@ export const deleteTemplate = async (req, res) => {
     const template = await WhatsAppTemplate.findById(id);
 
     if (!template) {
-      return res.status(404).json({ success: false, message: "Template not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Template not found." });
     }
 
     const accessToken = decryptApiKey(cloud.accessTokenEncrypted);
@@ -486,10 +535,13 @@ export const deleteTemplate = async (req, res) => {
         cloud.wabaId,
         accessToken,
         template.name,
-        template.metaTemplateId
+        template.metaTemplateId,
       );
     } catch (metaErr) {
-      console.warn("Warning deleting template from Meta (may already be deleted):", metaErr.message);
+      console.warn(
+        "Warning deleting template from Meta (may already be deleted):",
+        metaErr.message,
+      );
     }
 
     // Delete from tenant DB
@@ -513,7 +565,9 @@ export const estimateAudience = async (req, res) => {
     const { Lead, WhatsAppOptOut } = req.tenantModels;
 
     const leadFilter = buildLeadAudienceQuery(audienceCriteria);
-    const leads = await Lead.find(leadFilter).select("phone isOptedOut hasWhatsAppConsent");
+    const leads = await Lead.find(leadFilter).select(
+      "phone isOptedOut hasWhatsAppConsent",
+    );
 
     const optOutRecords = await WhatsAppOptOut.find({}).select("phone");
     const optOutSet = new Set(optOutRecords.map((r) => r.phone));
@@ -626,7 +680,10 @@ export const buildLeadAudienceQuery = (criteria = {}) => {
     return query;
   }
 
-  if (criteria.filterType === "manual_selection" && Array.isArray(criteria.manualLeadIds)) {
+  if (
+    criteria.filterType === "manual_selection" &&
+    Array.isArray(criteria.manualLeadIds)
+  ) {
     query._id = { $in: criteria.manualLeadIds };
     return query;
   }

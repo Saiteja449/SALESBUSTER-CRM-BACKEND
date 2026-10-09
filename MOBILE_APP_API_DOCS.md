@@ -10,10 +10,10 @@ In your mobile app (React Native, Flutter, Swift, Kotlin, etc.), your endpoint c
 
 ```javascript
 // Base URL configuration:
-// - Production: "https://api.salesbuster.ai/api"
+// - Production: "https://betaapi.salesbuster.ai/api"
 // - Local Dev (Android Emulator): "http://10.0.2.2:5000/api"
 // - Local Dev (iOS Simulator / LAN): "http://<YOUR_LOCAL_IP>:5000/api"
-export const BASE_URL = "https://api.salesbuster.ai/api";
+export const BASE_URL = "https://betaapi.salesbuster.ai/api";
 
 export const API_ENDPOINTS = {
   AUTH: {
@@ -55,14 +55,17 @@ export const API_ENDPOINTS = {
 ## 1. Authentication (`AUTH.LOGIN`)
 
 ### `POST /auth/login`
+
 Authenticates the user (Sales Representative or Sales Manager), verifies organization subscription validity, and returns an access token with user details and organization metadata.
 
 #### Headers:
+
 ```http
 Content-Type: application/json
 ```
 
 #### Request Body:
+
 ```json
 {
   "email": "salesrep@acmetech.io",
@@ -71,8 +74,9 @@ Content-Type: application/json
 ```
 
 #### cURL Request:
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/auth/login \
+curl -X POST https://betaapi.salesbuster.ai/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "salesrep@acmetech.io",
@@ -81,6 +85,7 @@ curl -X POST https://api.salesbuster.ai/api/auth/login \
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -114,7 +119,9 @@ curl -X POST https://api.salesbuster.ai/api/auth/login \
 #### Error Responses (Organization Status & Credentials):
 
 ##### Case 1: Organization Workspace Suspended (`403 Forbidden`)
+
 Occurs when the organization account has been suspended by the Super Administrator:
+
 ```json
 {
   "success": false,
@@ -123,7 +130,9 @@ Occurs when the organization account has been suspended by the Super Administrat
 ```
 
 ##### Case 2: Organization Workspace Inactive (`403 Forbidden`)
+
 Occurs when the organization account has been set to inactive:
+
 ```json
 {
   "success": false,
@@ -132,7 +141,9 @@ Occurs when the organization account has been set to inactive:
 ```
 
 ##### Case 3: Organization Subscription Expired (`403 Forbidden`)
+
 Occurs when the subscription validity end date (`subscriptionEndDate`) has passed:
+
 ```json
 {
   "success": false,
@@ -142,6 +153,7 @@ Occurs when the subscription validity end date (`subscriptionEndDate`) has passe
 ```
 
 ##### Case 4: Invalid Credentials (`400 Bad Request`)
+
 ```json
 {
   "success": false,
@@ -150,6 +162,7 @@ Occurs when the subscription validity end date (`subscriptionEndDate`) has passe
 ```
 
 ##### Case 5: User Account Not Found (`404 Not Found`)
+
 ```json
 {
   "success": false,
@@ -162,27 +175,32 @@ Occurs when the subscription validity end date (`subscriptionEndDate`) has passe
 ## 2. Leads Management (`LEADS.BASE`)
 
 ### 2.1 Get Paginated Leads (Recommended for Mobile Lists)
+
 ### `GET /leads/paginated`
+
 Fetches a paginated list of leads with full-text search, service filter, sales representative filter, status filter, and tab counters (`New`, `TodayFollowup`, `UpcomingFollowup`, `Converted`, `NotAttended`, `Lost`, `OldLeads`).
 
 #### Query Parameters:
-| Parameter | Type | Required | Description | Example |
-| :--- | :--- | :--- | :--- | :--- |
-| `page` | Integer | No (Default: 0) | 0-indexed page number | `0` |
-| `limit` | Integer or "All" | No (Default: 10) | Items per page | `15` |
-| `search` | String | No | Search across name, phone, email, service, city | `Rahul` |
-| `service` | String | No (Default: "All")| Filter by specific service | `Product Installation` |
-| `salespersonId`| String | No | Filter by Sales Rep ObjectId | `66dd0a1b2c3d4e5f6a7b8c90` |
-| `status` | String | No (Default: "All")| Filter by lead status | `Follow Up` |
-| `leadTypeTab` | String | No (Default: "New")| Tab category: `New`, `TodayFollowup`, `UpcomingFollowup`, `Converted`, `NotAttended`, `Lost`, `OldLeads` | `TodayFollowup` |
+
+| Parameter       | Type             | Required            | Description                                                                                              | Example                    |
+| :-------------- | :--------------- | :------------------ | :------------------------------------------------------------------------------------------------------- | :------------------------- |
+| `page`          | Integer          | No (Default: 0)     | 0-indexed page number                                                                                    | `0`                        |
+| `limit`         | Integer or "All" | No (Default: 10)    | Items per page                                                                                           | `15`                       |
+| `search`        | String           | No                  | Search across name, phone, email, service, city                                                          | `Rahul`                    |
+| `service`       | String           | No (Default: "All") | Filter by specific service                                                                               | `Product Installation`     |
+| `salespersonId` | String           | No                  | Filter by Sales Rep ObjectId                                                                             | `66dd0a1b2c3d4e5f6a7b8c90` |
+| `status`        | String           | No (Default: "All") | Filter by lead status                                                                                    | `Follow Up`                |
+| `leadTypeTab`   | String           | No (Default: "New") | Tab category: `New`, `TodayFollowup`, `UpcomingFollowup`, `Converted`, `NotAttended`, `Lost`, `OldLeads` | `TodayFollowup`            |
 
 #### cURL Request:
+
 ```bash
-curl -X GET "https://api.salesbuster.ai/api/leads/paginated?page=0&limit=10&leadTypeTab=New" \
+curl -X GET "https://betaapi.salesbuster.ai/api/leads/paginated?page=0&limit=10&leadTypeTab=New" \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -222,16 +240,20 @@ curl -X GET "https://api.salesbuster.ai/api/leads/paginated?page=0&limit=10&lead
 ---
 
 ### 2.2 Get All Leads (Unpaginated)
+
 ### `GET /leads`
+
 Fetches all leads within the tenant database.
 
 #### cURL Request:
+
 ```bash
-curl -X GET https://api.salesbuster.ai/api/leads \
+curl -X GET https://betaapi.salesbuster.ai/api/leads \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -253,14 +275,17 @@ curl -X GET https://api.salesbuster.ai/api/leads \
 ---
 
 ### 2.3 Create New Lead
+
 ### `POST /leads`
+
 Creates a new lead. If `assignedTo` is omitted or `"Unassigned"`, it is automatically assigned to an active Sales Representative via round-robin.
 
 Supports both **JSON** and **`multipart/form-data`** (when uploading call recordings or attachments).
 
 #### Option A: JSON Body (Standard Entry)
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/leads \
+curl -X POST https://betaapi.salesbuster.ai/api/leads \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
   -d '{
@@ -276,8 +301,9 @@ curl -X POST https://api.salesbuster.ai/api/leads \
 ```
 
 #### Option B: Multipart / Form-Data (With Call Audio Recording)
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/leads \
+curl -X POST https://betaapi.salesbuster.ai/api/leads \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
   -F "name=Ananya Sharma" \
   -F "phone=+91 98111 22334" \
@@ -289,6 +315,7 @@ curl -X POST https://api.salesbuster.ai/api/leads \
 ```
 
 #### Success Response (`201 Created`):
+
 ```json
 {
   "success": true,
@@ -312,12 +339,15 @@ curl -X POST https://api.salesbuster.ai/api/leads \
 ---
 
 ### 2.4 Update Lead
+
 ### `PUT /leads/:id`
+
 Updates lead fields, changes status (e.g. `Follow Up`, `Converted`, `Not Attended`, `Lost`), updates notes, or attaches audio recordings.
 
 #### cURL Request:
+
 ```bash
-curl -X PUT https://api.salesbuster.ai/api/leads/66e118993b782910c01a2b45 \
+curl -X PUT https://betaapi.salesbuster.ai/api/leads/66e118993b782910c01a2b45 \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
   -d '{
@@ -328,6 +358,7 @@ curl -X PUT https://api.salesbuster.ai/api/leads/66e118993b782910c01a2b45 \
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -347,15 +378,18 @@ curl -X PUT https://api.salesbuster.ai/api/leads/66e118993b782910c01a2b45 \
 ---
 
 ### 2.5 Delete Lead
+
 ### `DELETE /leads/:id`
 
 #### cURL Request:
+
 ```bash
-curl -X DELETE https://api.salesbuster.ai/api/leads/66e118993b782910c01a2b45 \
+curl -X DELETE https://betaapi.salesbuster.ai/api/leads/66e118993b782910c01a2b45 \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -368,16 +402,20 @@ curl -X DELETE https://api.salesbuster.ai/api/leads/66e118993b782910c01a2b45 \
 ## 3. Team & Users Management (`USERS.BASE`)
 
 ### 3.1 Get All Team Members / Sales Representatives
+
 ### `GET /users`
+
 Fetches all sales representatives in the tenant organization, plus current seat capacity and remaining licenses.
 
 #### cURL Request:
+
 ```bash
-curl -X GET https://api.salesbuster.ai/api/users \
+curl -X GET https://betaapi.salesbuster.ai/api/users \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -420,12 +458,15 @@ curl -X GET https://api.salesbuster.ai/api/users \
 ---
 
 ### 3.2 Add a New Sales Representative
+
 ### `POST /users`
+
 Enforces seat limit checks. If `password` is omitted, auto-generates a secure temporary password and emails credentials directly to the representative.
 
 #### cURL Request:
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/users \
+curl -X POST https://betaapi.salesbuster.ai/api/users \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
   -d '{
@@ -437,6 +478,7 @@ curl -X POST https://api.salesbuster.ai/api/users \
 ```
 
 #### Success Response (`201 Created`):
+
 ```json
 {
   "success": true,
@@ -458,6 +500,7 @@ curl -X POST https://api.salesbuster.ai/api/users \
 ```
 
 #### Error Response when Seat Limit is Reached (`403 Forbidden`):
+
 ```json
 {
   "success": false,
@@ -471,16 +514,20 @@ curl -X POST https://api.salesbuster.ai/api/users \
 ---
 
 ### 3.3 Delete Sales Representative
+
 ### `DELETE /users/:id`
+
 Deletes a sales representative, reassigns their active leads to `"Unassigned"`, and frees up a subscription license seat.
 
 #### cURL Request:
+
 ```bash
-curl -X DELETE https://api.salesbuster.ai/api/users/66dd0c3d4e5f6a7b8c92 \
+curl -X DELETE https://betaapi.salesbuster.ai/api/users/66dd0c3d4e5f6a7b8c92 \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -498,16 +545,20 @@ curl -X DELETE https://api.salesbuster.ai/api/users/66dd0c3d4e5f6a7b8c92 \
 ## 4. Follow-ups Management (`FOLLOWUPS.BASE`)
 
 ### 4.1 Get All Follow-ups
+
 ### `GET /followups`
+
 Fetches all scheduled follow-ups sorted with newest first.
 
 #### cURL Request:
+
 ```bash
-curl -X GET https://api.salesbuster.ai/api/followups \
+curl -X GET https://betaapi.salesbuster.ai/api/followups \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -532,24 +583,27 @@ curl -X GET https://api.salesbuster.ai/api/followups \
 ---
 
 ### 4.2 Create / Schedule a Follow-up
+
 ### `POST /followups`
 
 #### Request Body Fields:
-| Field | Type | Required | Description |
-| :--- | :--- | :--- | :--- |
-| `leadId` | String | Yes | Lead ObjectId |
-| `leadName` | String | Yes | Lead full name |
-| `type` | String | Yes | E.g. `"Call"`, `"Meeting"`, `"Email"`, `"WhatsApp"` |
-| `date` | String | Yes | Date string (`YYYY-MM-DD`) |
-| `time` | String | Yes | Time string (`HH:mm`) |
-| `priority` | String | No | `"Low"`, `"Medium"`, `"High"` |
-| `notes` | String | No | Detailed follow-up instructions |
-| `author` | String | No | Representative's name |
-| `done` | Boolean | No | Default: `false` |
+
+| Field      | Type    | Required | Description                                         |
+| :--------- | :------ | :------- | :-------------------------------------------------- |
+| `leadId`   | String  | Yes      | Lead ObjectId                                       |
+| `leadName` | String  | Yes      | Lead full name                                      |
+| `type`     | String  | Yes      | E.g. `"Call"`, `"Meeting"`, `"Email"`, `"WhatsApp"` |
+| `date`     | String  | Yes      | Date string (`YYYY-MM-DD`)                          |
+| `time`     | String  | Yes      | Time string (`HH:mm`)                               |
+| `priority` | String  | No       | `"Low"`, `"Medium"`, `"High"`                       |
+| `notes`    | String  | No       | Detailed follow-up instructions                     |
+| `author`   | String  | No       | Representative's name                               |
+| `done`     | Boolean | No       | Default: `false`                                    |
 
 #### cURL Request:
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/followups \
+curl -X POST https://betaapi.salesbuster.ai/api/followups \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
   -d '{
@@ -566,6 +620,7 @@ curl -X POST https://api.salesbuster.ai/api/followups \
 ```
 
 #### Success Response (`201 Created`):
+
 ```json
 {
   "success": true,
@@ -589,12 +644,15 @@ curl -X POST https://api.salesbuster.ai/api/followups \
 ---
 
 ### 4.3 Update Follow-up Status
+
 ### `PUT /followups/:id`
+
 Marks a follow-up as completed or pending.
 
 #### cURL Request:
+
 ```bash
-curl -X PUT https://api.salesbuster.ai/api/followups/66e12a013b782910c01a2b60 \
+curl -X PUT https://betaapi.salesbuster.ai/api/followups/66e12a013b782910c01a2b60 \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
   -d '{
@@ -603,6 +661,7 @@ curl -X PUT https://api.salesbuster.ai/api/followups/66e12a013b782910c01a2b60 \
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -622,22 +681,26 @@ curl -X PUT https://api.salesbuster.ai/api/followups/66e12a013b782910c01a2b60 \
 ## 5. Telecaller Analytics & Call Logging (`ANALYTICS.LOG_CALL`)
 
 ### 5.1 Log a Phone Call
+
 ### `POST /analytics/log-call`
+
 Called automatically by the mobile app after a phone call completes or ends. Increments total calls, talk time duration, longest call record, and categorized counters (`incoming`, `outgoing`, `connected`, `missed`, `rejected`, `not-connected`).
 
 #### Request Body Fields:
-| Field | Type | Required | Description |
-| :--- | :--- | :--- | :--- |
-| `salespersonId` | String | Recommended | Sales Rep User ObjectId |
-| `salesperson` | String | Optional | Sales Rep Name |
-| `date` | String | Yes | Date string (`YYYY-MM-DD`) |
-| `duration` | Number | Yes | Call duration in seconds |
-| `callType` | String | Yes | `"incoming"` or `"outgoing"` |
-| `status` | String | Yes | `"connected"`, `"missed"`, `"rejected"`, or `"not-connected"` |
+
+| Field           | Type   | Required    | Description                                                   |
+| :-------------- | :----- | :---------- | :------------------------------------------------------------ |
+| `salespersonId` | String | Recommended | Sales Rep User ObjectId                                       |
+| `salesperson`   | String | Optional    | Sales Rep Name                                                |
+| `date`          | String | Yes         | Date string (`YYYY-MM-DD`)                                    |
+| `duration`      | Number | Yes         | Call duration in seconds                                      |
+| `callType`      | String | Yes         | `"incoming"` or `"outgoing"`                                  |
+| `status`        | String | Yes         | `"connected"`, `"missed"`, `"rejected"`, or `"not-connected"` |
 
 #### cURL Request:
+
 ```bash
-curl -X POST https://api.salesbuster.ai/api/analytics/log-call \
+curl -X POST https://betaapi.salesbuster.ai/api/analytics/log-call \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
   -d '{
@@ -651,6 +714,7 @@ curl -X POST https://api.salesbuster.ai/api/analytics/log-call \
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -677,16 +741,20 @@ curl -X POST https://api.salesbuster.ai/api/analytics/log-call \
 ---
 
 ### 5.2 Get Rep Performance Analytics (Bonus Mobile Report)
+
 ### `GET /analytics/:salespersonId`
+
 Fetches the last 7 days of daily call performance records for the representative.
 
 #### cURL Request:
+
 ```bash
-curl -X GET https://api.salesbuster.ai/api/analytics/66dd0a1b2c3d4e5f6a7b8c90 \
+curl -X GET https://betaapi.salesbuster.ai/api/analytics/66dd0a1b2c3d4e5f6a7b8c90 \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -711,17 +779,20 @@ curl -X GET https://api.salesbuster.ai/api/analytics/66dd0a1b2c3d4e5f6a7b8c90 \
 ## 6. Organization Services Catalog (`ORGANIZATION.SERVICES`)
 
 ### `GET /organization/services`
-*(Also accessible at `GET /organizations/services`)*
+
+_(Also accessible at `GET /organizations/services`)_
 
 Returns the catalog of active services and offerings configured for the organization. Mobile apps use this endpoint to dynamically populate dropdown menus when creating/editing leads, filtering lists, or assigning enquiries.
 
 #### cURL Request:
+
 ```bash
-curl -X GET https://api.salesbuster.ai/api/organization/services \
+curl -X GET https://betaapi.salesbuster.ai/api/organization/services \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -729,33 +800,17 @@ curl -X GET https://api.salesbuster.ai/api/organization/services \
     {
       "name": "General Enquiry",
       "description": "General inquiry or consultation regarding products, services, and customer requirements.",
-      "keywords": [
-        "enquiry",
-        "inquiry",
-        "details",
-        "information",
-        "help"
-      ]
+      "keywords": ["enquiry", "inquiry", "details", "information", "help"]
     },
     {
       "name": "Product Installation",
       "description": "Full end-to-end on-site hardware and software installation services.",
-      "keywords": [
-        "installation",
-        "setup",
-        "configure",
-        "deployment"
-      ]
+      "keywords": ["installation", "setup", "configure", "deployment"]
     },
     {
       "name": "Annual Maintenance (AMC)",
       "description": "Preventive maintenance, quarterly servicing, and emergency repairs.",
-      "keywords": [
-        "maintenance",
-        "amc",
-        "service",
-        "repair"
-      ]
+      "keywords": ["maintenance", "amc", "service", "repair"]
     }
   ]
 }
@@ -766,17 +821,20 @@ curl -X GET https://api.salesbuster.ai/api/organization/services \
 ## 7. Organization Profile & Settings (`ORGANIZATION.SETTINGS`)
 
 ### `GET /organization/settings`
-*(Also accessible at `GET /organization/my-org` or `GET /organizations/my-org`)*
+
+_(Also accessible at `GET /organization/my-org` or `GET /organizations/my-org`)_
 
 Returns organization details, seat capacities, active subscription status, and AI configuration summary.
 
 #### cURL Request:
+
 ```bash
-curl -X GET https://api.salesbuster.ai/api/organization/settings \
+curl -X GET https://betaapi.salesbuster.ai/api/organization/settings \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
 ```
 
 #### Success Response (`200 OK`):
+
 ```json
 {
   "success": true,
@@ -821,38 +879,38 @@ curl -X GET https://api.salesbuster.ai/api/organization/settings \
 
 ## 8. Summary Quick-Reference Table
 
-| Group | Key | HTTP Method | Endpoint Path | Auth Required | Description |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **AUTH** | `LOGIN` | `POST` | `/auth/login` | ❌ No | Login with email & password |
-| **LEADS** | `BASE` | `GET` | `/leads/paginated` | ✅ Bearer JWT | Paginated leads + tab counters |
-| | | `GET` | `/leads` | ✅ Bearer JWT | Fetch all leads |
-| | | `POST` | `/leads` | ✅ Bearer JWT | Create lead (JSON or audio) |
-| | | `PUT` | `/leads/:id` | ✅ Bearer JWT | Update lead status/details |
-| | | `DELETE`| `/leads/:id` | ✅ Bearer JWT | Delete lead |
-| **USERS** | `BASE` | `GET` | `/users` | ✅ Bearer JWT | List sales reps & seat usage |
-| | | `POST` | `/users` | ✅ Bearer JWT | Add new sales representative |
-| | | `DELETE`| `/users/:id` | ✅ Bearer JWT | Delete representative |
-| **FOLLOWUPS** | `BASE` | `GET` | `/followups` | ✅ Bearer JWT | List all follow-ups |
-| | | `POST` | `/followups` | ✅ Bearer JWT | Schedule a new follow-up |
-| | | `PUT` | `/followups/:id` | ✅ Bearer JWT | Mark done / update follow-up |
-| **ANALYTICS**| `LOG_CALL` | `POST` | `/analytics/log-call` | ✅ Bearer JWT | Telecaller call log tracker |
-| | | `GET` | `/analytics/:salespersonId` | ✅ Bearer JWT | 7-day daily call history |
-| **ORGANIZATION**| `SERVICES`| `GET` | `/organization/services` | ✅ Bearer JWT | Catalog of active services |
-| | `SETTINGS`| `GET` | `/organization/settings` | ✅ Bearer JWT | Organization profile & settings |
+| Group            | Key        | HTTP Method | Endpoint Path               | Auth Required | Description                     |
+| :--------------- | :--------- | :---------- | :-------------------------- | :------------ | :------------------------------ |
+| **AUTH**         | `LOGIN`    | `POST`      | `/auth/login`               | ❌ No         | Login with email & password     |
+| **LEADS**        | `BASE`     | `GET`       | `/leads/paginated`          | ✅ Bearer JWT | Paginated leads + tab counters  |
+|                  |            | `GET`       | `/leads`                    | ✅ Bearer JWT | Fetch all leads                 |
+|                  |            | `POST`      | `/leads`                    | ✅ Bearer JWT | Create lead (JSON or audio)     |
+|                  |            | `PUT`       | `/leads/:id`                | ✅ Bearer JWT | Update lead status/details      |
+|                  |            | `DELETE`    | `/leads/:id`                | ✅ Bearer JWT | Delete lead                     |
+| **USERS**        | `BASE`     | `GET`       | `/users`                    | ✅ Bearer JWT | List sales reps & seat usage    |
+|                  |            | `POST`      | `/users`                    | ✅ Bearer JWT | Add new sales representative    |
+|                  |            | `DELETE`    | `/users/:id`                | ✅ Bearer JWT | Delete representative           |
+| **FOLLOWUPS**    | `BASE`     | `GET`       | `/followups`                | ✅ Bearer JWT | List all follow-ups             |
+|                  |            | `POST`      | `/followups`                | ✅ Bearer JWT | Schedule a new follow-up        |
+|                  |            | `PUT`       | `/followups/:id`            | ✅ Bearer JWT | Mark done / update follow-up    |
+| **ANALYTICS**    | `LOG_CALL` | `POST`      | `/analytics/log-call`       | ✅ Bearer JWT | Telecaller call log tracker     |
+|                  |            | `GET`       | `/analytics/:salespersonId` | ✅ Bearer JWT | 7-day daily call history        |
+| **ORGANIZATION** | `SERVICES` | `GET`       | `/organization/services`    | ✅ Bearer JWT | Catalog of active services      |
+|                  | `SETTINGS` | `GET`       | `/organization/settings`    | ✅ Bearer JWT | Organization profile & settings |
 
 ---
 
 ## 9. Common Error Codes & Handling in Mobile Apps
 
-| Status Code | Reason | Server Response Flags | Mobile App Recommended Action |
-| :--- | :--- | :--- | :--- |
-| **`400 Bad Request`** | Validation error or duplicate lead | `success: false` | Display `message` returned in toast or form alert. |
-| **`401 Unauthorized`** | Token expired or invalid | `success: false` | Clear token and redirect to Login screen. |
-| **`403 Forbidden`** | Organization suspended or inactive | `accountSuspended: true`, `organizationStatus` | Navigate to "Workspace Suspended" screen. |
-| **`403 Forbidden`** | Organization subscription expired | `subscriptionExpired: true` | Navigate to "Subscription Expired / Renew" screen. |
-| **`403 Forbidden`** | Seat limit reached | `seatLimitReached: true` | Display modal prompting to upgrade license plan. |
-| **`404 Not Found`** | Resource or user not found | `success: false` | Show not found banner or refresh list. |
-| **`500 Server Error`** | Unhandled internal exception | `success: false` | Show retry snackbar with exponential backoff. |
+| Status Code            | Reason                             | Server Response Flags                          | Mobile App Recommended Action                      |
+| :--------------------- | :--------------------------------- | :--------------------------------------------- | :------------------------------------------------- |
+| **`400 Bad Request`**  | Validation error or duplicate lead | `success: false`                               | Display `message` returned in toast or form alert. |
+| **`401 Unauthorized`** | Token expired or invalid           | `success: false`                               | Clear token and redirect to Login screen.          |
+| **`403 Forbidden`**    | Organization suspended or inactive | `accountSuspended: true`, `organizationStatus` | Navigate to "Workspace Suspended" screen.          |
+| **`403 Forbidden`**    | Organization subscription expired  | `subscriptionExpired: true`                    | Navigate to "Subscription Expired / Renew" screen. |
+| **`403 Forbidden`**    | Seat limit reached                 | `seatLimitReached: true`                       | Display modal prompting to upgrade license plan.   |
+| **`404 Not Found`**    | Resource or user not found         | `success: false`                               | Show not found banner or refresh list.             |
+| **`500 Server Error`** | Unhandled internal exception       | `success: false`                               | Show retry snackbar with exponential backoff.      |
 
 ---
 
@@ -862,12 +920,12 @@ The backend strictly enforces multi-tenant state and billing controls on **both 
 
 ### 10.1 Organization States Summary
 
-| Status | `organization.status` | `isExpired` | Meaning | Mobile App Behavior |
-| :--- | :--- | :--- | :--- | :--- |
-| **Active** | `"active"` | `false` | Workspace in good standing; subscription is valid. | Full access to leads, calls, analytics, and followups. |
-| **Suspended** | `"suspended"` | Any | Organization workspace frozen by Super Administrator. | Lock app navigation; show "Account Suspended" screen. |
-| **Inactive** | `"inactive"` | Any | Organization workspace deactivated. | Lock app navigation; show "Account Deactivated" screen. |
-| **Expired** | `"active"` or Any | `true` | `subscriptionEndDate` has passed. | Lock creation/update; show "Subscription Expired" screen. |
+| Status        | `organization.status` | `isExpired` | Meaning                                               | Mobile App Behavior                                       |
+| :------------ | :-------------------- | :---------- | :---------------------------------------------------- | :-------------------------------------------------------- |
+| **Active**    | `"active"`            | `false`     | Workspace in good standing; subscription is valid.    | Full access to leads, calls, analytics, and followups.    |
+| **Suspended** | `"suspended"`         | Any         | Organization workspace frozen by Super Administrator. | Lock app navigation; show "Account Suspended" screen.     |
+| **Inactive**  | `"inactive"`          | Any         | Organization workspace deactivated.                   | Lock app navigation; show "Account Deactivated" screen.   |
+| **Expired**   | `"active"` or Any     | `true`      | `subscriptionEndDate` has passed.                     | Lock creation/update; show "Subscription Expired" screen. |
 
 ---
 
@@ -876,6 +934,7 @@ The backend strictly enforces multi-tenant state and billing controls on **both 
 All authenticated mobile requests (`/leads`, `/followups`, `/users`, `/analytics`, `/organization/*`) pass through the `checkSubscriptionActive` and `protect` middleware. When an issue occurs, the server responds with **`HTTP 403 Forbidden`** and structured metadata flags:
 
 #### 1. When Organization is Suspended (`403 Forbidden`)
+
 ```json
 {
   "success": false,
@@ -886,6 +945,7 @@ All authenticated mobile requests (`/leads`, `/followups`, `/users`, `/analytics
 ```
 
 #### 2. When Organization is Inactive (`403 Forbidden`)
+
 ```json
 {
   "success": false,
@@ -896,6 +956,7 @@ All authenticated mobile requests (`/leads`, `/followups`, `/users`, `/analytics
 ```
 
 #### 3. When Organization Subscription is Expired (`403 Forbidden`)
+
 ```json
 {
   "success": false,
@@ -905,6 +966,7 @@ All authenticated mobile requests (`/leads`, `/followups`, `/users`, `/analytics
 ```
 
 #### 4. When Individual Representative Account is Inactive (`403 Forbidden`)
+
 ```json
 {
   "success": false,
@@ -959,7 +1021,7 @@ import axios from "axios";
 import { navigate } from "./navigationRef"; // Your mobile navigation handler
 
 const apiClient = axios.create({
-  baseURL: "https://api.salesbuster.ai/api",
+  baseURL: "https://betaapi.salesbuster.ai/api",
   timeout: 15000,
 });
 
@@ -1005,7 +1067,7 @@ apiClient.interceptors.response.use(
     }
 
     return Promise.reject(error);
-  }
+  },
 );
 
 export default apiClient;
@@ -1018,12 +1080,15 @@ export default apiClient;
 The backend provides public endpoints for checking application updates and downloading the latest Android APK.
 
 ### 1. Check Latest APK Version (`GET /mobile-app/apk/latest`)
+
 Checks if a new build is available:
+
 ```bash
-curl -X GET https://api.salesbuster.ai/api/mobile-app/apk/latest
+curl -X GET https://betaapi.salesbuster.ai/api/mobile-app/apk/latest
 ```
 
 **Response (`200 OK`)**:
+
 ```json
 {
   "success": true,
@@ -1033,14 +1098,15 @@ curl -X GET https://api.salesbuster.ai/api/mobile-app/apk/latest
     "minSupportedVersion": "1.0.0",
     "releaseNotes": "Added background call recording and real-time lead sync.",
     "fileSizeFormatted": "43.12 MB",
-    "downloadUrl": "https://api.salesbuster.ai/api/mobile-app/apk/download"
+    "downloadUrl": "https://betaapi.salesbuster.ai/api/mobile-app/apk/download"
   }
 }
 ```
 
 ### 2. Direct APK Download (`GET /mobile-app/apk/download`)
-Initiates direct file download for Android clients:
-```bash
-curl -O -J https://api.salesbuster.ai/api/mobile-app/apk/download
-```
 
+Initiates direct file download for Android clients:
+
+```bash
+curl -O -J https://betaapi.salesbuster.ai/api/mobile-app/apk/download
+```
