@@ -51,7 +51,7 @@ export const sendMessage = async (req, res) => {
     }));
 
     // 3. Execute LangChain Agent
-    const { reply, toolsUsed, executionTimeMs } = await runSalesManagerAssistant({
+    const { reply, toolsUsed, modelUsed, executionTimeMs } = await runSalesManagerAssistant({
       userMessage: cleanMessage,
       history,
       tenantModels: req.tenantModels,
@@ -80,6 +80,7 @@ export const sendMessage = async (req, res) => {
       chatId: chat._id.toString(),
       reply,
       toolsUsed,
+      modelUsed,
       executionTimeMs,
       updatedAt: chat.updatedAt,
     });

@@ -32,10 +32,11 @@ export const runSalesManagerAssistant = async ({
     );
   }
 
-  // 2. Initialize Gemini 3.5 Flash Lite Model with fallback capability
-  const PRIMARY_MODEL = "gemini-3.5-flash-lite";
+  // 2. Initialize Gemini Model with configurable primary and fallback capability
+  const PRIMARY_MODEL = process.env.AI_ASSISTANT_MODEL || "gemini-3.5-flash-lite";
   const FALLBACK_MODEL = "gemini-2.5-flash";
 
+  let modelUsed = PRIMARY_MODEL;
   let model = new ChatGoogleGenerativeAI({
     model: PRIMARY_MODEL,
     temperature: 0.1, // Low temperature for maximum factual reliability
@@ -109,16 +110,20 @@ STRICT OPERATIONAL RULES:
   // 6. Tool-Calling Agent Loop
   const MAX_ITERATIONS = 5;
   const toolsUsedSet = new Set();
+  const iterationLogs = [];
   let finalReply = "";
+  let hitIterationCap = false;
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    const iterStart = Date.now();
     let aiResponse;
     try {
       aiResponse = await modelWithTools.invoke(messages);
     } catch (invokeErr) {
       // Automatic fallback if primary model fails
       if (invokeErr.message && invokeErr.message.includes(PRIMARY_MODEL)) {
-        console.warn(`[AI Assistant] Model ${PRIMARY_MODEL} failed, trying ${FALLBACK_MODEL}:`, invokeErr.message);
+        console.warn(`[AI Assistant] Model ${PRIMARY_MODEL} failed, falling back to ${FALLBACK_MODEL}:`, invokeErr.message);
+        modelUsed = FALLBACK_MODEL;
         const fallbackModel = new ChatGoogleGenerativeAI({
           model: FALLBACK_MODEL,
           temperature: 0.1,
@@ -137,11 +142,18 @@ STRICT OPERATIONAL RULES:
     // If no tool calls requested, we have the final textual answer!
     if (!aiResponse.tool_calls || aiResponse.tool_calls.length === 0) {
       finalReply = typeof aiResponse.content === "string" ? aiResponse.content : JSON.stringify(aiResponse.content);
+      iterationLogs.push({
+        iteration: iter + 1,
+        type: "response",
+        durationMs: Date.now() - iterStart,
+      });
       break;
     }
 
     // Execute tool calls sequentially
+    const toolExecLogs = [];
     for (const toolCall of aiResponse.tool_calls) {
+      const toolStart = Date.now();
       const toolName = toolCall.name;
       toolsUsedSet.add(toolName);
       const targetTool = toolsByName[toolName];
@@ -158,6 +170,17 @@ STRICT OPERATIONAL RULES:
         toolOutput = JSON.stringify({ error: `Unknown tool: ${toolName}` });
       }
 
+      const toolDuration = Date.now() - toolStart;
+      const truncatedOutput =
+        toolOutput.length > 2048 ? `${toolOutput.slice(0, 2048)}... [TRUNCATED ${toolOutput.length - 2048} chars]` : toolOutput;
+
+      toolExecLogs.push({
+        tool: toolName,
+        args: toolCall.args,
+        resultPreview: truncatedOutput,
+        durationMs: toolDuration,
+      });
+
       messages.push(
         new ToolMessage({
           tool_call_id: toolCall.id,
@@ -166,7 +189,36 @@ STRICT OPERATIONAL RULES:
         })
       );
     }
+
+    iterationLogs.push({
+      iteration: iter + 1,
+      type: "tool_calls",
+      toolExecutions: toolExecLogs,
+      durationMs: Date.now() - iterStart,
+    });
+
+    if (iter === MAX_ITERATIONS - 1 && !finalReply) {
+      hitIterationCap = true;
+    }
   }
+
+  // Structured run summary logging
+  console.log(
+    `[AI Assistant Diagnostics]\n` +
+      JSON.stringify(
+        {
+          userQuery: userMessage,
+          modelUsed,
+          iterationsRun: iterationLogs.length,
+          hitIterationCap,
+          toolsInvoked: Array.from(toolsUsedSet),
+          executionTimeMs: Date.now() - startTime,
+          iterationTrace: iterationLogs,
+        },
+        null,
+        2
+      )
+  );
 
   // Fallback if loop ended without final textual message
   if (!finalReply) {
@@ -188,6 +240,7 @@ STRICT OPERATIONAL RULES:
   return {
     reply: finalReply,
     toolsUsed: Array.from(toolsUsedSet),
+    modelUsed,
     executionTimeMs,
   };
 };
