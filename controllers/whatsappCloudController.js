@@ -559,6 +559,59 @@ export const estimateAudience = async (req, res) => {
 };
 
 /**
+ * Retrieves all distinct Excel import batches / tags with count of leads and upload dates.
+ */
+export const getAudienceBatches = async (req, res) => {
+  try {
+    const { Lead } = req.tenantModels;
+
+    const batches = await Lead.aggregate([
+      {
+        $match: {
+          isOldLead: true,
+          tags: { $exists: true, $ne: [] },
+        },
+      },
+      { $unwind: "$tags" },
+      {
+        $match: {
+          tags: { $nin: ["Excel Import", "", null] },
+        },
+      },
+      {
+        $group: {
+          _id: "$tags",
+          count: { $sum: 1 },
+          lastImported: { $max: { $ifNull: ["$joinedAt", "$createdAt"] } },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          batchTag: "$_id",
+          count: 1,
+          lastImported: 1,
+        },
+      },
+      { $sort: { lastImported: -1, count: -1 } },
+    ]);
+
+    const totalOldLeadsCount = await Lead.countDocuments({ isOldLead: true });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalOldLeadsCount,
+        batches,
+      },
+    });
+  } catch (error) {
+    console.error("[getAudienceBatches] Error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
  * Helper to construct MongoDB Lead query from audienceCriteria.
  */
 export const buildLeadAudienceQuery = (criteria = {}) => {

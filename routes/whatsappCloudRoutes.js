@@ -10,6 +10,7 @@ import {
   createTemplate,
   deleteTemplate,
   estimateAudience,
+  getAudienceBatches,
 } from "../controllers/whatsappCloudController.js";
 import {
   createCampaign,
@@ -67,8 +68,9 @@ router.post(
 router.delete("/templates/:id", requireManagerOrOwner, deleteTemplate);
 router.post("/templates/sync", requireManagerOrOwner, syncTemplates);
 
-// 3. Audience Estimation
+// 3. Audience Estimation & Batches
 router.post("/audience/estimate", estimateAudience);
+router.get("/audience/batches", getAudienceBatches);
 
 // 4. Campaigns CRUD & Lifecycle (Mutations restricted to manager/admin)
 router.get("/campaigns", getCampaigns);
