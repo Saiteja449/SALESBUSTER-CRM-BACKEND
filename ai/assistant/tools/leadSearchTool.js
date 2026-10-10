@@ -1,5 +1,6 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { escapeRegex, wrapUntrustedData } from "../securityUtils.js";
 
 /**
  * Creates Lead Search tool bound to authenticated tenant context
@@ -30,10 +31,11 @@ export const createLeadSearchTool = ({ tenantModels }) => {
           filter.source = source;
         }
 
-        if (service) {
+        if (service && service.trim()) {
+          const safeService = escapeRegex(service.trim());
           filter.$or = [
-            { service: { $regex: service, $options: "i" } },
-            { services: { $regex: service, $options: "i" } },
+            { service: { $regex: safeService, $options: "i" } },
+            { services: { $regex: safeService, $options: "i" } },
           ];
         }
 
@@ -42,13 +44,14 @@ export const createLeadSearchTool = ({ tenantModels }) => {
         }
 
         if (searchTerm && searchTerm.trim()) {
-          const term = searchTerm.trim();
+          const safeTerm = escapeRegex(searchTerm.trim());
+          const safeRegex = new RegExp(safeTerm, "i");
           const searchConditions = [
-            { name: { $regex: term, $options: "i" } },
-            { company: { $regex: term, $options: "i" } },
-            { notes: { $regex: term, $options: "i" } },
-            { city: { $regex: term, $options: "i" } },
-            { tags: { $in: [new RegExp(term, "i")] } },
+            { name: { $regex: safeTerm, $options: "i" } },
+            { company: { $regex: safeTerm, $options: "i" } },
+            { notes: { $regex: safeTerm, $options: "i" } },
+            { city: { $regex: safeTerm, $options: "i" } },
+            { tags: { $in: [safeRegex] } },
           ];
           if (filter.$or) {
             filter.$and = [{ $or: filter.$or }, { $or: searchConditions }];
@@ -58,7 +61,7 @@ export const createLeadSearchTool = ({ tenantModels }) => {
           }
         }
 
-        const safeLimit = Math.min(Math.max(1, limit), 25);
+        const safeLimit = Math.min(Math.max(1, parseInt(limit, 10) || 10), 25);
 
         const totalMatching = await LeadModel.countDocuments(filter);
         const leads = await LeadModel.find(filter)
@@ -80,7 +83,7 @@ export const createLeadSearchTool = ({ tenantModels }) => {
           dealValue: l.dealValue ? `₹${l.dealValue.toLocaleString("en-IN")}` : undefined,
           city: l.city || undefined,
           createdDateIST: new Date(l.createdAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }),
-          notesSnippet: l.notes ? (l.notes.length > 80 ? l.notes.slice(0, 80) + "..." : l.notes) : undefined,
+          notesSnippet: l.notes ? wrapUntrustedData(l.notes.slice(0, 120)) : undefined,
         }));
 
         return JSON.stringify({
@@ -99,6 +102,7 @@ export const createLeadSearchTool = ({ tenantModels }) => {
       schema: z.object({
         searchTerm: z
           .string()
+          .max(100)
           .optional()
           .describe("Search keyword matching lead name, company, city, tags, or notes"),
         status: z
@@ -111,6 +115,7 @@ export const createLeadSearchTool = ({ tenantModels }) => {
           .describe("Filter by lead origination source"),
         service: z
           .string()
+          .max(100)
           .optional()
           .describe("Filter by service/product name or category"),
         priority: z

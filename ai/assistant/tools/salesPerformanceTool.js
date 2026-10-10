@@ -38,7 +38,7 @@ export const createSalesPerformanceTool = ({ tenantModels }) => {
 
         // 2. Aggregate Leads grouped by assignedTo within period
         const leadPipeline = [
-          { $match: { createdAt: { $gte: start, $lte: end } } },
+          ...(range.isAllTime ? [] : [{ $match: { createdAt: { $gte: start, $lte: end } } }]),
           {
             $group: {
               _id: "$assignedTo",
@@ -66,12 +66,12 @@ export const createSalesPerformanceTool = ({ tenantModels }) => {
           const qStartStr = period === "today" ? boundaries.todayStr : startStr;
           const qEndStr = period === "today" ? boundaries.todayStr : endStr;
 
+          const matchCallStage = range.isAllTime
+            ? {}
+            : { date: { $gte: qStartStr, $lte: qEndStr } };
+
           callStats = await AnalyticsModel.aggregate([
-            {
-              $match: {
-                date: { $gte: qStartStr, $lte: qEndStr },
-              },
-            },
+            ...(Object.keys(matchCallStage).length > 0 ? [{ $match: matchCallStage }] : []),
             {
               $group: {
                 _id: { $ifNull: ["$salespersonId", "$salesperson"] },
@@ -171,12 +171,23 @@ export const createSalesPerformanceTool = ({ tenantModels }) => {
     {
       name: "get_salesperson_performance",
       description:
-        "Analyzes sales team performance, rep-wise lead generation, conversions, calls logged, and talk time. Answers: 'Which salesperson generated the most leads this month?' and 'Summarize our sales team's performance'.",
+        "Analyzes sales team performance, rep-wise lead generation, conversions, calls logged, and talk time. Supports periods: 'all_time' (complete/overall history), 'this_month', 'last_month', 'this_week', 'last_week', 'today', 'yesterday'. Answers: 'get complete my team reports', 'Which salesperson generated the most leads this month?', and 'Summarize our sales team performance'.",
       schema: z.object({
         period: z
-          .enum(["today", "this_week", "this_month", "last_month"])
-          .default("this_month")
-          .describe("Time period to evaluate sales performance for"),
+          .enum([
+            "all_time",
+            "this_month",
+            "last_month",
+            "this_week",
+            "last_week",
+            "today",
+            "yesterday",
+            "last_7_days",
+            "last_30_days",
+            "custom",
+          ])
+          .default("all_time")
+          .describe("Time period to evaluate sales performance for. Use 'all_time' when user asks for complete, overall, or total team reports; use 'this_month' for the current month."),
         salespersonNameOrId: z
           .string()
           .optional()

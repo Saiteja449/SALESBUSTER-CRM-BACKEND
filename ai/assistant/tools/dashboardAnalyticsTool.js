@@ -17,36 +17,38 @@ export const createDashboardAnalyticsTool = ({ tenantModels }) => {
         const range = resolveDateRange(period, customStart, customEnd);
         const { start, end, label } = range;
 
-        // Run optimized faceted aggregation on Lead collection
+        const dateMatch = range.isAllTime ? null : { createdAt: { $gte: start, $lte: end } };
+        const matchStage = dateMatch ? [{ $match: dateMatch }] : [];
+
         const facetPipeline = [
           {
             $facet: {
               totalLeads: [
-                { $match: { createdAt: { $gte: start, $lte: end } } },
+                ...matchStage,
                 { $count: "count" },
               ],
               convertedLeads: [
-                { $match: { createdAt: { $gte: start, $lte: end }, status: "Converted" } },
+                ...(dateMatch ? [{ $match: { ...dateMatch, status: "Converted" } }] : [{ $match: { status: "Converted" } }]),
                 { $count: "count" },
               ],
               byStatus: [
-                { $match: { createdAt: { $gte: start, $lte: end } } },
+                ...matchStage,
                 { $group: { _id: "$status", count: { $sum: 1 } } },
                 { $sort: { count: -1 } },
               ],
               bySource: [
-                { $match: { createdAt: { $gte: start, $lte: end } } },
+                ...matchStage,
                 { $group: { _id: { $ifNull: ["$source", "Unknown"] }, count: { $sum: 1 } } },
                 { $sort: { count: -1 } },
               ],
               byService: [
-                { $match: { createdAt: { $gte: start, $lte: end } } },
+                ...matchStage,
                 { $group: { _id: { $ifNull: ["$service", "General Enquiry"] }, count: { $sum: 1 } } },
                 { $sort: { count: -1 } },
                 { $limit: 5 },
               ],
               dealValue: [
-                { $match: { createdAt: { $gte: start, $lte: end }, dealValue: { $gt: 0 } } },
+                ...(dateMatch ? [{ $match: { ...dateMatch, dealValue: { $gt: 0 } } }] : [{ $match: { dealValue: { $gt: 0 } } }]),
                 { $group: { _id: null, totalValue: { $sum: "$dealValue" } } },
               ],
             },
@@ -145,9 +147,23 @@ export const createDashboardAnalyticsTool = ({ tenantModels }) => {
         "Calculates accurate, real-time CRM dashboard metrics, lead volumes, conversion rates, and period-over-period comparisons. Use this when the user asks: 'How many new leads came this morning?', 'How many leads did we receive today compared to yesterday?', 'What is our conversion rate this month?', or general lead counts by source/status.",
       schema: z.object({
         period: z
-          .enum(["today", "yesterday", "this_morning", "this_week", "this_month", "last_month", "custom"])
-          .default("today")
-          .describe("Target time window to evaluate. Use 'this_morning' for morning enquiries."),
+          .enum([
+            "all_time",
+            "today",
+            "yesterday",
+            "this_morning",
+            "this_afternoon",
+            "this_evening",
+            "this_week",
+            "last_week",
+            "this_month",
+            "last_month",
+            "last_7_days",
+            "last_30_days",
+            "custom",
+          ])
+          .default("all_time")
+          .describe("Target time window to evaluate. Use 'all_time' when user asks for overall/total leads, 'this_morning' for morning enquiries, 'this_month' for monthly KPIs."),
         customStart: z
           .string()
           .optional()

@@ -1,5 +1,6 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { escapeRegex } from "../securityUtils.js";
 
 /**
  * Normalizes phone string to clean digits, prioritizing last 10 digits
@@ -32,12 +33,14 @@ export const createPhoneLookupTool = ({ tenantModels }) => {
           });
         }
 
+        const safeRawPhone = escapeRegex(rawPhone);
+
         // 1. Check Leads collection
         const leadQuery = {
           $or: [
             { phoneNormalized: normalized10 },
             { phone: rawPhone },
-            { phone: { $regex: normalized10 } },
+            { phone: { $regex: escapeRegex(normalized10) } },
           ],
         };
 

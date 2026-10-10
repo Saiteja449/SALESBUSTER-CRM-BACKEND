@@ -1,6 +1,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { getISTDateBoundaries } from "../dateUtils.js";
+import { wrapUntrustedData } from "../securityUtils.js";
 
 /**
  * Creates Follow-ups & Tasks tool bound to authenticated tenant context
@@ -92,7 +93,7 @@ export const createFollowupTool = ({ tenantModels }) => {
             type: f.type || "Call",
             priority: f.priority || "Medium",
             isOverdue,
-            notes: f.notes ? (f.notes.length > 90 ? f.notes.slice(0, 90) + "..." : f.notes) : undefined,
+            notes: f.notes ? wrapUntrustedData(f.notes.slice(0, 100)) : undefined,
           };
         });
 

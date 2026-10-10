@@ -101,6 +101,8 @@ export const createCRMRAGTool = ({ organization }) => {
       schema: z.object({
         query: z
           .string()
+          .min(2)
+          .max(250)
           .describe("The CRM feature or procedural question to search in the knowledge base"),
       }),
     }

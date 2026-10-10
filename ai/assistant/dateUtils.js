@@ -43,13 +43,7 @@ export const getISTDateBoundaries = () => {
   const yesterdayStart = new Date(`${yesterdayStr}T00:00:00+05:30`);
   const yesterdayEnd = new Date(`${yesterdayStr}T23:59:59.999+05:30`);
 
-  // This Week (Starting Monday)
-  // Calculate day of week in IST (0 = Sunday, 1 = Monday, ...)
-  const dayOfWeekStr = now.toLocaleDateString("en-US", {
-    weekday: "narrow",
-    timeZone: "Asia/Kolkata",
-  });
-  // Determine offset from Monday
+  // This Week (Starting Monday 00:00 IST)
   const istFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Kolkata",
     weekday: "short",
@@ -57,16 +51,34 @@ export const getISTDateBoundaries = () => {
   const weekday = istFormatter.format(now); // "Mon", "Tue", etc.
   const weekdayOffsets = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
   const daysSinceMonday = weekdayOffsets[weekday] ?? 0;
-  const weekStartDate = new Date(todayStart.getTime() - daysSinceMonday * 24 * 60 * 60 * 1000);
-  const weekStartStr = getISTDateString(weekStartDate);
-  const thisWeekStart = new Date(`${weekStartStr}T00:00:00+05:30`);
+  const thisWeekStartDate = new Date(todayStart.getTime() - daysSinceMonday * 24 * 60 * 60 * 1000);
+  const thisWeekStartStr = getISTDateString(thisWeekStartDate);
+  const thisWeekStart = new Date(`${thisWeekStartStr}T00:00:00+05:30`);
 
-  // This Month
+  // Last Week (Monday 00:00 to Sunday 23:59 IST of previous week)
+  const lastWeekStartDate = new Date(thisWeekStartDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const lastWeekStartStr = getISTDateString(lastWeekStartDate);
+  const lastWeekStart = new Date(`${lastWeekStartStr}T00:00:00+05:30`);
+  const lastWeekEndDate = new Date(thisWeekStartDate.getTime() - 1);
+  const lastWeekEndStr = getISTDateString(lastWeekEndDate);
+  const lastWeekEnd = new Date(`${lastWeekEndStr}T23:59:59.999+05:30`);
+
+  // Last 7 Days (rolling 7 days inclusive)
+  const last7DaysDate = new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000);
+  const last7DaysStr = getISTDateString(last7DaysDate);
+  const last7DaysStart = new Date(`${last7DaysStr}T00:00:00+05:30`);
+
+  // Last 30 Days (rolling 30 days inclusive)
+  const last30DaysDate = new Date(todayStart.getTime() - 29 * 24 * 60 * 60 * 1000);
+  const last30DaysStr = getISTDateString(last30DaysDate);
+  const last30DaysStart = new Date(`${last30DaysStr}T00:00:00+05:30`);
+
+  // This Month (1st of current month 00:00 IST)
   const [year, month] = todayStr.split("-");
   const monthStartStr = `${year}-${month}-01`;
   const thisMonthStart = new Date(`${monthStartStr}T00:00:00+05:30`);
 
-  // Last Month
+  // Last Month (1st to last day of previous month)
   const currentMonthNum = parseInt(month, 10);
   const currentYearNum = parseInt(year, 10);
   const lastMonthYear = currentMonthNum === 1 ? currentYearNum - 1 : currentYearNum;
@@ -77,24 +89,33 @@ export const getISTDateBoundaries = () => {
   const lastMonthEnd = new Date(thisMonthStart.getTime() - 1);
   const lastMonthEndStr = getISTDateString(lastMonthEnd);
 
+  // All Time (Complete History)
+  const allTimeStart = new Date("2020-01-01T00:00:00+05:30");
+  const allTimeEnd = new Date(`${todayStr}T23:59:59.999+05:30`);
+
   return {
     now,
     todayStr,
     yesterdayStr,
     monthStartStr,
-    today: { start: todayStart, end: todayEnd, label: `Today (${todayStr})` },
-    morning: { start: morningStart, end: morningEnd, label: `This Morning (06:00 AM - 12:00 PM IST, ${todayStr})` },
-    afternoon: { start: afternoonStart, end: afternoonEnd, label: `This Afternoon (12:00 PM - 06:00 PM IST, ${todayStr})` },
-    evening: { start: eveningStart, end: eveningEnd, label: `This Evening (06:00 PM - 11:59 PM IST, ${todayStr})` },
-    yesterday: { start: yesterdayStart, end: yesterdayEnd, label: `Yesterday (${yesterdayStr})` },
-    thisWeek: { start: thisWeekStart, end: todayEnd, label: `This Week (${weekStartStr} to ${todayStr})` },
-    thisMonth: { start: thisMonthStart, end: todayEnd, label: `This Month (${monthStartStr} to ${todayStr})` },
-    lastMonth: { start: lastMonthStart, end: lastMonthEnd, label: `Last Month (${lastMonthStartStr} to ${lastMonthEndStr})` },
+    today: { start: todayStart, end: todayEnd, label: `Today (${todayStr})`, isAllTime: false },
+    morning: { start: morningStart, end: morningEnd, label: `This Morning (06:00 AM - 12:00 PM IST, ${todayStr})`, isAllTime: false },
+    afternoon: { start: afternoonStart, end: afternoonEnd, label: `This Afternoon (12:00 PM - 06:00 PM IST, ${todayStr})`, isAllTime: false },
+    evening: { start: eveningStart, end: eveningEnd, label: `This Evening (06:00 PM - 11:59 PM IST, ${todayStr})`, isAllTime: false },
+    yesterday: { start: yesterdayStart, end: yesterdayEnd, label: `Yesterday (${yesterdayStr})`, isAllTime: false },
+    thisWeek: { start: thisWeekStart, end: todayEnd, label: `This Week (${thisWeekStartStr} to ${todayStr})`, isAllTime: false },
+    lastWeek: { start: lastWeekStart, end: lastWeekEnd, label: `Last Week (${lastWeekStartStr} to ${lastWeekEndStr})`, isAllTime: false },
+    thisMonth: { start: thisMonthStart, end: todayEnd, label: `This Month (${monthStartStr} to ${todayStr})`, isAllTime: false },
+    lastMonth: { start: lastMonthStart, end: lastMonthEnd, label: `Last Month (${lastMonthStartStr} to ${lastMonthEndStr})`, isAllTime: false },
+    last7Days: { start: last7DaysStart, end: todayEnd, label: `Last 7 Days (${last7DaysStr} to ${todayStr})`, isAllTime: false },
+    last30Days: { start: last30DaysStart, end: todayEnd, label: `Last 30 Days (${last30DaysStr} to ${todayStr})`, isAllTime: false },
+    allTime: { start: allTimeStart, end: allTimeEnd, label: "All Time (Complete History)", isAllTime: true },
   };
 };
 
 /**
- * Resolves period identifier to start and end dates
+ * Resolves period identifier to start and end dates with robust support for
+ * both snake_case ("this_month") and camelCase ("thisMonth"), as well as "all_time".
  */
 export const resolveDateRange = (period = "today", customStart = null, customEnd = null) => {
   const boundaries = getISTDateBoundaries();
@@ -108,16 +129,63 @@ export const resolveDateRange = (period = "today", customStart = null, customEnd
       startStr: sStr,
       endStr: eStr,
       label: `Custom Range (${sStr} to ${eStr})`,
+      isAllTime: false,
     };
   }
 
-  const mapped = boundaries[period] || boundaries.today;
+  // Normalize period string (remove spaces, hyphens, and convert to lowercase)
+  const rawKey = String(period || "today").toLowerCase().replace(/[\s\-]/g, "_");
+
+  // Comprehensive lookup dictionary mapping all representations
+  const periodMap = {
+    today: boundaries.today,
+    yesterday: boundaries.yesterday,
+
+    // Mornings / Times of day
+    morning: boundaries.morning,
+    this_morning: boundaries.morning,
+    thismorning: boundaries.morning,
+    afternoon: boundaries.afternoon,
+    this_afternoon: boundaries.afternoon,
+    evening: boundaries.evening,
+    this_evening: boundaries.evening,
+
+    // Weeks
+    this_week: boundaries.thisWeek,
+    thisweek: boundaries.thisWeek,
+    last_week: boundaries.lastWeek,
+    lastweek: boundaries.lastWeek,
+
+    // Rolling days
+    last_7_days: boundaries.last7Days,
+    last7days: boundaries.last7Days,
+    last_30_days: boundaries.last30Days,
+    last30days: boundaries.last30Days,
+
+    // Months
+    this_month: boundaries.thisMonth,
+    thismonth: boundaries.thisMonth,
+    last_month: boundaries.lastMonth,
+    lastmonth: boundaries.lastMonth,
+
+    // All Time / Overall / Complete
+    all_time: boundaries.allTime,
+    alltime: boundaries.allTime,
+    all: boundaries.allTime,
+    complete: boundaries.allTime,
+    overall: boundaries.allTime,
+    lifetime: boundaries.allTime,
+  };
+
+  const mapped = periodMap[rawKey] || boundaries[period] || boundaries.today;
+
   return {
     start: mapped.start,
     end: mapped.end,
     startStr: getISTDateString(mapped.start),
     endStr: getISTDateString(mapped.end),
     label: mapped.label,
+    isAllTime: mapped.isAllTime || false,
   };
 };
 

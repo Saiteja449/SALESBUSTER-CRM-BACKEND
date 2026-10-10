@@ -1,5 +1,6 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { wrapUntrustedData } from "../securityUtils.js";
 
 /**
  * Creates WhatsApp Conversations & Call Analytics tool bound to authenticated tenant context
@@ -35,7 +36,7 @@ export const createWhatsAppAnalyticsTool = ({ tenantModels }) => {
             service: l.service,
             assignedRep: l.assignedTo ? String(l.assignedTo) : "Unassigned",
             unreadCount: l.unreadCount || 1,
-            lastMessagePreview: l.lastMessage || "No text available",
+            lastMessagePreview: l.lastMessage ? wrapUntrustedData(l.lastMessage.slice(0, 150)) : "No text available",
             lastReceivedIST: l.lastActivity
               ? new Date(l.lastActivity).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })
               : "Recently",
