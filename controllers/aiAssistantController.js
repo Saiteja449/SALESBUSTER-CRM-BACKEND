@@ -25,12 +25,6 @@ export const sendMessage = async (req, res) => {
     }
 
     const cleanMessage = message.trim();
-    if (cleanMessage.length > 12000) {
-      return res.status(413).json({
-        success: false,
-        message: "Message is too long. Please keep it under 12,000 characters.",
-      });
-    }
     const ChatModel = getChatModel(req);
     const userId = req.user._id || req.user.id;
 
@@ -51,7 +45,7 @@ export const sendMessage = async (req, res) => {
     }
 
     // 2. Prepare conversation history for LLM context
-    const history = (chat.messages || []).slice(-20).map((m) => ({
+    const history = (chat.messages || []).map((m) => ({
       role: m.role,
       content: m.content,
     }));
@@ -78,12 +72,6 @@ export const sendMessage = async (req, res) => {
       toolsUsed: toolsUsed || [],
       timestamp: new Date(),
     });
-
-    // Keep sessions bounded so long-running chats do not approach MongoDB's
-    // document-size limit. The assistant still receives the latest 10 turns.
-    if (chat.messages.length > 40) {
-      chat.messages.splice(0, chat.messages.length - 40);
-    }
 
     await chat.save();
 
