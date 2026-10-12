@@ -258,17 +258,35 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         console.log(`[Gemini Live Gateway] Executing tool '${fc.name}' for socket ${this.socket.id}`);
         this.socket.emit("bi_voice_status", { state: "tool_running", toolName: fc.name });
 
-        const result = await executeToolCall({
-          toolCall: { id: fc.id, name: fc.name, args: fc.args || {} },
-          toolsByName: this.toolsByName,
-          timeoutMs: 6500,
-        });
+        try {
+          const result = await executeToolCall({
+            toolCall: { id: fc.id, name: fc.name, args: fc.args || {} },
+            toolsByName: this.toolsByName,
+            timeoutMs: 6500,
+          });
 
-        functionResponses.push({
-          id: fc.id,
-          name: fc.name,
-          response: { output: result.output },
-        });
+          let outputObj = result.output;
+          if (typeof result.output === "string") {
+            try {
+              outputObj = JSON.parse(result.output);
+            } catch (parseErr) {
+              outputObj = { result: result.output };
+            }
+          }
+
+          functionResponses.push({
+            id: fc.id,
+            name: fc.name,
+            response: { output: outputObj },
+          });
+        } catch (toolExecErr) {
+          console.warn(`[Gemini Live Gateway] Tool '${fc.name}' execution failed:`, toolExecErr.message);
+          functionResponses.push({
+            id: fc.id,
+            name: fc.name,
+            response: { output: { error: toolExecErr.message || "Query failed" } },
+          });
+        }
       }
 
       // Return tool results back to Gemini Live API
