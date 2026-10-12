@@ -181,7 +181,7 @@ export const initSocket = (server) => {
     // =========================================================================
     // BI ANALYST - GEMINI MULTIMODAL LIVE REAL-TIME VOICE CHAT
     // =========================================================================
-    socket.on("bi_voice_start", async ({ voiceName = "Aoede" } = {}) => {
+    socket.on("bi_voice_start", async ({ voiceName = "Aoede", model = "gemini-3.8-live" } = {}) => {
       try {
         const userRole = socket.user?.role;
         const isAuthorized =
@@ -221,6 +221,7 @@ export const initSocket = (server) => {
           organization,
           tenantModels,
           voiceName,
+          model,
         });
 
         await liveSession.start();

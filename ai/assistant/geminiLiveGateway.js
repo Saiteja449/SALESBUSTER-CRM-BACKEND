@@ -115,12 +115,13 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
  * for real-time speech-to-speech with live CRM database tool execution.
  */
 export class GeminiLiveSessionManager {
-  constructor({ socket, user, organization, tenantModels, voiceName = "Aoede" }) {
+  constructor({ socket, user, organization, tenantModels, voiceName = "Aoede", model = null }) {
     this.socket = socket;
     this.user = user;
     this.organization = organization;
     this.tenantModels = tenantModels;
     this.voiceName = voiceName;
+    this.model = model || process.env.AI_ASSISTANT_LIVE_MODEL || "gemini-3.8-live";
     this.session = null;
     this.isActive = false;
     this.toolsByName = {};
@@ -185,40 +186,39 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    - WhatsApp unread chats: CALL 'get_whatsapp_analytics'
    - Integrations and configurations: CALL 'get_org_integrations_and_config'`;
 
-    const liveModel =
-      process.env.AI_ASSISTANT_LIVE_MODEL ||
-      "gemini-2.5-flash-native-audio-preview-12-2025";
+    const primaryModel = this.model;
+    const fallbackModel = "gemini-2.5-flash-native-audio-preview-12-2025";
 
-    console.log(`[Gemini Live Gateway] Connecting user ${this.user?.id} to model ${liveModel} (Voice: ${this.voiceName})`);
+    const connectWithModel = async (targetModel) => {
+      console.log(`[Gemini Live Gateway] Connecting user ${this.user?.id} to model ${targetModel} (Voice: ${this.voiceName})`);
 
-    const config = {
-      responseModalities: ["AUDIO"],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: {
-            voiceName: this.voiceName,
+      const config = {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName: this.voiceName,
+            },
           },
         },
-      },
-      systemInstruction: {
-        parts: [{ text: systemPrompt }],
-      },
-      tools: [
-        {
-          functionDeclarations: CRM_LIVE_FUNCTION_DECLARATIONS,
+        systemInstruction: {
+          parts: [{ text: systemPrompt }],
         },
-      ],
-    };
+        tools: [
+          {
+            functionDeclarations: CRM_LIVE_FUNCTION_DECLARATIONS,
+          },
+        ],
+      };
 
-    try {
-      this.session = await ai.live.connect({
-        model: liveModel,
+      return await ai.live.connect({
+        model: targetModel,
         config,
         callbacks: {
           onopen: () => {
             this.isActive = true;
-            this.socket.emit("bi_voice_status", { state: "connected", model: liveModel });
-            console.log(`[Gemini Live Gateway] Live session opened for socket ${this.socket.id}`);
+            this.socket.emit("bi_voice_status", { state: "connected", model: targetModel });
+            console.log(`[Gemini Live Gateway] Live session opened on model ${targetModel} for socket ${this.socket.id}`);
           },
           onmessage: async (serverMsg) => {
             await this.handleServerMessage(serverMsg);
@@ -234,12 +234,21 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           },
         },
       });
+    };
 
+    try {
+      this.session = await connectWithModel(primaryModel);
       this.isActive = true;
-    } catch (err) {
-      console.error("[Gemini Live Gateway] Failed to connect to Gemini Live API:", err);
-      this.socket.emit("bi_voice_error", { message: err.message || "Failed to start Gemini Live voice session" });
-      throw err;
+    } catch (primaryErr) {
+      console.warn(`[Gemini Live Gateway] Connection failed on ${primaryModel}, trying fallback ${fallbackModel}:`, primaryErr.message);
+      try {
+        this.session = await connectWithModel(fallbackModel);
+        this.isActive = true;
+      } catch (fallbackErr) {
+        console.error("[Gemini Live Gateway] Failed to connect to Gemini Live API on both models:", fallbackErr);
+        this.socket.emit("bi_voice_error", { message: fallbackErr.message || "Failed to start Gemini Live voice session" });
+        throw fallbackErr;
+      }
     }
   }
 
