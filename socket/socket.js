@@ -1,6 +1,7 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
-import { getTenantModels } from "../services/tenantManager.js";
+import { getTenantModels, getMasterModels } from "../services/tenantManager.js";
+import { GeminiLiveSessionManager } from "../ai/assistant/geminiLiveGateway.js";
 
 let io;
 
@@ -177,7 +178,79 @@ export const initSocket = (server) => {
       }
     });
 
+    // =========================================================================
+    // BI ANALYST - GEMINI MULTIMODAL LIVE REAL-TIME VOICE CHAT
+    // =========================================================================
+    socket.on("bi_voice_start", async ({ voiceName = "Aoede" } = {}) => {
+      try {
+        const userRole = socket.user?.role;
+        const isAuthorized =
+          userRole === "super_admin" ||
+          userRole === "sales manager" ||
+          socket.user?.isOrgOwner;
+
+        if (!isAuthorized) {
+          socket.emit("bi_voice_error", {
+            message: "Unauthorized. Voice BI Analyst is restricted to Sales Managers.",
+          });
+          return;
+        }
+
+        // Close any pre-existing session on this socket
+        if (socket.geminiLiveSession) {
+          socket.geminiLiveSession.close();
+          socket.geminiLiveSession = null;
+        }
+
+        const tenantDbName = socket.user?.tenantDbName;
+        const tenantModels = tenantDbName ? getTenantModels(tenantDbName) : null;
+        if (!tenantModels) {
+          socket.emit("bi_voice_error", {
+            message: "Tenant database context could not be resolved.",
+          });
+          return;
+        }
+
+        const { Organization: MasterOrg } = getMasterModels();
+        const orgId = socket.user?.organizationId;
+        const organization = orgId ? await MasterOrg.findById(orgId).lean() : null;
+
+        const liveSession = new GeminiLiveSessionManager({
+          socket,
+          user: socket.user,
+          organization,
+          tenantModels,
+          voiceName,
+        });
+
+        await liveSession.start();
+        socket.geminiLiveSession = liveSession;
+      } catch (err) {
+        console.error(`[Socket] Error starting BI voice session for socket ${socket.id}:`, err);
+        socket.emit("bi_voice_error", {
+          message: err.message || "Failed to initialize Gemini Live voice session.",
+        });
+      }
+    });
+
+    socket.on("bi_voice_audio_in", (base64Chunk) => {
+      if (socket.geminiLiveSession) {
+        socket.geminiLiveSession.sendAudioChunk(base64Chunk);
+      }
+    });
+
+    socket.on("bi_voice_stop", () => {
+      if (socket.geminiLiveSession) {
+        socket.geminiLiveSession.close();
+        socket.geminiLiveSession = null;
+      }
+    });
+
     socket.on("disconnect", () => {
+      if (socket.geminiLiveSession) {
+        socket.geminiLiveSession.close();
+        socket.geminiLiveSession = null;
+      }
       console.log(`Socket.IO client disconnected: ${socket.id}`);
     });
   });
