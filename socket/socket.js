@@ -181,8 +181,11 @@ export const initSocket = (server) => {
     // =========================================================================
     // BI ANALYST - GEMINI MULTIMODAL LIVE REAL-TIME VOICE CHAT
     // =========================================================================
-    socket.on("bi_voice_start", async ({ voiceName = "Aoede" } = {}) => {
+    socket.on("bi_voice_start", async (payload = {}) => {
       try {
+        const allowedVoices = new Set(["Aoede", "Puck", "Charon", "Fenrir", "Kore"]);
+        const requestedVoice = payload && typeof payload === "object" ? payload.voiceName : null;
+        const voiceName = allowedVoices.has(requestedVoice) ? requestedVoice : "Aoede";
         const userRole = socket.user?.role;
         const isAuthorized =
           userRole === "super_admin" ||
@@ -234,7 +237,15 @@ export const initSocket = (server) => {
     });
 
     socket.on("bi_voice_audio_in", (base64Chunk) => {
-      if (socket.geminiLiveSession) {
+      // One recorder frame is about 5.5 KB of base64. Reject malformed or
+      // oversized events before forwarding them to the paid Live API session.
+      if (
+        socket.geminiLiveSession &&
+        typeof base64Chunk === "string" &&
+        base64Chunk.length > 0 &&
+        base64Chunk.length <= 16_384 &&
+        /^[A-Za-z0-9+/]+={0,2}$/.test(base64Chunk)
+      ) {
         socket.geminiLiveSession.sendAudioChunk(base64Chunk);
       }
     });

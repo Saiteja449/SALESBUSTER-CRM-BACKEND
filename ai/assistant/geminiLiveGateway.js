@@ -35,7 +35,7 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
           type: "STRING",
           description: "Time window: 'today', 'yesterday', 'this_week', 'this_month', 'all_time', 'custom'",
         },
-        salespersonId: { type: "STRING", description: "Specific sales rep user ID or name filter" },
+        salespersonNameOrId: { type: "STRING", description: "Specific sales rep name or user ID filter" },
         customStart: { type: "STRING", description: "YYYY-MM-DD start date" },
         customEnd: { type: "STRING", description: "YYYY-MM-DD end date" },
       },
@@ -47,9 +47,9 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
     parameters: {
       type: "OBJECT",
       properties: {
-        keyword: { type: "STRING", description: "Name, email, phone, or company search keyword" },
-        status: { type: "STRING", description: "Status filter (e.g. 'New Lead', 'Follow Up', 'Converted', 'Lost')" },
-        source: { type: "STRING", description: "Source filter (e.g. 'WhatsApp', 'Website', 'Manual')" },
+        searchTerm: { type: "STRING", description: "Name, company, city, tag, or notes search keyword" },
+        status: { type: "STRING", description: "Exact CRM status: 'New', 'Missed Call', 'Follow Up', 'Not Interested', 'Not Attended', 'Price Issue', or 'Converted'" },
+        source: { type: "STRING", description: "Exact CRM source: 'Email', 'WhatsApp', 'Meta Ads', 'Website Form', 'Website Chat', 'Call', 'Manual Entry', 'Mobile App', or 'Excel Import'" },
         service: { type: "STRING", description: "Service offering name" },
         limit: { type: "INTEGER", description: "Number of records to return (1-20)" },
       },
@@ -72,8 +72,8 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
     parameters: {
       type: "OBJECT",
       properties: {
-        statusFilter: { type: "STRING", description: "'overdue', 'today', 'upcoming', or 'all'" },
-        assignedTo: { type: "STRING", description: "Filter by salesperson user ID" },
+        filter: { type: "STRING", description: "'all_pending', 'overdue', 'pending_today', 'upcoming', or 'completed'" },
+        priority: { type: "STRING", description: "Optional priority filter: 'High', 'Medium', or 'Low'" },
         limit: { type: "INTEGER", description: "Max count to return" },
       },
     },
@@ -84,7 +84,7 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
     parameters: {
       type: "OBJECT",
       properties: {
-        unreadOnly: { type: "BOOLEAN", description: "Only return chats with unread customer messages" },
+        type: { type: "STRING", description: "'unread_leads', 'unreplied_leads', or 'recent_messages_overview'" },
         limit: { type: "INTEGER", description: "Max chats to inspect" },
       },
     },
@@ -175,7 +175,11 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
 2. SPOKEN DIALOGUE OPTIMIZATION:
    - This is real-time speech! Speak naturally, crisply, and conversationally.
    - Do NOT read aloud markdown characters, asterisks, hash headers, or table delimiters.
-   - Give direct executive answers, highlighting the most vital figures first.
+   - Lead with the direct answer, then give the period and the one or two figures that best support it.
+   - Explain whether a number is a total or only the returned sample. For example, distinguish total matching records from the limited names shown.
+   - Add a brief, useful implication or next step only when it follows from the returned data. Label interpretations as interpretations; never claim the data proves a cause.
+   - If the result is empty, partial, or an error, say so plainly and suggest a narrower or corrected query when useful.
+   - Keep spoken answers to a few short sentences. Read names and amounts clearly; disclose phone numbers only when the user asks for contact details.
 3. TOOL SELECTION RULES:
    - Lead counts, conversion rate, today vs yesterday, morning leads: CALL 'get_dashboard_kpis'
    - Sales reps, leaderboard, top performers, won deals: CALL 'get_salesperson_performance'
