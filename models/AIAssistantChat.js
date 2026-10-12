@@ -15,6 +15,10 @@ const messageSubSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    options: {
+      type: [String],
+      default: [],
+    },
     timestamp: {
       type: Date,
       default: Date.now,

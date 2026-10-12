@@ -13,6 +13,45 @@ import { decryptApiKey } from "../../utils/encryption.js";
 import { recordAiUsage } from "../../services/aiUsageService.js";
 
 /**
+ * Extracts structured options from assistant text if embedded via syntax markers
+ */
+const parseOptionsFromText = (text) => {
+  if (!text || typeof text !== "string") return { cleanText: text, options: [] };
+
+  // Pattern 1: <<<OPTIONS: [...]>>>
+  const regex1 = /<<<OPTIONS:\s*(\[.*?\])\s*>>>/is;
+  const match1 = text.match(regex1);
+  if (match1) {
+    try {
+      const parsed = JSON.parse(match1[1]);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return {
+          cleanText: text.replace(regex1, "").trim(),
+          options: parsed.map(String).map((s) => s.trim()).filter(Boolean),
+        };
+      }
+    } catch (_) {}
+  }
+
+  // Pattern 2: ```options [...] ```
+  const regex2 = /```options\s*(\[.*?\])\s*```/is;
+  const match2 = text.match(regex2);
+  if (match2) {
+    try {
+      const parsed = JSON.parse(match2[1]);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return {
+          cleanText: text.replace(regex2, "").trim(),
+          options: parsed.map(String).map((s) => s.trim()).filter(Boolean),
+        };
+      }
+    } catch (_) {}
+  }
+
+  return { cleanText: text, options: [] };
+};
+
+/**
  * Executes the LangChain AI Assistant agent loop for Sales Managers
  * Hardened with wall-clock caps, parallel tool calling, loop detection, and safe fallbacks.
  */
@@ -94,7 +133,12 @@ STRICT OPERATIONAL RULES:
 4. FORMATTING:
    - Present answers with crisp formatting: use bold text for key figures, bullet points for lists, and concise summaries.
    - Mention the specific time window evaluated (e.g., "All Time", "This Month", "Today").
-   - Maintain a professional, executive tone tailored to a Sales Manager.`;
+   - Maintain a professional, executive tone tailored to a Sales Manager.
+5. AMBIGUITY, CLARIFICATION & INTERACTIVE OPTIONS:
+   - If the user's question is ambiguous, broad, or lacks required parameters (such as time period: today vs this month vs all-time, lead status: won vs new, or salesperson identity), DO NOT guess or make silent assumptions.
+   - Instead, CALL the 'ask_clarification' tool with a clear, direct question and 2 to 4 actionable options for the user to select.
+   - Alternatively, when concluding a response where there are natural follow-up analyses or pathways to explore, append:
+     <<<OPTIONS: ["Option 1", "Option 2", "Option 3"]>>>`;
 
   // 5. Build Message Stack with Conversation History
   const messages = [new SystemMessage(systemPrompt)];
@@ -119,6 +163,7 @@ STRICT OPERATIONAL RULES:
   const iterationLogs = [];
   const previousFingerprints = [];
   let finalReply = "";
+  let extractedOptions = [];
   let hitIterationCap = false;
   let hitWallClockCap = false;
 
@@ -174,9 +219,32 @@ STRICT OPERATIONAL RULES:
 
     messages.push(aiResponse);
 
+    // Check if the model called ask_clarification
+    const clarificationCall = aiResponse.tool_calls?.find((tc) => tc.name === "ask_clarification");
+    if (clarificationCall) {
+      finalReply = clarificationCall.args?.question || "Could you please clarify your request?";
+      if (Array.isArray(clarificationCall.args?.options)) {
+        extractedOptions = clarificationCall.args.options.map(String).map((s) => s.trim()).filter(Boolean);
+      }
+      toolsUsedSet.add("ask_clarification");
+      iterationLogs.push({
+        iteration: iter + 1,
+        type: "clarification",
+        question: finalReply,
+        options: extractedOptions,
+        durationMs: Date.now() - iterStart,
+      });
+      break;
+    }
+
     // If no tool calls requested, we have the final textual answer!
     if (!aiResponse.tool_calls || aiResponse.tool_calls.length === 0) {
-      finalReply = typeof aiResponse.content === "string" ? aiResponse.content : JSON.stringify(aiResponse.content);
+      const rawText = typeof aiResponse.content === "string" ? aiResponse.content : JSON.stringify(aiResponse.content);
+      const parsed = parseOptionsFromText(rawText);
+      finalReply = parsed.cleanText;
+      if (extractedOptions.length === 0 && parsed.options.length > 0) {
+        extractedOptions = parsed.options;
+      }
       iterationLogs.push({
         iteration: iter + 1,
         type: "response",
@@ -286,7 +354,12 @@ STRICT OPERATIONAL RULES:
 
       const synthesisRes = await directModel.invoke(synthesisPrompt);
       if (synthesisRes && synthesisRes.content) {
-        finalReply = typeof synthesisRes.content === "string" ? synthesisRes.content : JSON.stringify(synthesisRes.content);
+        const rawText = typeof synthesisRes.content === "string" ? synthesisRes.content : JSON.stringify(synthesisRes.content);
+        const parsed = parseOptionsFromText(rawText);
+        finalReply = parsed.cleanText;
+        if (extractedOptions.length === 0 && parsed.options.length > 0) {
+          extractedOptions = parsed.options;
+        }
       }
     } catch (synthErr) {
       console.warn("[AI Assistant] Final answer synthesis failed:", synthErr.message);
@@ -324,6 +397,7 @@ STRICT OPERATIONAL RULES:
 
   return {
     reply: finalReply,
+    options: extractedOptions,
     toolsUsed: Array.from(toolsUsedSet),
     modelUsed,
     executionTimeMs,

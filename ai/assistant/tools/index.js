@@ -6,6 +6,7 @@ import { createFollowupTool } from "./followupTool.js";
 import { createWhatsAppAnalyticsTool } from "./whatsappAnalyticsTool.js";
 import { createOrgConfigTool } from "./orgConfigTool.js";
 import { createCRMRAGTool } from "./crmRAGTool.js";
+import { createClarificationTool } from "./clarificationTool.js";
 
 /**
  * Metadata descriptor map for production tool execution guarantees
@@ -19,6 +20,7 @@ export const TOOL_METADATA = {
   get_whatsapp_analytics: { isReadOnly: true, sideEffect: false, timeoutMs: 6000 },
   get_org_integrations_and_config: { isReadOnly: true, sideEffect: false, timeoutMs: 5000 },
   search_crm_documentation_and_features: { isReadOnly: true, sideEffect: false, timeoutMs: 7500 },
+  ask_clarification: { isReadOnly: true, sideEffect: false, timeoutMs: 3000 },
 };
 
 /**
@@ -34,6 +36,7 @@ export const buildAssistantTools = ({ tenantModels, organization, user }) => {
     createWhatsAppAnalyticsTool({ tenantModels }),
     createOrgConfigTool({ organization, tenantModels }),
     createCRMRAGTool({ organization }),
+    createClarificationTool(),
   ];
 
   const toolsByName = {};
