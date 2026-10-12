@@ -18,19 +18,19 @@ export const createClarificationTool = () => {
     {
       name: "ask_clarification",
       description:
-        "Call this tool whenever the user's question is ambiguous, underspecified, lacks crucial scope or time period (e.g., today vs this month vs all time), or when there are multiple distinct logical interpretations. You MUST provide a clear, concise question and 2 to 4 distinct, clickable options for the sales manager to choose from.",
+        "Call this tool ONLY when the user's question is ambiguous or missing required parameters (such as an unspecified timeframe or filter) and you are completely unable to run a data query without their clarification. DO NOT call this tool if you can answer the question or if the user is already answering your previous question.",
       schema: z.object({
         question: z
           .string()
           .describe(
-            "The clarifying question explaining what specific criteria, timeframe, or detail is needed to proceed."
+            "The clarifying question explaining what specific criteria or detail is needed to proceed."
           ),
         options: z
           .array(z.string())
           .min(2)
           .max(5)
           .describe(
-            "A list of 2 to 5 concrete, actionable option strings that the user can click to answer (e.g. ['Today', 'This Month', 'All-Time'] or ['By Won Leads', 'By Conversion Rate', 'By Talk Time'])."
+            "A list of 2 to 5 concrete, actionable option strings for the user to choose from."
           ),
       }),
     }

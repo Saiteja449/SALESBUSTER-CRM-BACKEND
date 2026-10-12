@@ -134,11 +134,11 @@ STRICT OPERATIONAL RULES:
    - Present answers with crisp formatting: use bold text for key figures, bullet points for lists, and concise summaries.
    - Mention the specific time window evaluated (e.g., "All Time", "This Month", "Today").
    - Maintain a professional, executive tone tailored to a Sales Manager.
-5. AMBIGUITY, CLARIFICATION & INTERACTIVE OPTIONS:
-   - If the user's question is ambiguous, broad, or lacks required parameters (such as time period: today vs this month vs all-time, lead status: won vs new, or salesperson identity), DO NOT guess or make silent assumptions.
-   - Instead, CALL the 'ask_clarification' tool with a clear, direct question and 2 to 4 actionable options for the user to select.
-   - Alternatively, when concluding a response where there are natural follow-up analyses or pathways to explore, append:
-     <<<OPTIONS: ["Option 1", "Option 2", "Option 3"]>>>`;
+5. STRICT CLARIFICATION INVARIANT (ONLY WHEN TRULY UNSURE):
+   - ONLY call 'ask_clarification' if the user's question is completely vague or missing essential parameters (such as an unspecified timeframe or ambiguous salesperson) such that you CANNOT query the database without their choice.
+   - If the user's request is reasonably answerable (or has a sensible default or specifies what they want), DO NOT call 'ask_clarification'. Call the data tools directly and answer.
+   - CRITICAL: If the user has just selected or replied with an option to a previous question (e.g. "This Month", "Today", etc.), you NOW HAVE the necessary details: NEVER call 'ask_clarification' again. Immediately execute the appropriate data tool and provide the factual answer.
+   - NEVER suggest follow-up options, and NEVER append options to normal answers. Only provide options when you are stuck and calling 'ask_clarification'.`;
 
   // 5. Build Message Stack with Conversation History
   const messages = [new SystemMessage(systemPrompt)];
@@ -164,6 +164,7 @@ STRICT OPERATIONAL RULES:
   const previousFingerprints = [];
   let finalReply = "";
   let extractedOptions = [];
+  let clarificationQuestion = null;
   let hitIterationCap = false;
   let hitWallClockCap = false;
 
@@ -222,7 +223,8 @@ STRICT OPERATIONAL RULES:
     // Check if the model called ask_clarification
     const clarificationCall = aiResponse.tool_calls?.find((tc) => tc.name === "ask_clarification");
     if (clarificationCall) {
-      finalReply = clarificationCall.args?.question || "Could you please clarify your request?";
+      clarificationQuestion = clarificationCall.args?.question || "Could you please clarify your request?";
+      finalReply = clarificationQuestion;
       if (Array.isArray(clarificationCall.args?.options)) {
         extractedOptions = clarificationCall.args.options.map(String).map((s) => s.trim()).filter(Boolean);
       }
@@ -240,11 +242,7 @@ STRICT OPERATIONAL RULES:
     // If no tool calls requested, we have the final textual answer!
     if (!aiResponse.tool_calls || aiResponse.tool_calls.length === 0) {
       const rawText = typeof aiResponse.content === "string" ? aiResponse.content : JSON.stringify(aiResponse.content);
-      const parsed = parseOptionsFromText(rawText);
-      finalReply = parsed.cleanText;
-      if (extractedOptions.length === 0 && parsed.options.length > 0) {
-        extractedOptions = parsed.options;
-      }
+      finalReply = rawText.replace(/<<<OPTIONS:.*?>>>/gis, "").replace(/```options[\s\S]*?```/gis, "").trim();
       iterationLogs.push({
         iteration: iter + 1,
         type: "response",
@@ -355,11 +353,7 @@ STRICT OPERATIONAL RULES:
       const synthesisRes = await directModel.invoke(synthesisPrompt);
       if (synthesisRes && synthesisRes.content) {
         const rawText = typeof synthesisRes.content === "string" ? synthesisRes.content : JSON.stringify(synthesisRes.content);
-        const parsed = parseOptionsFromText(rawText);
-        finalReply = parsed.cleanText;
-        if (extractedOptions.length === 0 && parsed.options.length > 0) {
-          extractedOptions = parsed.options;
-        }
+        finalReply = rawText.replace(/<<<OPTIONS:.*?>>>/gis, "").replace(/```options[\s\S]*?```/gis, "").trim();
       }
     } catch (synthErr) {
       console.warn("[AI Assistant] Final answer synthesis failed:", synthErr.message);
@@ -398,6 +392,7 @@ STRICT OPERATIONAL RULES:
   return {
     reply: finalReply,
     options: extractedOptions,
+    clarificationQuestion,
     toolsUsed: Array.from(toolsUsedSet),
     modelUsed,
     executionTimeMs,
