@@ -124,6 +124,7 @@ export class GeminiLiveSessionManager {
     this.session = null;
     this.isActive = false;
     this.toolsByName = {};
+    this.isSpeakingEmitted = false; // Tracks whether 'speaking' status was emitted for the current turn
 
     // 1. Build Authenticated CRM Tools Suite
     const { toolsByName } = buildAssistantTools({
@@ -297,6 +298,13 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         for (const part of content.modelTurn.parts) {
           // Audio chunk (24kHz PCM)
           if (part.inlineData?.data) {
+            // Emit 'speaking' exactly once per turn, right before the first audio chunk.
+            // This ensures the frontend status updates at the same moment audio is enqueued,
+            // eliminating the race condition where the badge showed 'Speaking' before any sound.
+            if (!this.isSpeakingEmitted) {
+              this.isSpeakingEmitted = true;
+              this.socket.emit("bi_voice_status", { state: "speaking" });
+            }
             this.socket.emit("bi_voice_audio_out", {
               mimeType: part.inlineData.mimeType || "audio/pcm;rate=24000",
               data: part.inlineData.data, // base64 string
@@ -312,8 +320,9 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         }
       }
 
-      // Turn complete flag
+      // Turn complete flag — reset speaking tracker for the next turn
       if (content.turnComplete) {
+        this.isSpeakingEmitted = false;
         this.socket.emit("bi_voice_turn_complete");
       }
     }
