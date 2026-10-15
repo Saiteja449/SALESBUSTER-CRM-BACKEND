@@ -1089,7 +1089,9 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       if (orgId) {
         io.to(`org_${orgId}`).emit("conversation_updated", convMetaPayload);
       } else {
-        io.emit("conversation_updated", convMetaPayload);
+        console.warn(
+          `[WhatsApp] Skipping un-scoped conversation_updated emit: no orgId for lead ${lead._id}`
+        );
       }
 
       const assignedUserId = lead.assignedTo
@@ -1285,7 +1287,9 @@ const pauseAIForLead = async (leadId, models, orgId, durationMs = 5 * 60 * 1000)
     if (orgId) {
       io.to(`org_${orgId}`).emit("ai_status_updated", payload);
     } else {
-      io.emit("ai_status_updated", payload);
+      console.warn(
+        `[AI SNOOZE] Skipping un-scoped ai_status_updated broadcast: no orgId for lead ${leadIdStr}`
+      );
     }
   }
 
@@ -1306,7 +1310,9 @@ const pauseAIForLead = async (leadId, models, orgId, durationMs = 5 * 60 * 1000)
           if (orgId) {
             ioNow.to(`org_${orgId}`).emit("ai_status_updated", resumePayload);
           } else {
-            ioNow.emit("ai_status_updated", resumePayload);
+            console.warn(
+              `[AI SNOOZE] Skipping un-scoped ai_status_updated resume: no orgId for lead ${leadIdStr}`
+            );
           }
         }
       }
@@ -1337,7 +1343,9 @@ export const clearAIPauseForLead = async (leadId, models, orgId = null) => {
     if (orgId) {
       io.to(`org_${orgId}`).emit("ai_status_updated", resumePayload);
     } else {
-      io.emit("ai_status_updated", resumePayload);
+      console.warn(
+        `[AI SNOOZE] Skipping un-scoped ai_status_updated manual resume: no orgId for lead ${leadIdStr}`
+      );
     }
   }
 };
@@ -1468,11 +1476,20 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
           });
         }
       }
+      const targetUsers =
+        lead.assignedTo && lead.assignedTo !== "Unassigned"
+          ? [
+              typeof lead.assignedTo === "object"
+                ? lead.assignedTo._id || lead.assignedTo.id
+                : lead.assignedTo,
+            ]
+          : [];
       await NotificationModel.create({
         title: "AI Disabled - Fallback Triggered",
         message: `AI has been disabled for ${lead.name} (${lead.phone}) because it sent the fallback message.`,
         type: "lead_update",
-        targetRoles: ["sales manager", "sales person"],
+        targetRoles: ["sales manager"],
+        targetUsers,
       });
     }
 
@@ -1534,7 +1551,9 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
           if (orgId) {
             io.to(`org_${orgId}`).emit("conversation_updated", updatePayload);
           } else {
-            io.emit("conversation_updated", updatePayload);
+            console.warn(
+              `[WhatsApp AI] Skipping un-scoped conversation_updated emit: no orgId for lead ${lead._id}`
+            );
           }
         }
 
@@ -1625,7 +1644,9 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
                 if (orgId) {
                   io.to(`org_${orgId}`).emit("conversation_updated", convUpdatePayload);
                 } else {
-                  io.emit("conversation_updated", convUpdatePayload);
+                  console.warn(
+                    `[WhatsApp AI] Skipping un-scoped image conversation_updated: no orgId for lead ${lead._id}`
+                  );
                 }
               }
 
@@ -1800,10 +1821,17 @@ export const sendMessageFromCRM = async (
       lastMessage: messageText,
       lastMessageTime: timestamp,
     };
-    if (organizationId) {
-      io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
+    const targetOrg =
+      organizationId ||
+      lead.organizationId ||
+      lead.organization ||
+      (sessionId ? sessions[sessionId]?.organizationId : null);
+    if (targetOrg) {
+      io.to(`org_${targetOrg}`).emit("conversation_updated", updatePayload);
     } else {
-      io.emit("conversation_updated", updatePayload);
+      console.warn(
+        `[WhatsApp] Skipping un-scoped conversation_updated emit: no organizationId for lead ${lead._id}`
+      );
     }
   }
 
@@ -1937,10 +1965,14 @@ export const sendAutomatedFollowup = async (lead, imageUrl, text, context = {}) 
         lastMessage: text,
         lastMessageTime: timestamp,
       };
-      if (organizationId) {
-        io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
+      const targetOrg =
+        organizationId || lead.organizationId || lead.organization;
+      if (targetOrg) {
+        io.to(`org_${targetOrg}`).emit("conversation_updated", updatePayload);
       } else {
-        io.emit("conversation_updated", updatePayload);
+        console.warn(
+          `[WhatsApp Auto] Skipping un-scoped conversation_updated emit: no organizationId for lead ${lead._id}`
+        );
       }
     }
 
@@ -2200,10 +2232,14 @@ export const sendWelcomeEnquiryMessage = async (lead, context = {}) => {
           lastMessage: welcomeText,
           lastMessageTime: timestamp,
         };
-        if (organizationId) {
-          io.to(`org_${organizationId}`).emit("conversation_updated", updatePayload);
+        const targetOrg =
+          organizationId || lead.organizationId || lead.organization;
+        if (targetOrg) {
+          io.to(`org_${targetOrg}`).emit("conversation_updated", updatePayload);
         } else {
-          io.emit("conversation_updated", updatePayload);
+          console.warn(
+            `[WhatsApp Welcome] Skipping un-scoped conversation_updated emit: no organizationId for lead ${lead._id}`
+          );
         }
       }
 
@@ -2321,7 +2357,9 @@ export const updateSystemSettings = async (
     if (organizationId) {
       io.to(`org_${organizationId}`).emit("global_settings_updated", saved);
     } else {
-      io.emit("global_settings_updated", saved);
+      console.warn(
+        "[WhatsApp Settings] Skipping un-scoped global_settings_updated: missing organizationId"
+      );
     }
   }
   return saved;

@@ -181,7 +181,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
 
             const io = getIO();
             if (io) {
-              io.to(`org_${organizationId}`).emit("campaign_scheduled", {
+              io.to(`org_${organizationId}_admins`).emit("campaign_scheduled", {
                 campaignId,
                 status: "Scheduled",
                 nextRunAt: freshCampaign.recurringSchedule.nextRunAt,
@@ -196,7 +196,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
 
             const io = getIO();
             if (io) {
-              io.to(`org_${organizationId}`).emit("campaign_completed", {
+              io.to(`org_${organizationId}_admins`).emit("campaign_completed", {
                 campaignId,
                 status: "Completed",
                 completedAt: new Date(),
@@ -324,7 +324,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
         // Emit Socket.IO progress update
         const io = getIO();
         if (io) {
-          io.to(`org_${organizationId}`).emit("campaign_progress", {
+          io.to(`org_${organizationId}_admins`).emit("campaign_progress", {
             campaignId,
             recipientId: recipient._id,
             recipientPhone: recipient.recipientPhone,
@@ -379,7 +379,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
 
           const io = getIO();
           if (io) {
-            io.to(`org_${organizationId}`).emit("campaign_paused", {
+            io.to(`org_${organizationId}_admins`).emit("campaign_paused", {
               campaignId,
               reason: "Meta messaging tier limit reached (131049). Campaign paused automatically.",
             });
@@ -410,7 +410,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
 
           const io = getIO();
           if (io) {
-            io.to(`org_${organizationId}`).emit("campaign_progress", {
+            io.to(`org_${organizationId}_admins`).emit("campaign_progress", {
               campaignId,
               recipientId: recipient._id,
               recipientPhone: recipient.recipientPhone,

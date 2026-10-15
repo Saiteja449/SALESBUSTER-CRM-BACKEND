@@ -303,6 +303,8 @@ export const syncWebsiteLeadToCRM = async ({
       }
 
       // 5. Real-time Socket.IO emission
+      // NOTE: This static website chat widget routes to TARGET_TENANT_DB (single-tenant public landing site).
+      // Global broadcast is intentional here for the dedicated SalesBuster landing page deployment.
       try {
         const io = getIO();
         if (io) {

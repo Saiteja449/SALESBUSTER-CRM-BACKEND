@@ -913,11 +913,16 @@ Latest Message: ${incomingText}`;
 
     if (parsed.disableAI) {
       updatePayload.aiEnabled = false;
+      const targetUsers =
+        lead.assignedTo && lead.assignedTo !== "Unassigned"
+          ? [lead.assignedTo]
+          : [];
       await NotificationModel.create({
         title: "AI Disabled - Human Takeover Needed",
         message: `AI has been disabled for ${lead.name} (${lead.phone}) because they requested human support or the AI reached its limit.`,
         type: "lead_update",
-        targetRoles: ["sales manager", "sales person"],
+        targetRoles: ["sales manager"],
+        targetUsers,
       });
     }
 
@@ -1138,7 +1143,7 @@ Latest Message: ${incomingText}`;
         title: "Followup Created by AI",
         message: `AI Agent scheduled a follow-up for lead ${lead.name} on ${followUpDate} at ${prefTime}.`,
         type: "lead_update",
-        targetRoles: ["sales manager", "sales person"],
+        targetRoles: ["sales manager"],
         targetUsers: targetUsers,
       });
 

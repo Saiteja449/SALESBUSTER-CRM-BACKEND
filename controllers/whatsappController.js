@@ -491,11 +491,19 @@ export const getQR = async (req, res) => {
 // @access  Public
 export const getConversations = async (req, res) => {
   try {
-    const { ConversationModel } = getModels(req);
+    const { ConversationModel, LeadModel } = getModels(req);
     const userRole = req.user?.role;
     const isSalesRep = userRole === "sales person";
 
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 30));
+    const skip = (page - 1) * limit;
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const unreadOnly = req.query.unreadOnly === "true";
+
     const populateOptions = { path: "leadId" };
+    let leadFilter = {};
+    let mustFilterByLeadIds = false;
 
     if (isSalesRep) {
       // Security: Strictly enforce authenticated user's ID/name. Ignore req.query overrides.
@@ -509,6 +517,8 @@ export const getConversations = async (req, res) => {
       populateOptions.match = {
         assignedTo: { $in: matchArray },
       };
+      leadFilter.assignedTo = { $in: matchArray };
+      mustFilterByLeadIds = true;
     } else if (req.query.userId || req.query.name) {
       // Admins and managers can filter by rep
       const matchArray = [];
@@ -524,20 +534,85 @@ export const getConversations = async (req, res) => {
       populateOptions.match = {
         assignedTo: matchArray.length === 1 ? matchArray[0] : { $in: matchArray },
       };
+      leadFilter.assignedTo = matchArray.length === 1 ? matchArray[0] : { $in: matchArray };
+      mustFilterByLeadIds = true;
     }
 
-    let conversations = await ConversationModel.find()
-      .populate(populateOptions)
-      .sort({ lastMessageTime: -1 });
+    if (search) {
+      mustFilterByLeadIds = true;
+      const cleanPhone = search.replace(/\D/g, "");
+      const searchConditions = [
+        { name: { $regex: search, $options: "i" } },
+      ];
+      if (cleanPhone) {
+        searchConditions.push({ phone: { $regex: cleanPhone, $options: "i" } });
+      }
+      if (leadFilter.$or) {
+        leadFilter.$and = [{ $or: leadFilter.$or }, { $or: searchConditions }];
+        delete leadFilter.$or;
+      } else {
+        leadFilter.$or = searchConditions;
+      }
+    }
 
-    // Filter out conversations where leadId is null (due to population match failure)
-    if (isSalesRep || req.query.userId || req.query.name) {
+    const conversationQuery = {};
+
+    if (unreadOnly) {
+      conversationQuery.unreadCount = { $gt: 0 };
+    }
+
+    if (
+      mustFilterByLeadIds &&
+      LeadModel &&
+      typeof LeadModel.find === "function" &&
+      mongoose.connection &&
+      mongoose.connection.readyState === 1
+    ) {
+      try {
+        const matchingLeadIds = await LeadModel.find(leadFilter).distinct("_id");
+        conversationQuery.leadId = { $in: matchingLeadIds };
+      } catch (err) {
+        console.warn("[getConversations] Lead pre-filtering warning:", err.message);
+      }
+    }
+
+    const total =
+      typeof ConversationModel.countDocuments === "function"
+        ? await ConversationModel.countDocuments(conversationQuery)
+        : null;
+
+    let query = ConversationModel.find(conversationQuery).populate(populateOptions);
+
+    if (query && typeof query.sort === "function") {
+      query = query.sort({ lastMessageTime: -1 });
+    }
+    if (query && typeof query.skip === "function") {
+      query = query.skip(skip);
+    }
+    if (query && typeof query.limit === "function") {
+      query = query.limit(limit);
+    }
+
+    let conversations = (await query) || [];
+
+    // Filter out conversations where leadId is null (due to population match failure or deleted lead)
+    if (isSalesRep || req.query.userId || req.query.name || search) {
       conversations = conversations.filter((c) => c.leadId != null);
     }
 
-    res.status(200).json(conversations);
+    const effectiveTotal = total !== null ? total : conversations.length;
+    const hasMore = effectiveTotal > skip + conversations.length;
+
+    res.status(200).json({
+      success: true,
+      conversations,
+      total: effectiveTotal,
+      page,
+      limit,
+      hasMore,
+    });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 

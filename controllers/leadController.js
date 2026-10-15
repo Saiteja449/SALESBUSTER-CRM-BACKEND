@@ -164,7 +164,6 @@ const triggerAudioAnalysis = async (
       if (orgId) {
         io.to(`org_${orgId}`).emit("recording_analyzed", payload);
       }
-      io.emit("recording_analyzed", payload);
     }
 
     if (orgId) {
@@ -198,7 +197,6 @@ const triggerAudioAnalysis = async (
       if (orgId) {
         io.to(`org_${orgId}`).emit("recording_analyzed", payload);
       }
-      io.emit("recording_analyzed", payload);
     }
   }
 };
@@ -1132,11 +1130,16 @@ export const updateStatusByWebhook = async (req, res) => {
     lead.status = status;
     await lead.save();
 
+    const targetUsers =
+      lead.assignedTo && lead.assignedTo !== "Unassigned"
+        ? [lead.assignedTo]
+        : [];
     await NotificationModel.create({
       title: "Lead Status Webhook Update",
       message: `Lead ${lead.name} status updated to "${status}" via external booking app webhook event: ${event}.`,
       type: "lead_update",
-      targetRoles: ["sales manager", "sales person"],
+      targetRoles: ["sales manager"],
+      targetUsers,
     });
 
     const io = getIO();
@@ -1155,7 +1158,9 @@ export const updateStatusByWebhook = async (req, res) => {
       if (orgId) {
         io.to(`org_${orgId}`).emit("conversation_updated", payload);
       } else {
-        io.emit("conversation_updated", payload);
+        console.warn(
+          `[Webhook] Skipping un-scoped conversation_updated emit: no orgId for lead ${lead._id}`
+        );
       }
     }
 
@@ -1345,7 +1350,6 @@ export const uploadRecordingForLead = async (req, res) => {
       if (orgId) {
         io.to(`org_${orgId}`).emit("recording_uploaded", payload);
       }
-      io.emit("recording_uploaded", payload);
     }
 
     res.status(201).json({
@@ -2418,7 +2422,11 @@ export const handleInboundCall = async (req, res) => {
     // Broadcast real-time update via Socket.IO
     const io = getIO();
     if (io) {
-      const orgId = req.user?.organizationId || req.organization?._id;
+      const orgId =
+        req.user?.organizationId ||
+        req.organization?._id ||
+        updatedLead.organizationId ||
+        updatedLead.organization;
       const payload = {
         leadId: updatedLead._id.toString(),
         newAssignee: targetRepId,
@@ -2431,8 +2439,9 @@ export const handleInboundCall = async (req, res) => {
         io.to(`org_${orgId}`).emit("lead_reassigned", payload);
         io.to(`org_${orgId}`).emit("lead_updated", { leadId: updatedLead._id, lead: updatedLead });
       } else {
-        io.emit("lead_reassigned", payload);
-        io.emit("lead_updated", { leadId: updatedLead._id, lead: updatedLead });
+        console.warn(
+          `[handleInboundCall] Skipping un-scoped socket emits: no orgId found for lead ${updatedLead._id}`
+        );
       }
       console.log("[handleInboundCall] [Step 5] Socket.IO broadcast emitted.");
     }

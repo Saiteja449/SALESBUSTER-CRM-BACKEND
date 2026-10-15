@@ -439,8 +439,11 @@ export const handleAIFollowup = async (req, res) => {
         if (orgId) {
           const cleanOrgId = String(orgId).replace(/^org_/, "");
           io.to(`org_${cleanOrgId}`).emit("ai_followup_resolved", payload);
+        } else {
+          console.warn(
+            "[Followup Controller] Skipping un-scoped ai_followup_resolved: missing orgId"
+          );
         }
-        io.emit("ai_followup_resolved", payload);
       }
     } catch (socketErr) {
       console.warn(

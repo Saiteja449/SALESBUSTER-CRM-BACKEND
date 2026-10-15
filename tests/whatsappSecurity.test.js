@@ -248,6 +248,51 @@ test("getConversations - Sales Rep query tampering is completely ignored", async
   );
 });
 
+test("getConversations - Pagination handles page, limit, skip and hasMore calculation", async () => {
+  let capturedSkip = null;
+  let capturedLimit = null;
+
+  const mockConversations = [
+    { _id: "c1", leadId: { _id: "l1", name: "Lead 1" }, lastMessageTime: new Date() },
+    { _id: "c2", leadId: { _id: "l2", name: "Lead 2" }, lastMessageTime: new Date() },
+  ];
+
+  const mockConversationModel = {
+    countDocuments: async () => 25,
+    find: () => ({
+      populate: () => ({
+        sort: () => ({
+          skip: (s) => ({
+            limit: (l) => {
+              capturedSkip = s;
+              capturedLimit = l;
+              return Promise.resolve(mockConversations);
+            },
+          }),
+        }),
+      }),
+    }),
+  };
+
+  const req = {
+    user: { _id: "mgr_1", role: "sales manager" },
+    query: { page: "2", limit: "10" },
+    tenantModels: { Conversation: mockConversationModel },
+  };
+
+  const res = createMockRes();
+  await getConversations(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(capturedSkip, 10, "Page 2 with limit 10 should skip 10");
+  assert.equal(capturedLimit, 10, "Limit should be 10");
+  assert.equal(res.data.total, 25);
+  assert.equal(res.data.page, 2);
+  assert.equal(res.data.limit, 10);
+  assert.equal(res.data.hasMore, true, "10 + 2 < 25 so hasMore must be true");
+  assert.equal(res.data.conversations.length, 2);
+});
+
 // ============================================================================
 // 4. MESSAGE ACCESS CONTROL IN getMessages
 // ============================================================================

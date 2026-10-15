@@ -274,7 +274,7 @@ export const createCampaign = async (req, res) => {
 
       const io = getIO();
       if (io) {
-        io.to(`org_${orgId}`).emit("campaign_started", {
+        io.to(`org_${orgId}_admins`).emit("campaign_started", {
           campaignId: campaign._id,
           name: campaign.name,
           totalRecipients: campaign.totalRecipients,
@@ -283,7 +283,7 @@ export const createCampaign = async (req, res) => {
     } else if (isScheduled) {
       const io = getIO();
       if (io) {
-        io.to(`org_${req.organization._id}`).emit("campaign_scheduled", {
+        io.to(`org_${req.organization._id}_admins`).emit("campaign_scheduled", {
           campaignId: campaign._id,
           name: campaign.name,
           scheduleType,
@@ -422,7 +422,7 @@ export const startCampaign = async (req, res) => {
 
     const io = getIO();
     if (io) {
-      io.to(`org_${orgId}`).emit("campaign_started", {
+      io.to(`org_${orgId}_admins`).emit("campaign_started", {
         campaignId: campaign._id,
         name: campaign.name,
         totalRecipients: campaign.totalRecipients,
@@ -459,7 +459,7 @@ export const pauseCampaign = async (req, res) => {
 
     const io = getIO();
     if (io) {
-      io.to(`org_${req.organization._id}`).emit("campaign_paused", {
+      io.to(`org_${req.organization._id}_admins`).emit("campaign_paused", {
         campaignId: campaign._id,
         name: campaign.name,
       });
@@ -507,7 +507,7 @@ export const resumeCampaign = async (req, res) => {
 
     const io = getIO();
     if (io) {
-      io.to(`org_${orgId}`).emit("campaign_resumed", {
+      io.to(`org_${orgId}_admins`).emit("campaign_resumed", {
         campaignId: campaign._id,
         name: campaign.name,
       });
@@ -550,7 +550,7 @@ export const cancelCampaign = async (req, res) => {
 
     const io = getIO();
     if (io) {
-      io.to(`org_${req.organization._id}`).emit("campaign_cancelled", {
+      io.to(`org_${req.organization._id}_admins`).emit("campaign_cancelled", {
         campaignId: campaign._id,
         name: campaign.name,
       });
