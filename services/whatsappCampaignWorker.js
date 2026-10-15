@@ -123,7 +123,10 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
     while (isRunning) {
       // 1. Verify campaign status hasn't been changed to Paused or Cancelled
       const currentCampaign = await WhatsAppCampaign.findById(campaignId);
-      if (!currentCampaign || currentCampaign.status !== "Running") {
+      if (
+        !currentCampaign ||
+        (currentCampaign.status !== "Running" && currentCampaign.status !== "Scheduled")
+      ) {
         console.log(`[CampaignWorker] Campaign ${campaignId} status is ${currentCampaign?.status || "null"}. Stopping worker loop.`);
         break;
       }
@@ -162,19 +165,43 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
         });
 
         if (stillSendingCount === 0) {
-          console.log(`[CampaignWorker] All recipients processed for campaign ${campaignId}. Marking completed.`);
-          await WhatsAppCampaign.findByIdAndUpdate(campaignId, {
-            status: "Completed",
-            completedAt: new Date(),
-          });
+          const freshCampaign = await WhatsAppCampaign.findById(campaignId);
+          const hasUpcomingRun =
+            (freshCampaign?.scheduleType === "recurring" || freshCampaign?.scheduleType === "specific_dates") &&
+            freshCampaign?.recurringSchedule?.nextRunAt &&
+            new Date(freshCampaign.recurringSchedule.nextRunAt).getTime() > Date.now();
 
-          const io = getIO();
-          if (io) {
-            io.to(`org_${organizationId}`).emit("campaign_completed", {
-              campaignId,
+          if (hasUpcomingRun) {
+            console.log(
+              `[CampaignWorker] Batch finished for recurring campaign ${campaignId}. Transitioning back to Scheduled for next run at ${freshCampaign.recurringSchedule.nextRunAt}.`
+            );
+            await WhatsAppCampaign.findByIdAndUpdate(campaignId, {
+              status: "Scheduled",
+            });
+
+            const io = getIO();
+            if (io) {
+              io.to(`org_${organizationId}`).emit("campaign_scheduled", {
+                campaignId,
+                status: "Scheduled",
+                nextRunAt: freshCampaign.recurringSchedule.nextRunAt,
+              });
+            }
+          } else {
+            console.log(`[CampaignWorker] All recipients processed for campaign ${campaignId}. Marking completed.`);
+            await WhatsAppCampaign.findByIdAndUpdate(campaignId, {
               status: "Completed",
               completedAt: new Date(),
             });
+
+            const io = getIO();
+            if (io) {
+              io.to(`org_${organizationId}`).emit("campaign_completed", {
+                campaignId,
+                status: "Completed",
+                completedAt: new Date(),
+              });
+            }
           }
         }
         break;

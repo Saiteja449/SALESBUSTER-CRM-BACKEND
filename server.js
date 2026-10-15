@@ -35,6 +35,7 @@ import {
   startWhatsAppWatchdog,
 } from "./whatsapp/whatsappService.js";
 import { resumeInterruptedCampaigns } from "./services/whatsappCampaignWorker.js";
+import { startCampaignScheduler } from "./services/whatsappCampaignScheduler.js";
 
 dotenv.config();
 
@@ -129,4 +130,7 @@ server.listen(PORT, () => {
 
   // Resume any interrupted WhatsApp Cloud campaigns
   resumeInterruptedCampaigns();
+
+  // Start background scheduler for scheduled & recurring campaigns
+  startCampaignScheduler();
 });

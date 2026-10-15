@@ -4,6 +4,7 @@ import {
   buildLeadAudienceQuery,
 } from "./whatsappCloudController.js";
 import { processCampaignQueue } from "../services/whatsappCampaignWorker.js";
+import { computeNextRunDate } from "../services/whatsappCampaignScheduler.js";
 import { getIO } from "../socket/socket.js";
 
 /**
@@ -54,6 +55,12 @@ export const createCampaign = async (req, res) => {
       headerMedia,
       messagesPerSecond,
       autoStart,
+      scheduleType = "immediate",
+      scheduledAt = null,
+      scheduledDates = [],
+      recurringSchedule = null,
+      dynamicAudience = true,
+      preventDuplicateLeads = true,
     } = req.body;
 
     const resolvedTemplateId =
@@ -151,17 +158,56 @@ export const createCampaign = async (req, res) => {
       });
     }
 
-    if (recipientDocs.length === 0) {
+    const isScheduled =
+      scheduleType === "once" ||
+      scheduleType === "recurring" ||
+      scheduleType === "specific_dates" ||
+      req.body.status === "Scheduled";
+
+    // Immediate dispatch requires at least one recipient right now
+    if (!isScheduled && recipientDocs.length === 0) {
       return res.status(400).json({
         success: false,
         message: "No eligible recipients found matching the audience criteria.",
       });
     }
 
-    // 5. Create Campaign Record (Immediate dispatch or draft)
-    const shouldStartNow = !!autoStart || req.body.status === "Running";
-    const campaignStatus = shouldStartNow ? "Running" : "Draft";
+    // 5. Determine Campaign Status & Execution Timestamps
+    const shouldStartNow = !isScheduled && (!!autoStart || req.body.status === "Running");
+    let campaignStatus = "Draft";
+    if (shouldStartNow) {
+      campaignStatus = "Running";
+    } else if (isScheduled) {
+      campaignStatus = "Scheduled";
+    }
+
     const startedAt = shouldStartNow ? new Date() : null;
+
+    // Compute nextRunAt for scheduled / recurring campaigns
+    let computedNextRunAt = null;
+    let safeScheduledAt = scheduledAt ? new Date(scheduledAt) : null;
+
+    if (isScheduled) {
+      if (scheduleType === "once") {
+        if (!safeScheduledAt || isNaN(safeScheduledAt.getTime())) {
+          return res.status(400).json({
+            success: false,
+            message: "Valid scheduledAt date & time is required for one-time scheduled campaigns.",
+          });
+        }
+        computedNextRunAt = safeScheduledAt;
+      } else if (scheduleType === "recurring") {
+        const scheduleCfg = recurringSchedule || {};
+        computedNextRunAt = computeNextRunDate(scheduleCfg, new Date());
+      } else if (scheduleType === "specific_dates") {
+        const scheduleCfg = {
+          frequency: "custom_dates",
+          dates: scheduledDates,
+          time: recurringSchedule?.time || req.body.scheduleTime || "10:00",
+        };
+        computedNextRunAt = computeNextRunDate(scheduleCfg, new Date());
+      }
+    }
 
     const campaign = await WhatsAppCampaign.create({
       name: name.trim(),
@@ -172,26 +218,51 @@ export const createCampaign = async (req, res) => {
       headerMedia: headerMedia || null,
       audienceCriteria: audienceCriteria || {},
       status: campaignStatus,
+      scheduleType: isScheduled ? scheduleType : "immediate",
+      scheduledAt: safeScheduledAt,
+      scheduledDates: Array.isArray(scheduledDates)
+        ? scheduledDates.map((d) => new Date(d)).filter((d) => !isNaN(d.getTime()))
+        : [],
+      recurringSchedule: recurringSchedule
+        ? {
+            frequency: recurringSchedule.frequency || "daily",
+            daysOfWeek: Array.isArray(recurringSchedule.daysOfWeek)
+              ? recurringSchedule.daysOfWeek
+              : [],
+            time: recurringSchedule.time || "10:00",
+            startDate: recurringSchedule.startDate ? new Date(recurringSchedule.startDate) : null,
+            endDate: recurringSchedule.endDate ? new Date(recurringSchedule.endDate) : null,
+            lastRunAt: null,
+            nextRunAt: computedNextRunAt,
+            completedRunsCount: 0,
+          }
+        : {
+            nextRunAt: computedNextRunAt,
+          },
+      dynamicAudience: dynamicAudience !== false,
+      preventDuplicateLeads: preventDuplicateLeads !== false,
       messagesPerSecond: messagesPerSecond
         ? Math.min(80, Math.max(1, parseInt(messagesPerSecond)))
         : req.organization.whatsappCloudSettings?.messagesPerSecond || 5,
-      totalRecipients: recipientDocs.length,
-      queuedCount: recipientDocs.length,
-      skippedCount,
+      totalRecipients: isScheduled ? 0 : recipientDocs.length,
+      queuedCount: isScheduled ? 0 : recipientDocs.length,
+      skippedCount: isScheduled ? 0 : skippedCount,
       startedAt,
       createdBy: req.user?._id || null,
       createdByName: req.user?.name || "Agent",
     });
 
-    // 6. Bulk write recipients attached to campaign._id
-    const recipientInsertBatch = recipientDocs.map((r) => ({
-      ...r,
-      campaignId: campaign._id,
-    }));
+    // 6. Write recipient batch only if immediate launch or static snapshot
+    if (!isScheduled && recipientDocs.length > 0) {
+      const recipientInsertBatch = recipientDocs.map((r) => ({
+        ...r,
+        campaignId: campaign._id,
+      }));
 
-    await WhatsAppCampaignRecipient.insertMany(recipientInsertBatch, {
-      ordered: false,
-    });
+      await WhatsAppCampaignRecipient.insertMany(recipientInsertBatch, {
+        ordered: false,
+      });
+    }
 
     // 7. If autoStart, immediately launch worker
     if (shouldStartNow) {
@@ -209,13 +280,31 @@ export const createCampaign = async (req, res) => {
           totalRecipients: campaign.totalRecipients,
         });
       }
+    } else if (isScheduled) {
+      const io = getIO();
+      if (io) {
+        io.to(`org_${req.organization._id}`).emit("campaign_scheduled", {
+          campaignId: campaign._id,
+          name: campaign.name,
+          scheduleType,
+          nextRunAt: computedNextRunAt,
+        });
+      }
+    }
+
+    let responseMsg = `Campaign saved as draft.`;
+    if (shouldStartNow) {
+      responseMsg = `Campaign launched with ${recipientDocs.length} eligible recipients (${skippedCount} skipped/opted-out).`;
+    } else if (isScheduled) {
+      const runTimeFormatted = computedNextRunAt
+        ? new Date(computedNextRunAt).toLocaleString()
+        : "scheduled date";
+      responseMsg = `Campaign scheduled successfully. Will run on ${runTimeFormatted} checking for matching leads.`;
     }
 
     res.status(201).json({
       success: true,
-      message: shouldStartNow
-        ? `Campaign launched with ${recipientDocs.length} eligible recipients (${skippedCount} skipped/opted-out).`
-        : `Campaign saved as draft with ${recipientDocs.length} eligible recipients (${skippedCount} skipped/opted-out).`,
+      message: responseMsg,
       campaign,
     });
   } catch (error) {
@@ -448,6 +537,9 @@ export const cancelCampaign = async (req, res) => {
     }
 
     campaign.status = "Cancelled";
+    if (campaign.recurringSchedule) {
+      campaign.recurringSchedule.nextRunAt = null;
+    }
     await campaign.save();
 
     // Mark remaining queued recipients as skipped
@@ -646,6 +738,111 @@ export const getCampaignAnalytics = async (req, res) => {
       },
     });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Reschedules an existing scheduled or draft campaign.
+ */
+export const rescheduleCampaign = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      scheduleType = "once",
+      scheduledAt,
+      scheduledDates = [],
+      recurringSchedule = null,
+      preventDuplicateLeads,
+    } = req.body;
+
+    const { WhatsAppCampaign } = req.tenantModels;
+    const campaign = await WhatsAppCampaign.findById(id);
+
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: "Campaign not found." });
+    }
+
+    if (campaign.status === "Running" || campaign.status === "Completed") {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot reschedule campaign with status '${campaign.status}'.`,
+      });
+    }
+
+    let computedNextRunAt = null;
+    let safeScheduledAt = scheduledAt ? new Date(scheduledAt) : null;
+
+    if (scheduleType === "once") {
+      if (!safeScheduledAt || isNaN(safeScheduledAt.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: "Valid scheduledAt date & time is required.",
+        });
+      }
+      computedNextRunAt = safeScheduledAt;
+    } else if (scheduleType === "recurring") {
+      computedNextRunAt = computeNextRunDate(recurringSchedule || {}, new Date());
+    } else if (scheduleType === "specific_dates") {
+      const cfg = {
+        frequency: "custom_dates",
+        dates: scheduledDates,
+        time: recurringSchedule?.time || req.body.scheduleTime || "10:00",
+      };
+      computedNextRunAt = computeNextRunDate(cfg, new Date());
+    }
+
+    campaign.scheduleType = scheduleType;
+    campaign.status = "Scheduled";
+    campaign.scheduledAt = safeScheduledAt;
+    if (Array.isArray(scheduledDates)) {
+      campaign.scheduledDates = scheduledDates
+        .map((d) => new Date(d))
+        .filter((d) => !isNaN(d.getTime()));
+    }
+    if (recurringSchedule) {
+      campaign.recurringSchedule = {
+        frequency: recurringSchedule.frequency || "daily",
+        daysOfWeek: Array.isArray(recurringSchedule.daysOfWeek)
+          ? recurringSchedule.daysOfWeek
+          : [],
+        time: recurringSchedule.time || "10:00",
+        startDate: recurringSchedule.startDate ? new Date(recurringSchedule.startDate) : null,
+        endDate: recurringSchedule.endDate ? new Date(recurringSchedule.endDate) : null,
+        lastRunAt: campaign.recurringSchedule?.lastRunAt || null,
+        nextRunAt: computedNextRunAt,
+        completedRunsCount: campaign.recurringSchedule?.completedRunsCount || 0,
+      };
+    } else {
+      campaign.recurringSchedule = {
+        ...(campaign.recurringSchedule?.toJSON ? campaign.recurringSchedule.toJSON() : campaign.recurringSchedule),
+        nextRunAt: computedNextRunAt,
+      };
+    }
+
+    if (typeof preventDuplicateLeads === "boolean") {
+      campaign.preventDuplicateLeads = preventDuplicateLeads;
+    }
+
+    await campaign.save();
+
+    const io = getIO();
+    if (io) {
+      io.to(`org_${req.organization._id}`).emit("campaign_rescheduled", {
+        campaignId: campaign._id,
+        name: campaign.name,
+        scheduleType,
+        nextRunAt: computedNextRunAt,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Campaign schedule updated. Next run: ${computedNextRunAt ? new Date(computedNextRunAt).toLocaleString() : "configured date"}.`,
+      data: campaign,
+    });
+  } catch (error) {
+    console.error("[CampaignController] Error rescheduling campaign:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

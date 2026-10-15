@@ -21,6 +21,7 @@ import {
   resumeCampaign,
   cancelCampaign,
   retryFailedRecipients,
+  rescheduleCampaign,
   getCampaignRecipients,
   getCampaignAnalytics,
 } from "../controllers/whatsappCampaignController.js";
@@ -84,6 +85,11 @@ router.post(
   "/campaigns/:id/retry-failed",
   requireManagerOrOwner,
   retryFailedRecipients
+);
+router.post(
+  "/campaigns/:id/reschedule",
+  requireManagerOrOwner,
+  rescheduleCampaign
 );
 
 // 5. Recipients & Analytics

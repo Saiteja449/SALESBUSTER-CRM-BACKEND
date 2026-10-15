@@ -122,6 +122,7 @@ const whatsAppCampaignSchema = new mongoose.Schema(
       type: String,
       enum: [
         "Draft",
+        "Scheduled",
         "Queued",
         "Running",
         "Paused",
@@ -131,6 +132,43 @@ const whatsAppCampaignSchema = new mongoose.Schema(
       ],
       default: "Draft",
       index: true,
+    },
+    scheduleType: {
+      type: String,
+      enum: ["immediate", "once", "recurring", "specific_dates"],
+      default: "immediate",
+    },
+    scheduledAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    scheduledDates: [
+      {
+        type: Date,
+      },
+    ],
+    recurringSchedule: {
+      frequency: {
+        type: String,
+        enum: ["daily", "weekly", "custom_dates"],
+        default: "daily",
+      },
+      daysOfWeek: [{ type: Number }], // 0 = Sun, 1 = Mon, ..., 6 = Sat
+      time: { type: String, default: "10:00" }, // "HH:mm" in 24h
+      startDate: { type: Date, default: null },
+      endDate: { type: Date, default: null },
+      lastRunAt: { type: Date, default: null },
+      nextRunAt: { type: Date, default: null, index: true },
+      completedRunsCount: { type: Number, default: 0 },
+    },
+    dynamicAudience: {
+      type: Boolean,
+      default: true,
+    },
+    preventDuplicateLeads: {
+      type: Boolean,
+      default: true,
     },
     messagesPerSecond: {
       type: Number,
@@ -187,6 +225,8 @@ const whatsAppCampaignSchema = new mongoose.Schema(
 );
 
 whatsAppCampaignSchema.index({ status: 1, createdAt: -1 });
+whatsAppCampaignSchema.index({ status: 1, scheduledAt: 1 });
+whatsAppCampaignSchema.index({ status: 1, "recurringSchedule.nextRunAt": 1 });
 
 whatsAppCampaignSchema.set("toJSON", {
   virtuals: true,
