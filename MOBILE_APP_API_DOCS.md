@@ -1,12 +1,12 @@
 # SalesBuster AI — Mobile Application REST API Documentation
 
-This document provides ready-to-use **cURL commands**, request payloads, query parameters, headers, and realistic JSON responses for all API endpoints used by the **SalesBuster Mobile Application**.
+This document provides ready-to-use **cURL commands**, request payloads, query parameters, headers, and realistic JSON responses for all API endpoints used by the **SalesBuster Mobile Application** (iOS & Android).
 
 ---
 
 ## 📌 Mobile App API Configuration
 
-In your mobile app (React Native, Flutter, Swift, Kotlin, etc.), your endpoint constants mapping to the backend:
+In your mobile app (React Native, Flutter, Swift, Kotlin, etc.), map your endpoint constants to the backend:
 
 ```javascript
 // Base URL configuration:
@@ -14,6 +14,7 @@ In your mobile app (React Native, Flutter, Swift, Kotlin, etc.), your endpoint c
 // - Local Dev (Android Emulator): "http://10.0.2.2:5000/api"
 // - Local Dev (iOS Simulator / LAN): "http://<YOUR_LOCAL_IP>:5000/api"
 export const BASE_URL = "https://betaapi.salesbuster.ai/api";
+export const SOCKET_URL = "https://betaapi.salesbuster.ai";
 
 export const API_ENDPOINTS = {
   AUTH: {
@@ -21,6 +22,12 @@ export const API_ENDPOINTS = {
   },
   LEADS: {
     BASE: `${BASE_URL}/leads`,
+    PAGINATED: `${BASE_URL}/leads/paginated`,
+    MISSED_CALL: `${BASE_URL}/leads/missed-call`,
+    INBOUND_CALL: `${BASE_URL}/leads/inbound-call`,
+    RECORDINGS: (leadId) => `${BASE_URL}/leads/${leadId}/recordings`,
+    ANALYZE_RECORDING: (leadId, recordingId) =>
+      `${BASE_URL}/leads/${leadId}/analyze-recording/${recordingId}`,
   },
   USERS: {
     BASE: `${BASE_URL}/users`,
@@ -30,10 +37,25 @@ export const API_ENDPOINTS = {
   },
   ANALYTICS: {
     LOG_CALL: `${BASE_URL}/analytics/log-call`,
+    REP_HISTORY: (salespersonId) => `${BASE_URL}/analytics/${salespersonId}`,
+    TODAY: `${BASE_URL}/analytics/today`,
+  },
+  WHATSAPP: {
+    SEND_MESSAGE: `${BASE_URL}/whatsapp/message/send`,
+    CONVERSATIONS: `${BASE_URL}/whatsapp/conversations`,
+    CHAT_HISTORY: (leadId) => `${BASE_URL}/whatsapp/conversation/${leadId}`,
+    SUMMARIZE: (leadId) => `${BASE_URL}/whatsapp/conversation/${leadId}/summarize`,
   },
   ORGANIZATION: {
     SERVICES: `${BASE_URL}/organization/services`,
     SETTINGS: `${BASE_URL}/organization/settings`,
+    MY_ORG: `${BASE_URL}/organizations/my-org`,
+    QUOTA_SPLIT: `${BASE_URL}/organizations/my-org/quota-split`,
+  },
+  BI_ANALYST: {
+    CHAT: `${BASE_URL}/ai-assistant/chat`,
+    SESSIONS: `${BASE_URL}/ai-assistant/sessions`,
+    SESSION_BY_ID: (chatId) => `${BASE_URL}/ai-assistant/sessions/${chatId}`,
   },
   APK: {
     LATEST: `${BASE_URL}/mobile-app/apk/latest`,
@@ -46,9 +68,10 @@ export const API_ENDPOINTS = {
 
 ## 🔑 Authentication & Tenant Isolation
 
-- **Bearer JWT Token**: Every endpoint except `AUTH.LOGIN` requires the `Authorization: Bearer <TOKEN>` header.
+- **Bearer JWT Token**: Every endpoint except `AUTH.LOGIN` and public APK endpoints requires the `Authorization: Bearer <TOKEN>` header.
 - **Multi-Tenancy**: The JWT token encodes `tenantDbName` and `organizationId`. The backend automatically isolates all queries to the representative's organization workspace.
-- **Token Storage**: Store the returned `token`, `_id`, and `role` securely in the mobile client (e.g. `EncryptedSharedPreferences`, `Keychain`, or `AsyncStorage`).
+- **Modular Add-ons**: Add-on capabilities (`whatsappCampaigns`, `biAnalyst`) are verified dynamically on both JWT authentication and endpoint guards (`requireAddon`).
+- **Token Storage**: Store the returned `token`, `_id`, and `role` securely in the mobile client (`EncryptedSharedPreferences`, `Keychain`, or `AsyncStorage`).
 
 ---
 
@@ -56,7 +79,7 @@ export const API_ENDPOINTS = {
 
 ### `POST /auth/login`
 
-Authenticates the user (Sales Representative or Sales Manager), verifies organization subscription validity, and returns an access token with user details and organization metadata.
+Authenticates the user (Sales Representative or Sales Manager), verifies organization subscription validity, and returns an access token with user details, seat metrics, active add-ons, and daily AI conversation quota counters.
 
 #### Headers:
 
@@ -110,6 +133,24 @@ curl -X POST https://betaapi.salesbuster.ai/api/auth/login \
     "subscriptionStartDate": "2026-09-01T00:00:00.000Z",
     "subscriptionEndDate": "2026-12-01T23:59:59.999Z",
     "status": "active",
+    "whatsappLineLimit": 2,
+    "addons": {
+      "whatsappCampaigns": true,
+      "biAnalyst": true
+    },
+    "dailyAiUsage": {
+      "date": "2026-10-16",
+      "totalApiCalls": 65,
+      "dailyQuotaLimit": 500,
+      "whatsappAiCalls": 42,
+      "callsApiCalls": 15,
+      "biAnalystCalls": 8,
+      "quotaSplit": {
+        "whatsappAi": 250,
+        "calls": 150,
+        "biAnalyst": 100
+      }
+    },
     "isExpired": false,
     "isOrgOwner": false
   }
@@ -120,29 +161,27 @@ curl -X POST https://betaapi.salesbuster.ai/api/auth/login \
 
 ##### Case 1: Organization Workspace Suspended (`403 Forbidden`)
 
-Occurs when the organization account has been suspended by the Super Administrator:
-
 ```json
 {
   "success": false,
+  "accountSuspended": true,
+  "organizationStatus": "suspended",
   "message": "Your organization workspace (Acme Technologies Inc.) is suspended. Please contact administrator."
 }
 ```
 
 ##### Case 2: Organization Workspace Inactive (`403 Forbidden`)
 
-Occurs when the organization account has been set to inactive:
-
 ```json
 {
   "success": false,
+  "accountSuspended": true,
+  "organizationStatus": "inactive",
   "message": "Your organization workspace (Acme Technologies Inc.) is inactive. Please contact administrator."
 }
 ```
 
 ##### Case 3: Organization Subscription Expired (`403 Forbidden`)
-
-Occurs when the subscription validity end date (`subscriptionEndDate`) has passed:
 
 ```json
 {
@@ -161,15 +200,6 @@ Occurs when the subscription validity end date (`subscriptionEndDate`) has passe
 }
 ```
 
-##### Case 5: User Account Not Found (`404 Not Found`)
-
-```json
-{
-  "success": false,
-  "message": "User not found"
-}
-```
-
 ---
 
 ## 2. Leads Management (`LEADS.BASE`)
@@ -178,19 +208,19 @@ Occurs when the subscription validity end date (`subscriptionEndDate`) has passe
 
 ### `GET /leads/paginated`
 
-Fetches a paginated list of leads with full-text search, service filter, sales representative filter, status filter, and tab counters (`New`, `TodayFollowup`, `UpcomingFollowup`, `Converted`, `NotAttended`, `Lost`, `OldLeads`).
+Fetches a paginated list of leads with search, service filter, sales representative filter, status filter, and tab counters.
 
 #### Query Parameters:
 
-| Parameter       | Type             | Required            | Description                                                                                              | Example                    |
-| :-------------- | :--------------- | :------------------ | :------------------------------------------------------------------------------------------------------- | :------------------------- |
-| `page`          | Integer          | No (Default: 0)     | 0-indexed page number                                                                                    | `0`                        |
-| `limit`         | Integer or "All" | No (Default: 10)    | Items per page                                                                                           | `15`                       |
-| `search`        | String           | No                  | Search across name, phone, email, service, city                                                          | `Rahul`                    |
-| `service`       | String           | No (Default: "All") | Filter by specific service                                                                               | `Product Installation`     |
-| `salespersonId` | String           | No                  | Filter by Sales Rep ObjectId                                                                             | `66dd0a1b2c3d4e5f6a7b8c90` |
-| `status`        | String           | No (Default: "All") | Filter by lead status                                                                                    | `Follow Up`                |
-| `leadTypeTab`   | String           | No (Default: "New") | Tab category: `New`, `TodayFollowup`, `UpcomingFollowup`, `Converted`, `NotAttended`, `Lost`, `OldLeads` | `TodayFollowup`            |
+| Parameter | Type | Required | Description | Example |
+|---|---|---|---|---|
+| `page` | Integer | No (Default: 0) | 0-indexed page number | `0` |
+| `limit` | Integer or "All" | No (Default: 10) | Items per page | `15` |
+| `search` | String | No | Search across name, phone, email, service, city | `Rahul` |
+| `service` | String | No (Default: "All") | Filter by specific service | `Product Installation` |
+| `salespersonId` | String | No | Filter by Sales Rep ObjectId | `66dd0a1b2c3d4e5f6a7b8c90` |
+| `status` | String | No (Default: "All") | Filter by lead status | `Follow Up` |
+| `leadTypeTab` | String | No (Default: "New") | Tab: `New`, `TodayFollowup`, `UpcomingFollowup`, `Converted`, `NotAttended`, `Lost`, `OldLeads` | `TodayFollowup` |
 
 #### cURL Request:
 
@@ -217,9 +247,24 @@ curl -X GET "https://betaapi.salesbuster.ai/api/leads/paginated?page=0&limit=10&
       "priority": "High",
       "assignedTo": "66dd0a1b2c3d4e5f6a7b8c90",
       "notes": "Looking for installation next Monday.",
-      "recordings": [],
-      "createdAt": "2026-09-08T10:30:00.000Z",
-      "updatedAt": "2026-09-08T10:30:00.000Z"
+      "recordings": [
+        {
+          "_id": "6701b9a8c7d6e5f4a3b2c1d0",
+          "url": "https://betaapi.salesbuster.ai/uploads/1726501234567-call.mp3",
+          "name": "Sales_Discovery_Call.mp3",
+          "analysisStatus": "completed",
+          "transcription": "Agent: Hello Vikram, calling from Acme. Customer: Yes, I am interested in cloud CRM.",
+          "analysis": {
+            "summary": "Customer expressed strong interest in cloud CRM migration for 15 users.",
+            "sentiment": "Positive",
+            "intent": "Purchase",
+            "actionItems": ["Send quotation by Wednesday", "Schedule technical demo"]
+          },
+          "uploadedAt": "2026-10-16T10:30:00.000Z"
+        }
+      ],
+      "createdAt": "2026-10-16T10:00:00.000Z",
+      "updatedAt": "2026-10-16T10:32:00.000Z"
     }
   ],
   "totalCount": 42,
@@ -239,48 +284,11 @@ curl -X GET "https://betaapi.salesbuster.ai/api/leads/paginated?page=0&limit=10&
 
 ---
 
-### 2.2 Get All Leads (Unpaginated)
-
-### `GET /leads`
-
-Fetches all leads within the tenant database.
-
-#### cURL Request:
-
-```bash
-curl -X GET https://betaapi.salesbuster.ai/api/leads \
-  -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
-```
-
-#### Success Response (`200 OK`):
-
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "_id": "66e10f443b782910c01a2b3c",
-      "name": "Vikram Mehta",
-      "phone": "+91 98200 12345",
-      "email": "vikram@example.com",
-      "service": "Product Installation",
-      "status": "New",
-      "assignedTo": "66dd0a1b2c3d4e5f6a7b8c90",
-      "createdAt": "2026-09-08T10:30:00.000Z"
-    }
-  ]
-}
-```
-
----
-
-### 2.3 Create New Lead
+### 2.2 Create New Lead
 
 ### `POST /leads`
 
-Creates a new lead. If `assignedTo` is omitted or `"Unassigned"`, it is automatically assigned to an active Sales Representative via round-robin.
-
-Supports both **JSON** and **`multipart/form-data`** (when uploading call recordings or attachments).
+Creates a new lead. Supports both **JSON** and **`multipart/form-data`** (when uploading initial audio recordings).
 
 #### Option A: JSON Body (Standard Entry)
 
@@ -300,7 +308,7 @@ curl -X POST https://betaapi.salesbuster.ai/api/leads \
   }'
 ```
 
-#### Option B: Multipart / Form-Data (With Call Audio Recording)
+#### Option B: Multipart / Form-Data (With Call Recording)
 
 ```bash
 curl -X POST https://betaapi.salesbuster.ai/api/leads \
@@ -330,19 +338,152 @@ curl -X POST https://betaapi.salesbuster.ai/api/leads \
     "status": "New",
     "assignedTo": "66dd0a1b2c3d4e5f6a7b8c90",
     "recordings": [],
-    "createdAt": "2026-09-08T11:00:00.000Z",
-    "updatedAt": "2026-09-08T11:00:00.000Z"
+    "createdAt": "2026-10-16T11:00:00.000Z",
+    "updatedAt": "2026-10-16T11:00:00.000Z"
   }
 }
 ```
 
 ---
 
-### 2.4 Update Lead
+### 2.3 Handle Missed Call Event (`POST /leads/missed-call`)
 
-### `PUT /leads/:id`
+Called by Android mobile background service when an incoming call is missed. Automatically finds or creates the lead, schedules a follow-up in "Today's Follow-up", and triggers an automated WhatsApp notification.
 
-Updates lead fields, changes status (e.g. `Follow Up`, `Converted`, `Not Attended`, `Lost`), updates notes, or attaches audio recordings.
+#### cURL Request:
+
+```bash
+curl -X POST https://betaapi.salesbuster.ai/api/leads/missed-call \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
+  -d '{
+    "phone": "+91 98200 55667",
+    "callerName": "Sunil Verma"
+  }'
+```
+
+#### Success Response (`200 OK`):
+
+```json
+{
+  "success": true,
+  "message": "Missed call registered. Followup created and automated WhatsApp notification sent.",
+  "data": {
+    "lead": {
+      "_id": "6701c1a2b3c4d5e6f7a8b9c0",
+      "name": "Sunil Verma",
+      "phone": "+91 98200 55667",
+      "status": "Follow Up",
+      "source": "Missed Call"
+    },
+    "followup": {
+      "_id": "6701c1a2b3c4d5e6f7a8b9c1",
+      "date": "2026-10-16",
+      "time": "11:45",
+      "notes": "Automated missed call follow-up"
+    }
+  }
+}
+```
+
+---
+
+### 2.4 Handle Inbound Call Event (`POST /leads/inbound-call`)
+
+Called when an incoming phone call is answered on the representative's mobile device. Finds existing lead or creates a new one and re-assigns ownership to the answering representative.
+
+#### cURL Request:
+
+```bash
+curl -X POST https://betaapi.salesbuster.ai/api/leads/inbound-call \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
+  -d '{
+    "phone": "+91 98200 55667",
+    "callerName": "Sunil Verma"
+  }'
+```
+
+#### Success Response (`200 OK`):
+
+```json
+{
+  "success": true,
+  "message": "Inbound call resolved. Lead assigned to representative.",
+  "data": {
+    "_id": "6701c1a2b3c4d5e6f7a8b9c0",
+    "name": "Sunil Verma",
+    "phone": "+91 98200 55667",
+    "assignedTo": "66dd0a1b2c3d4e5f6a7b8c90",
+    "source": "Inbound Call"
+  }
+}
+```
+
+---
+
+### 2.5 Attach Call Audio Recording (`POST /leads/:id/recordings`)
+
+Uploads an audio file (`.mp3`, `.wav`, `.m4a`, `.aac`, `.opus` up to 25 MB) to a lead's record and automatically starts AI background transcription and sentiment analysis.
+
+#### cURL Request:
+
+```bash
+curl -X POST https://betaapi.salesbuster.ai/api/leads/66e10f443b782910c01a2b3c/recordings \
+  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
+  -F "recording=@/path/to/Call_20261016.mp3" \
+  -F "recordingName=Call_20261016.mp3"
+```
+
+#### Success Response (`201 Created`):
+
+```json
+{
+  "success": true,
+  "message": "Recording uploaded successfully. AI transcription and analysis started in background.",
+  "data": {
+    "_id": "6701d4a5b6c7d8e9f0a1b2c3",
+    "url": "https://betaapi.salesbuster.ai/uploads/1726504567890-Call_20261016.mp3",
+    "name": "Call_20261016.mp3",
+    "analysisStatus": "processing",
+    "uploadedAt": "2026-10-16T11:50:00.000Z"
+  }
+}
+```
+
+---
+
+### 2.6 Trigger / Retry Audio Analysis (`POST /leads/:id/analyze-recording/:recordingId`)
+
+Triggers or retries AI audio transcription, conversation summarization, and sentiment extraction. **Atomically reserves 1 conversation unit from the Calls channel quota.**
+
+#### cURL Request:
+
+```bash
+curl -X POST https://betaapi.salesbuster.ai/api/leads/66e10f443b782910c01a2b3c/analyze-recording/6701d4a5b6c7d8e9f0a1b2c3 \
+  -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
+```
+
+#### Success Response (`200 OK`):
+
+```json
+{
+  "success": true,
+  "message": "AI audio analysis triggered successfully.",
+  "data": {
+    "recordingId": "6701d4a5b6c7d8e9f0a1b2c3",
+    "analysisStatus": "processing"
+  }
+}
+```
+
+*(Upon completion, the backend broadcasts a `recording_analyzed` Socket.IO event with transcription and analysis).*
+
+---
+
+### 2.7 Update Lead (`PUT /leads/:id`)
+
+Updates lead fields, status, notes, or next follow-up dates.
 
 #### cURL Request:
 
@@ -352,8 +493,8 @@ curl -X PUT https://betaapi.salesbuster.ai/api/leads/66e118993b782910c01a2b45 \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
   -d '{
     "status": "Follow Up",
-    "nextFollowUp": "2026-09-10",
-    "notes": "Client requested proposal quotation via WhatsApp."
+    "nextFollowUp": "2026-10-20",
+    "notes": "Client requested quotation via WhatsApp."
   }'
 ```
 
@@ -365,23 +506,17 @@ curl -X PUT https://betaapi.salesbuster.ai/api/leads/66e118993b782910c01a2b45 \
   "data": {
     "_id": "66e118993b782910c01a2b45",
     "name": "Ananya Sharma",
-    "phone": "+91 98111 22334",
-    "service": "Consultation",
     "status": "Follow Up",
-    "nextFollowUp": "2026-09-10",
-    "notes": "Client requested proposal quotation via WhatsApp.",
-    "updatedAt": "2026-09-08T11:15:00.000Z"
+    "nextFollowUp": "2026-10-20",
+    "notes": "Client requested quotation via WhatsApp.",
+    "updatedAt": "2026-10-16T12:00:00.000Z"
   }
 }
 ```
 
 ---
 
-### 2.5 Delete Lead
-
-### `DELETE /leads/:id`
-
-#### cURL Request:
+### 2.8 Delete Lead (`DELETE /leads/:id`)
 
 ```bash
 curl -X DELETE https://betaapi.salesbuster.ai/api/leads/66e118993b782910c01a2b45 \
@@ -401,13 +536,7 @@ curl -X DELETE https://betaapi.salesbuster.ai/api/leads/66e118993b782910c01a2b45
 
 ## 3. Team & Users Management (`USERS.BASE`)
 
-### 3.1 Get All Team Members / Sales Representatives
-
-### `GET /users`
-
-Fetches all sales representatives in the tenant organization, plus current seat capacity and remaining licenses.
-
-#### cURL Request:
+### 3.1 Get All Team Members & Seat Usage (`GET /users`)
 
 ```bash
 curl -X GET https://betaapi.salesbuster.ai/api/users \
@@ -427,43 +556,20 @@ curl -X GET https://betaapi.salesbuster.ai/api/users \
       "phone": "+91 98765 43210",
       "role": "sales person",
       "status": "active"
-    },
-    {
-      "_id": "66dd0b2c3d4e5f6a7b8c91",
-      "name": "Sara Khan",
-      "email": "sara.k@acmetech.io",
-      "phone": "+91 98765 43211",
-      "role": "sales person",
-      "status": "active"
     }
   ],
   "seats": {
     "totalSeats": 10,
-    "usedSeats": 2,
-    "remainingSeats": 8,
+    "usedSeats": 4,
+    "remainingSeats": 6,
     "isLimitReached": false
-  },
-  "organization": {
-    "id": "66dd0a1a2c3d4e5f6a7b8c8f",
-    "name": "Acme Technologies Inc.",
-    "seats": 10,
-    "subscriptionPlan": "quarterly",
-    "subscriptionStartDate": "2026-09-01T00:00:00.000Z",
-    "subscriptionEndDate": "2026-12-01T23:59:59.999Z",
-    "status": "active"
   }
 }
 ```
 
 ---
 
-### 3.2 Add a New Sales Representative
-
-### `POST /users`
-
-Enforces seat limit checks. If `password` is omitted, auto-generates a secure temporary password and emails credentials directly to the representative.
-
-#### cURL Request:
+### 3.2 Add a New Sales Representative (`POST /users`)
 
 ```bash
 curl -X POST https://betaapi.salesbuster.ai/api/users \
@@ -483,7 +589,6 @@ curl -X POST https://betaapi.salesbuster.ai/api/users \
 {
   "success": true,
   "message": "Sales representative created successfully and login credentials sent via email.",
-  "emailSent": true,
   "data": {
     "_id": "66dd0c3d4e5f6a7b8c92",
     "name": "Karan Patel",
@@ -493,49 +598,8 @@ curl -X POST https://betaapi.salesbuster.ai/api/users \
   },
   "seats": {
     "totalSeats": 10,
-    "usedSeats": 3,
-    "remainingSeats": 7
-  }
-}
-```
-
-#### Error Response when Seat Limit is Reached (`403 Forbidden`):
-
-```json
-{
-  "success": false,
-  "seatLimitReached": true,
-  "message": "Seat limit reached (10/10 seats allocated). Please contact your administrator to upgrade your plan.",
-  "totalSeats": 10,
-  "usedSeats": 10
-}
-```
-
----
-
-### 3.3 Delete Sales Representative
-
-### `DELETE /users/:id`
-
-Deletes a sales representative, reassigns their active leads to `"Unassigned"`, and frees up a subscription license seat.
-
-#### cURL Request:
-
-```bash
-curl -X DELETE https://betaapi.salesbuster.ai/api/users/66dd0c3d4e5f6a7b8c92 \
-  -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
-```
-
-#### Success Response (`200 OK`):
-
-```json
-{
-  "success": true,
-  "message": "Representative removed successfully. Seat freed up.",
-  "seats": {
-    "totalSeats": 10,
-    "usedSeats": 2,
-    "remainingSeats": 8
+    "usedSeats": 5,
+    "remainingSeats": 5
   }
 }
 ```
@@ -544,13 +608,7 @@ curl -X DELETE https://betaapi.salesbuster.ai/api/users/66dd0c3d4e5f6a7b8c92 \
 
 ## 4. Follow-ups Management (`FOLLOWUPS.BASE`)
 
-### 4.1 Get All Follow-ups
-
-### `GET /followups`
-
-Fetches all scheduled follow-ups sorted with newest first.
-
-#### cURL Request:
+### 4.1 Get All Follow-ups (`GET /followups`)
 
 ```bash
 curl -X GET https://betaapi.salesbuster.ai/api/followups \
@@ -568,13 +626,11 @@ curl -X GET https://betaapi.salesbuster.ai/api/followups \
       "leadId": "66e10f443b782910c01a2b3c",
       "leadName": "Vikram Mehta",
       "type": "Call",
-      "date": "2026-09-09",
+      "date": "2026-10-17",
       "time": "14:30",
       "priority": "High",
       "notes": "Discuss technical specifications and quote pricing.",
-      "author": "John Doe",
-      "done": false,
-      "createdAt": "2026-09-08T11:30:00.000Z"
+      "done": false
     }
   ]
 }
@@ -582,25 +638,7 @@ curl -X GET https://betaapi.salesbuster.ai/api/followups \
 
 ---
 
-### 4.2 Create / Schedule a Follow-up
-
-### `POST /followups`
-
-#### Request Body Fields:
-
-| Field      | Type    | Required | Description                                         |
-| :--------- | :------ | :------- | :-------------------------------------------------- |
-| `leadId`   | String  | Yes      | Lead ObjectId                                       |
-| `leadName` | String  | Yes      | Lead full name                                      |
-| `type`     | String  | Yes      | E.g. `"Call"`, `"Meeting"`, `"Email"`, `"WhatsApp"` |
-| `date`     | String  | Yes      | Date string (`YYYY-MM-DD`)                          |
-| `time`     | String  | Yes      | Time string (`HH:mm`)                               |
-| `priority` | String  | No       | `"Low"`, `"Medium"`, `"High"`                       |
-| `notes`    | String  | No       | Detailed follow-up instructions                     |
-| `author`   | String  | No       | Representative's name                               |
-| `done`     | Boolean | No       | Default: `false`                                    |
-
-#### cURL Request:
+### 4.2 Schedule a Follow-up (`POST /followups`)
 
 ```bash
 curl -X POST https://betaapi.salesbuster.ai/api/followups \
@@ -610,12 +648,10 @@ curl -X POST https://betaapi.salesbuster.ai/api/followups \
     "leadId": "66e10f443b782910c01a2b3c",
     "leadName": "Vikram Mehta",
     "type": "Call",
-    "date": "2026-09-09",
+    "date": "2026-10-17",
     "time": "14:30",
     "priority": "High",
-    "notes": "Discuss technical specifications and quote pricing.",
-    "author": "John Doe",
-    "done": false
+    "notes": "Discuss technical specifications and quote pricing."
   }'
 ```
 
@@ -629,27 +665,17 @@ curl -X POST https://betaapi.salesbuster.ai/api/followups \
     "leadId": "66e10f443b782910c01a2b3c",
     "leadName": "Vikram Mehta",
     "type": "Call",
-    "date": "2026-09-09",
+    "date": "2026-10-17",
     "time": "14:30",
     "priority": "High",
-    "notes": "Discuss technical specifications and quote pricing.",
-    "author": "John Doe",
-    "done": false,
-    "createdAt": "2026-09-08T11:30:00.000Z",
-    "updatedAt": "2026-09-08T11:30:00.000Z"
+    "done": false
   }
 }
 ```
 
 ---
 
-### 4.3 Update Follow-up Status
-
-### `PUT /followups/:id`
-
-Marks a follow-up as completed or pending.
-
-#### cURL Request:
+### 4.3 Update Follow-up Done Status (`PUT /followups/:id`)
 
 ```bash
 curl -X PUT https://betaapi.salesbuster.ai/api/followups/66e12a013b782910c01a2b60 \
@@ -667,11 +693,7 @@ curl -X PUT https://betaapi.salesbuster.ai/api/followups/66e12a013b782910c01a2b6
   "success": true,
   "data": {
     "_id": "66e12a013b782910c01a2b60",
-    "leadId": "66e10f443b782910c01a2b3c",
-    "leadName": "Vikram Mehta",
-    "type": "Call",
-    "done": true,
-    "updatedAt": "2026-09-08T12:00:00.000Z"
+    "done": true
   }
 }
 ```
@@ -680,22 +702,9 @@ curl -X PUT https://betaapi.salesbuster.ai/api/followups/66e12a013b782910c01a2b6
 
 ## 5. Telecaller Analytics & Call Logging (`ANALYTICS.LOG_CALL`)
 
-### 5.1 Log a Phone Call
+### 5.1 Log a Phone Call (`POST /analytics/log-call`)
 
-### `POST /analytics/log-call`
-
-Called automatically by the mobile app after a phone call completes or ends. Increments total calls, talk time duration, longest call record, and categorized counters (`incoming`, `outgoing`, `connected`, `missed`, `rejected`, `not-connected`).
-
-#### Request Body Fields:
-
-| Field           | Type   | Required    | Description                                                   |
-| :-------------- | :----- | :---------- | :------------------------------------------------------------ |
-| `salespersonId` | String | Recommended | Sales Rep User ObjectId                                       |
-| `salesperson`   | String | Optional    | Sales Rep Name                                                |
-| `date`          | String | Yes         | Date string (`YYYY-MM-DD`)                                    |
-| `duration`      | Number | Yes         | Call duration in seconds                                      |
-| `callType`      | String | Yes         | `"incoming"` or `"outgoing"`                                  |
-| `status`        | String | Yes         | `"connected"`, `"missed"`, `"rejected"`, or `"not-connected"` |
+Called automatically by the mobile app when an outbound or inbound call terminates.
 
 #### cURL Request:
 
@@ -706,7 +715,7 @@ curl -X POST https://betaapi.salesbuster.ai/api/analytics/log-call \
   -d '{
     "salespersonId": "66dd0a1b2c3d4e5f6a7b8c90",
     "salesperson": "John Doe",
-    "date": "2026-09-08",
+    "date": "2026-10-16",
     "duration": 185,
     "callType": "outgoing",
     "status": "connected"
@@ -722,7 +731,7 @@ curl -X POST https://betaapi.salesbuster.ai/api/analytics/log-call \
     "_id": "66e13b443b782910c01a2b75",
     "salespersonId": "66dd0a1b2c3d4e5f6a7b8c90",
     "salesperson": "John Doe",
-    "date": "2026-09-08",
+    "date": "2026-10-16",
     "totalCalls": 18,
     "talkTime": 2450,
     "longestCall": 380,
@@ -731,22 +740,14 @@ curl -X POST https://betaapi.salesbuster.ai/api/analytics/log-call \
     "connected": 14,
     "missed": 2,
     "rejected": 1,
-    "notConnected": 1,
-    "createdAt": "2026-09-08T09:00:00.000Z",
-    "updatedAt": "2026-09-08T12:05:00.000Z"
+    "notConnected": 1
   }
 }
 ```
 
 ---
 
-### 5.2 Get Rep Performance Analytics (Bonus Mobile Report)
-
-### `GET /analytics/:salespersonId`
-
-Fetches the last 7 days of daily call performance records for the representative.
-
-#### cURL Request:
+### 5.2 Get Rep 7-Day Performance History (`GET /analytics/:salespersonId`)
 
 ```bash
 curl -X GET https://betaapi.salesbuster.ai/api/analytics/66dd0a1b2c3d4e5f6a7b8c90 \
@@ -761,12 +762,10 @@ curl -X GET https://betaapi.salesbuster.ai/api/analytics/66dd0a1b2c3d4e5f6a7b8c9
   "data": [
     {
       "_id": "66e13b443b782910c01a2b75",
-      "date": "2026-09-08",
+      "date": "2026-10-16",
       "totalCalls": 18,
       "talkTime": 2450,
       "longestCall": 380,
-      "incoming": 5,
-      "outgoing": 13,
       "connected": 14,
       "missed": 2
     }
@@ -776,15 +775,82 @@ curl -X GET https://betaapi.salesbuster.ai/api/analytics/66dd0a1b2c3d4e5f6a7b8c9
 
 ---
 
-## 6. Organization Services Catalog (`ORGANIZATION.SERVICES`)
+## 6. WhatsApp Messaging for Mobile Representatives
 
-### `GET /organization/services`
+### 6.1 Send WhatsApp Message to Lead (`POST /whatsapp/message/send`)
 
-_(Also accessible at `GET /organizations/services`)_
-
-Returns the catalog of active services and offerings configured for the organization. Mobile apps use this endpoint to dynamically populate dropdown menus when creating/editing leads, filtering lists, or assigning enquiries.
+Allows sales representatives to send direct messages from their assigned lead view.
 
 #### cURL Request:
+
+```bash
+curl -X POST https://betaapi.salesbuster.ai/api/whatsapp/message/send \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
+  -d '{
+    "leadId": "66e10f443b782910c01a2b3c",
+    "message": "Hello Vikram, following up on our call regarding the Cloud CRM proposal."
+  }'
+```
+
+#### Success Response (`200 OK`):
+
+```json
+{
+  "success": true,
+  "message": "Message dispatched successfully via WhatsApp.",
+  "data": {
+    "messageId": "wamid.HBgMOTE...",
+    "leadId": "66e10f443b782910c01a2b3c",
+    "status": "sent",
+    "timestamp": "2026-10-16T12:15:00.000Z"
+  }
+}
+```
+
+---
+
+### 6.2 Get Lead WhatsApp Conversation History (`GET /whatsapp/conversation/:leadId`)
+
+Fetches all inbound and outbound WhatsApp chat messages with message delivery statuses (`sent`, `delivered`, `read`).
+
+#### cURL Request:
+
+```bash
+curl -X GET https://betaapi.salesbuster.ai/api/whatsapp/conversation/66e10f443b782910c01a2b3c \
+  -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
+```
+
+#### Success Response (`200 OK`):
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "_id": "6701f2a3b4c5d6e7f8a9b0c1",
+      "sender": "lead",
+      "text": "Hi, could you send the pricing for 10 users?",
+      "timestamp": "2026-10-16T10:15:00.000Z"
+    },
+    {
+      "_id": "6701f2a3b4c5d6e7f8a9b0c2",
+      "sender": "agent",
+      "text": "Sure Vikram! Our quarterly plan for 10 seats is 5,990 INR.",
+      "status": "read",
+      "timestamp": "2026-10-16T10:18:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+## 7. Organization Catalog, Profile & Quota Split
+
+### 7.1 Get Organization Services Catalog (`GET /organization/services`)
+
+Used to populate service dropdown menus in lead creation and filtering screens.
 
 ```bash
 curl -X GET https://betaapi.salesbuster.ai/api/organization/services \
@@ -799,18 +865,11 @@ curl -X GET https://betaapi.salesbuster.ai/api/organization/services \
   "data": [
     {
       "name": "General Enquiry",
-      "description": "General inquiry or consultation regarding products, services, and customer requirements.",
-      "keywords": ["enquiry", "inquiry", "details", "information", "help"]
+      "description": "General consultation regarding products and services."
     },
     {
-      "name": "Product Installation",
-      "description": "Full end-to-end on-site hardware and software installation services.",
-      "keywords": ["installation", "setup", "configure", "deployment"]
-    },
-    {
-      "name": "Annual Maintenance (AMC)",
-      "description": "Preventive maintenance, quarterly servicing, and emergency repairs.",
-      "keywords": ["maintenance", "amc", "service", "repair"]
+      "name": "Cloud CRM Migration",
+      "description": "Enterprise cloud database setup and user onboarding."
     }
   ]
 }
@@ -818,18 +877,12 @@ curl -X GET https://betaapi.salesbuster.ai/api/organization/services \
 
 ---
 
-## 7. Organization Profile & Settings (`ORGANIZATION.SETTINGS`)
+### 7.2 Get Organization Profile & Daily Quota Status (`GET /organizations/my-org`)
 
-### `GET /organization/settings`
-
-_(Also accessible at `GET /organization/my-org` or `GET /organizations/my-org`)_
-
-Returns organization details, seat capacities, active subscription status, and AI configuration summary.
-
-#### cURL Request:
+Returns organization settings, active add-ons, and real-time usage metrics across all 3 AI channels.
 
 ```bash
-curl -X GET https://betaapi.salesbuster.ai/api/organization/settings \
+curl -X GET https://betaapi.salesbuster.ai/api/organizations/my-org \
   -H "Authorization: Bearer <YOUR_JWT_TOKEN>"
 ```
 
@@ -839,255 +892,287 @@ curl -X GET https://betaapi.salesbuster.ai/api/organization/settings \
 {
   "success": true,
   "data": {
-    "_id": "66dd0a1a2c3d4e5f6a7b8c8f",
-    "name": "Acme Technologies Inc.",
-    "email": "admin@acmetech.io",
-    "mobile": "+91 98765 43210",
-    "website": "https://acmetech.io",
-    "seats": 10,
-    "usedSeats": 3,
-    "remainingSeats": 7,
-    "amountPaid": 5990,
-    "subscriptionPlan": "quarterly",
-    "subscriptionStartDate": "2026-09-01T00:00:00.000Z",
-    "subscriptionEndDate": "2026-12-01T23:59:59.999Z",
-    "status": "active",
-    "isExpired": false,
-    "remainingDays": 84,
-    "totalLeads": 142,
-    "totalFollowups": 38,
-    "aiSettings": {
-      "companyName": "Acme Technologies Inc.",
-      "businessDescription": "Acme Technologies provides enterprise cloud CRM and telecalling automation solutions.",
-      "agentPersona": "friendly, human sales representative",
-      "services": [
-        {
-          "name": "General Enquiry",
-          "description": "General inquiry or consultation regarding products, services, and customer requirements."
-        },
-        {
-          "name": "Product Installation",
-          "description": "Full end-to-end on-site hardware and software installation services."
-        }
-      ]
-    }
-  }
-}
-```
-
----
-
-## 8. Summary Quick-Reference Table
-
-| Group            | Key        | HTTP Method | Endpoint Path               | Auth Required | Description                     |
-| :--------------- | :--------- | :---------- | :-------------------------- | :------------ | :------------------------------ |
-| **AUTH**         | `LOGIN`    | `POST`      | `/auth/login`               | ❌ No         | Login with email & password     |
-| **LEADS**        | `BASE`     | `GET`       | `/leads/paginated`          | ✅ Bearer JWT | Paginated leads + tab counters  |
-|                  |            | `GET`       | `/leads`                    | ✅ Bearer JWT | Fetch all leads                 |
-|                  |            | `POST`      | `/leads`                    | ✅ Bearer JWT | Create lead (JSON or audio)     |
-|                  |            | `PUT`       | `/leads/:id`                | ✅ Bearer JWT | Update lead status/details      |
-|                  |            | `DELETE`    | `/leads/:id`                | ✅ Bearer JWT | Delete lead                     |
-| **USERS**        | `BASE`     | `GET`       | `/users`                    | ✅ Bearer JWT | List sales reps & seat usage    |
-|                  |            | `POST`      | `/users`                    | ✅ Bearer JWT | Add new sales representative    |
-|                  |            | `DELETE`    | `/users/:id`                | ✅ Bearer JWT | Delete representative           |
-| **FOLLOWUPS**    | `BASE`     | `GET`       | `/followups`                | ✅ Bearer JWT | List all follow-ups             |
-|                  |            | `POST`      | `/followups`                | ✅ Bearer JWT | Schedule a new follow-up        |
-|                  |            | `PUT`       | `/followups/:id`            | ✅ Bearer JWT | Mark done / update follow-up    |
-| **ANALYTICS**    | `LOG_CALL` | `POST`      | `/analytics/log-call`       | ✅ Bearer JWT | Telecaller call log tracker     |
-|                  |            | `GET`       | `/analytics/:salespersonId` | ✅ Bearer JWT | 7-day daily call history        |
-| **ORGANIZATION** | `SERVICES` | `GET`       | `/organization/services`    | ✅ Bearer JWT | Catalog of active services      |
-|                  | `SETTINGS` | `GET`       | `/organization/settings`    | ✅ Bearer JWT | Organization profile & settings |
-
----
-
-## 9. Common Error Codes & Handling in Mobile Apps
-
-| Status Code            | Reason                             | Server Response Flags                          | Mobile App Recommended Action                      |
-| :--------------------- | :--------------------------------- | :--------------------------------------------- | :------------------------------------------------- |
-| **`400 Bad Request`**  | Validation error or duplicate lead | `success: false`                               | Display `message` returned in toast or form alert. |
-| **`401 Unauthorized`** | Token expired or invalid           | `success: false`                               | Clear token and redirect to Login screen.          |
-| **`403 Forbidden`**    | Organization suspended or inactive | `accountSuspended: true`, `organizationStatus` | Navigate to "Workspace Suspended" screen.          |
-| **`403 Forbidden`**    | Organization subscription expired  | `subscriptionExpired: true`                    | Navigate to "Subscription Expired / Renew" screen. |
-| **`403 Forbidden`**    | Seat limit reached                 | `seatLimitReached: true`                       | Display modal prompting to upgrade license plan.   |
-| **`404 Not Found`**    | Resource or user not found         | `success: false`                               | Show not found banner or refresh list.             |
-| **`500 Server Error`** | Unhandled internal exception       | `success: false`                               | Show retry snackbar with exponential backoff.      |
-
----
-
-## 10. Organization Status & Subscription Lifecycle Handling
-
-The backend strictly enforces multi-tenant state and billing controls on **both Login and all authenticated API requests** via server-side middlewares (`tenantMiddleware`, `checkSubscriptionActive`, `protect`).
-
-### 10.1 Organization States Summary
-
-| Status        | `organization.status` | `isExpired` | Meaning                                               | Mobile App Behavior                                       |
-| :------------ | :-------------------- | :---------- | :---------------------------------------------------- | :-------------------------------------------------------- |
-| **Active**    | `"active"`            | `false`     | Workspace in good standing; subscription is valid.    | Full access to leads, calls, analytics, and followups.    |
-| **Suspended** | `"suspended"`         | Any         | Organization workspace frozen by Super Administrator. | Lock app navigation; show "Account Suspended" screen.     |
-| **Inactive**  | `"inactive"`          | Any         | Organization workspace deactivated.                   | Lock app navigation; show "Account Deactivated" screen.   |
-| **Expired**   | `"active"` or Any     | `true`      | `subscriptionEndDate` has passed.                     | Lock creation/update; show "Subscription Expired" screen. |
-
----
-
-### 10.2 Server Response Schemas for Organization Lifecycle Events
-
-All authenticated mobile requests (`/leads`, `/followups`, `/users`, `/analytics`, `/organization/*`) pass through the `checkSubscriptionActive` and `protect` middleware. When an issue occurs, the server responds with **`HTTP 403 Forbidden`** and structured metadata flags:
-
-#### 1. When Organization is Suspended (`403 Forbidden`)
-
-```json
-{
-  "success": false,
-  "accountSuspended": true,
-  "organizationStatus": "suspended",
-  "message": "Your organization workspace (Acme Technologies Inc.) is currently suspended. Please contact SalesBuster administrator."
-}
-```
-
-#### 2. When Organization is Inactive (`403 Forbidden`)
-
-```json
-{
-  "success": false,
-  "accountSuspended": true,
-  "organizationStatus": "inactive",
-  "message": "Your organization workspace (Acme Technologies Inc.) is currently inactive. Please contact SalesBuster administrator."
-}
-```
-
-#### 3. When Organization Subscription is Expired (`403 Forbidden`)
-
-```json
-{
-  "success": false,
-  "subscriptionExpired": true,
-  "message": "Your organization's subscription expired on 01 Dec 2026. Please contact SalesBuster administrator to renew."
-}
-```
-
-#### 4. When Individual Representative Account is Inactive (`403 Forbidden`)
-
-```json
-{
-  "success": false,
-  "accountSuspended": true,
-  "message": "Your user account is deactivated. Please contact your administrator."
-}
-```
-
----
-
-### 10.3 Organization Status in the Login Response (`/auth/login`)
-
-When a user logs in successfully, the `organization` object in the response body always includes live status flags:
-
-```json
-{
-  "success": true,
-  "_id": "66dd0a1b2c3d4e5f6a7b8c90",
-  "name": "John Doe",
-  "email": "salesrep@acmetech.io",
-  "role": "sales person",
-  "token": "eyJhbGciOiJIUzI1NiIs...",
-  "organization": {
     "id": "66dd0a1a2c3d4e5f6a7b8c8f",
     "name": "Acme Technologies Inc.",
+    "email": "billing@acmetech.io",
     "seats": 10,
     "usedSeats": 4,
     "remainingSeats": 6,
     "subscriptionPlan": "quarterly",
-    "subscriptionStartDate": "2026-09-01T00:00:00.000Z",
     "subscriptionEndDate": "2026-12-01T23:59:59.999Z",
-    "status": "active",
-    "isExpired": false,
-    "isOrgOwner": false
+    "whatsappLineLimit": 2,
+    "addons": {
+      "whatsappCampaigns": true,
+      "biAnalyst": true
+    },
+    "dailyAiUsage": {
+      "date": "2026-10-16",
+      "whatsappAiCalls": 42,
+      "callsApiCalls": 15,
+      "biAnalystCalls": 8,
+      "totalApiCalls": 65,
+      "dailyQuotaLimit": 500,
+      "quotaSplit": {
+        "whatsappAi": 250,
+        "calls": 150,
+        "biAnalyst": 100
+      }
+    },
+    "totalLeads": 142,
+    "totalFollowups": 38,
+    "isExpired": false
   }
 }
 ```
 
-- **`status`**: `"active" | "inactive" | "suspended"`
-- **`isExpired`**: `true | false`
-- **`subscriptionEndDate`**: ISO 8601 timestamp string
-- **`remainingSeats`**: Number of available user licenses
-
 ---
 
-### 10.4 Mobile App Axios / Fetch Global Interceptor Example
+### 7.3 Split Daily 500 Conversation Quota (`PUT /organizations/my-org/quota-split`)
 
-In your mobile application, set up a global response interceptor to handle account suspension, expired subscriptions, and token expiration automatically:
+Allows Sales Managers and Owners to partition their organization's fixed daily quota of **500 conversations** across WhatsApp, Calls, and BI Analyst.
 
-```javascript
-import axios from "axios";
-import { navigate } from "./navigationRef"; // Your mobile navigation handler
+#### cURL Request:
 
-const apiClient = axios.create({
-  baseURL: "https://betaapi.salesbuster.ai/api",
-  timeout: 15000,
-});
+```bash
+curl -X PUT https://betaapi.salesbuster.ai/api/organizations/my-org/quota-split \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
+  -d '{
+    "whatsappAi": 250,
+    "calls": 150,
+    "biAnalyst": 100
+  }'
+```
 
-// Attach JWT Token to every outgoing request
-apiClient.interceptors.request.use((config) => {
-  const token = getStoredAuthToken(); // From SecureStorage / AsyncStorage
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
+#### Success Response (`200 OK`):
 
-// Global Error Interceptor for Subscription & Organization Status
-apiClient.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response) {
-      const { status, data } = error.response;
-
-      // 1. Subscription Expired
-      if (status === 403 && data.subscriptionExpired) {
-        navigate("SubscriptionExpiredScreen", {
-          message: data.message,
-        });
-        return Promise.reject(error);
-      }
-
-      // 2. Organization Suspended or Inactive
-      if (status === 403 && data.accountSuspended) {
-        navigate("AccountSuspendedScreen", {
-          status: data.organizationStatus || "suspended",
-          message: data.message,
-        });
-        return Promise.reject(error);
-      }
-
-      // 3. Token Expired or Invalid
-      if (status === 401) {
-        clearAuthToken();
-        navigate("LoginScreen");
-        return Promise.reject(error);
-      }
+```json
+{
+  "success": true,
+  "message": "Daily conversation quota split updated successfully.",
+  "data": {
+    "quotaSplit": {
+      "whatsappAi": 250,
+      "calls": 150,
+      "biAnalyst": 100
+    },
+    "dailyQuotaLimit": 500,
+    "totalAllocated": 500,
+    "unallocated": 0,
+    "usage": {
+      "whatsappAiCalls": 42,
+      "callsApiCalls": 15,
+      "biAnalystCalls": 8,
+      "totalApiCalls": 65
     }
-
-    return Promise.reject(error);
-  },
-);
-
-export default apiClient;
+  }
+}
 ```
 
 ---
 
-## 📌 Mobile App APK Updates & Download
+## 8. BI Analyst AI Assistant (Chat & Voice)
 
-The backend provides public endpoints for checking application updates and downloading the latest Android APK.
+> [!IMPORTANT]
+> - **Access Level**: Restricted strictly to **Sales Managers**, **Organization Owners**, and **Super Admins**.
+> - **Add-on Required**: The organization must have `addons.biAnalyst: true`.
+> - **Quota Enforcement**: Every text query or Gemini Live voice turn atomically reserves **1 unit** from the organization's `biAnalyst` daily quota.
 
-### 1. Check Latest APK Version (`GET /mobile-app/apk/latest`)
+---
 
-Checks if a new build is available:
+### 8.1 Ask CRM Assistant Question (`POST /ai-assistant/chat`)
+
+Processes conversational questions against live tenant CRM records (e.g. leads, conversion metrics, salesperson leaderboard, follow-ups).
+
+#### Request Body:
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `message` | String | **Yes** | Natural language CRM question |
+| `chatId` | String | No | Existing chat session ObjectId (creates new if omitted) |
+
+#### cURL Request:
+
+```bash
+curl -X POST https://betaapi.salesbuster.ai/api/ai-assistant/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <YOUR_MANAGER_JWT_TOKEN>" \
+  -d '{
+    "message": "Who are our top 3 performing sales representatives this month?",
+    "chatId": "6702a1b2c3d4e5f6a7b8c901"
+  }'
+```
+
+#### Success Response (`200 OK`):
+
+```json
+{
+  "success": true,
+  "chatId": "6702a1b2c3d4e5f6a7b8c901",
+  "reply": "Here are the top performing sales representatives for this month:\n\n1. **John Doe**: 18 leads handled, 7 won deals, 38.8% conversion rate.\n2. **Sara Khan**: 15 leads handled, 5 won deals, 33.3% conversion rate.\n3. **Karan Patel**: 12 leads handled, 3 won deals, 25.0% conversion rate.",
+  "options": [
+    "View John Doe's active leads",
+    "Show conversion rates by lead source",
+    "Inspect pending follow-ups"
+  ],
+  "toolsUsed": [
+    "get_salesperson_performance"
+  ],
+  "modelUsed": "gemini-2.5-flash",
+  "executionTimeMs": 1340,
+  "updatedAt": "2026-10-16T12:30:00.000Z"
+}
+```
+
+#### Error Response: Add-on Inactive (`403 Forbidden`):
+
+```json
+{
+  "success": false,
+  "message": "This feature requires the biAnalyst add-on. Please upgrade your organization plan to access this feature.",
+  "addonRequired": "biAnalyst"
+}
+```
+
+#### Error Response: Quota Exhausted (`429 Too Many Requests`):
+
+```json
+{
+  "success": false,
+  "message": "Daily quota limit for BI Analyst reached (100/100). Resets at 00:00 UTC.",
+  "quotaExceeded": true,
+  "channel": "biAnalyst",
+  "used": 100,
+  "limit": 100
+}
+```
+
+---
+
+### 8.2 Get Assistant Chat Sessions (`GET /ai-assistant/sessions`)
+
+Fetches all conversation sessions with smart titles and message counts for the sidebar drawer:
+
+```bash
+curl -X GET https://betaapi.salesbuster.ai/api/ai-assistant/sessions \
+  -H "Authorization: Bearer <YOUR_MANAGER_JWT_TOKEN>"
+```
+
+#### Success Response (`200 OK`):
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "_id": "6702a1b2c3d4e5f6a7b8c901",
+      "title": "Top performing sales reps this month",
+      "messageCount": 4,
+      "lastMessageSnippet": "Here are the top performing sales representatives for this month",
+      "updatedAt": "2026-10-16T12:30:00.000Z",
+      "createdAt": "2026-10-16T12:20:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### 8.3 Get Full Chat Session Thread (`GET /ai-assistant/sessions/:chatId`)
+
+```bash
+curl -X GET https://betaapi.salesbuster.ai/api/ai-assistant/sessions/6702a1b2c3d4e5f6a7b8c901 \
+  -H "Authorization: Bearer <YOUR_MANAGER_JWT_TOKEN>"
+```
+
+#### Success Response (`200 OK`):
+
+```json
+{
+  "success": true,
+  "data": {
+    "_id": "6702a1b2c3d4e5f6a7b8c901",
+    "title": "Top performing sales reps this month",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Who are our top 3 performing sales representatives this month?",
+        "timestamp": "2026-10-16T12:20:00.000Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Here are the top performing sales representatives for this month...",
+        "options": ["View John Doe's active leads"],
+        "toolsUsed": ["get_salesperson_performance"],
+        "timestamp": "2026-10-16T12:20:01.340Z"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 8.4 Delete Chat Session (`DELETE /ai-assistant/sessions/:chatId`)
+
+```bash
+curl -X DELETE https://betaapi.salesbuster.ai/api/ai-assistant/sessions/6702a1b2c3d4e5f6a7b8c901 \
+  -H "Authorization: Bearer <YOUR_MANAGER_JWT_TOKEN>"
+```
+
+#### Success Response (`200 OK`):
+
+```json
+{
+  "success": true,
+  "message": "Chat session deleted successfully."
+}
+```
+
+---
+
+### 8.5 Gemini Live Real-Time Bidirectional Voice Assistant over Socket.IO
+
+Enables interactive speech-to-speech conversations with native CRM database tool execution.
+
+#### Connecting Socket.IO in Mobile (React Native / Flutter / Native):
+
+```javascript
+import { io } from "socket.io-client";
+
+const socket = io("https://betaapi.salesbuster.ai", {
+  auth: {
+    token: userJwtToken, // Sales Manager JWT
+  },
+  transports: ["websocket"],
+});
+```
+
+#### Socket.IO Event Reference:
+
+| Event Name | Direction | Payload Example | Description |
+|---|---|---|---|
+| `bi_voice_start` | Mobile &rarr; Server | `{ voiceName: "Aoede" }` | Starts session. Voices: `Aoede`, `Charon`, `Kore`, `Fenrir`, `Puck`. |
+| `bi_voice_audio_in` | Mobile &rarr; Server | `"base64PCM16kHzString..."` | Sends PCM 16kHz audio chunk from user microphone. |
+| `bi_voice_audio_out` | Server &rarr; Mobile | `{ mimeType: "audio/pcm;rate=24000", data: "base64..." }` | Receives PCM 24kHz audio chunk for native speaker playback. |
+| `bi_voice_transcript`| Server &rarr; Mobile | `{ role: "assistant", text: "Here are..." }` | Live subtitle text stream. |
+| `bi_voice_status` | Server &rarr; Mobile | `{ state: "connected" \| "tool_running" \| "speaking" \| "closed", toolName? }` | Real-time state indicators for UI badge. |
+| `bi_voice_turn_complete` | Server &rarr; Mobile | `{}` | Emitted when assistant finishes current turn. |
+| `bi_voice_interrupted` | Server &rarr; Mobile | `{}` | Emitted when user speaks mid-assistant audio (barge-in). |
+| `bi_voice_stop` | Mobile &rarr; Server | `{}` | Ends voice session. |
+| `bi_voice_error` | Server &rarr; Mobile | `{ message, quotaExceeded?: true }` | Emitted when quota runs out or session fails. |
+
+---
+
+## 9. Mobile App APK Updates & Direct Download
+
+### 9.1 Check Latest APK Version (`GET /mobile-app/apk/latest`)
 
 ```bash
 curl -X GET https://betaapi.salesbuster.ai/api/mobile-app/apk/latest
 ```
 
-**Response (`200 OK`)**:
+#### Success Response (`200 OK`):
 
 ```json
 {
@@ -1096,17 +1181,89 @@ curl -X GET https://betaapi.salesbuster.ai/api/mobile-app/apk/latest
     "version": "1.0.4",
     "versionCode": 4,
     "minSupportedVersion": "1.0.0",
-    "releaseNotes": "Added background call recording and real-time lead sync.",
+    "releaseNotes": "Added background call recording, real-time lead sync, and quota split monitor.",
     "fileSizeFormatted": "43.12 MB",
     "downloadUrl": "https://betaapi.salesbuster.ai/api/mobile-app/apk/download"
   }
 }
 ```
 
-### 2. Direct APK Download (`GET /mobile-app/apk/download`)
+---
 
-Initiates direct file download for Android clients:
+### 9.2 Direct APK Download (`GET /mobile-app/apk/download`)
 
 ```bash
 curl -O -J https://betaapi.salesbuster.ai/api/mobile-app/apk/download
+```
+
+---
+
+## 10. Common Error Codes & Mobile Interceptor Reference
+
+| Status Code | Reason | Flags in Body | Recommended Mobile Action |
+|---|---|---|---|
+| `400 Bad Request` | Missing field or invalid input | `success: false` | Display toast or form alert message. |
+| `401 Unauthorized` | Token expired or invalid | `success: false` | Clear stored credentials and navigate to Login. |
+| `403 Forbidden` | Workspace suspended | `accountSuspended: true` | Lock navigation; show "Account Suspended" screen. |
+| `403 Forbidden` | Subscription expired | `subscriptionExpired: true` | Lock navigation; show "Subscription Expired" screen. |
+| `403 Forbidden` | Feature add-on missing | `addonRequired: "biAnalyst"` | Prompt manager to unlock add-on. |
+| `403 Forbidden` | Seat limit reached | `seatLimitReached: true` | Show "Upgrade Plan / Seat Limit Reached" alert. |
+| `404 Not Found` | Resource or lead missing | `success: false` | Show not-found banner or refresh list. |
+| `429 Too Many Requests` | Daily AI conversation quota full | `quotaExceeded: true` | Show "Daily conversation quota reached (resets 00:00 UTC)". |
+| `500 Server Error` | Backend server exception | `success: false` | Show retry snackbar with exponential backoff. |
+
+---
+
+### Mobile App Axios Global Interceptor Example
+
+```javascript
+import axios from "axios";
+import { navigate } from "./navigationRef";
+
+const apiClient = axios.create({
+  baseURL: "https://betaapi.salesbuster.ai/api",
+  timeout: 15000,
+});
+
+apiClient.interceptors.request.use((config) => {
+  const token = getStoredAuthToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response) {
+      const { status, data } = error.response;
+
+      if (status === 403 && data.subscriptionExpired) {
+        navigate("SubscriptionExpiredScreen", { message: data.message });
+        return Promise.reject(error);
+      }
+
+      if (status === 403 && data.accountSuspended) {
+        navigate("AccountSuspendedScreen", { message: data.message });
+        return Promise.reject(error);
+      }
+
+      if (status === 429 && data.quotaExceeded) {
+        showToastAlert(`Quota limit reached for ${data.channel}. Resets at 00:00 UTC.`);
+        return Promise.reject(error);
+      }
+
+      if (status === 401) {
+        clearAuthToken();
+        navigate("LoginScreen");
+        return Promise.reject(error);
+      }
+    }
+
+    return Promise.reject(error);
+  }
+);
+
+export default apiClient;
 ```
