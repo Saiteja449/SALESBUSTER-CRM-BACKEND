@@ -9,6 +9,7 @@ import {
   logoutWhatsApp,
   getWhatsAppStatus,
   sendMessageFromCRM,
+  sendDocumentMessageFromCRM,
   getSystemSettings,
   updateSystemSettings,
   DEFAULT_WELCOME_MESSAGE_TEMPLATE,
@@ -767,6 +768,125 @@ export const sendMessage = async (req, res) => {
     res.status(200).json(messageRecord);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Send WhatsApp document (PDF/Word) with text/caption
+// @route   POST /api/whatsapp/send-document
+// @access  Protected / Tenant Webhook API
+export const sendDocumentMessage = async (req, res) => {
+  try {
+    const file = req.file;
+    const fileUrl = req.body?.fileUrl || req.body?.documentUrl;
+
+    if (!file && !fileUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "A document file (.pdf, .docx, .doc) or valid fileUrl is required.",
+      });
+    }
+
+    const phoneOrLeadId =
+      req.body?.phone ||
+      req.body?.phoneNumber ||
+      req.body?.mobile ||
+      req.body?.to ||
+      req.body?.leadId;
+
+    if (!phoneOrLeadId) {
+      return res.status(400).json({
+        success: false,
+        message: "Recipient phone number or leadId is required.",
+      });
+    }
+
+    // Resolve organization
+    let orgId = req.user?.organizationId
+      ? req.user.organizationId.toString()
+      : req.organization?._id
+        ? req.organization._id.toString()
+        : null;
+
+    if (!orgId) {
+      const { Organization } = getMasterModels();
+      const secretOrKey =
+        req.headers["x-webhook-secret"] ||
+        req.headers["x-api-key"] ||
+        req.query?.secret ||
+        req.query?.apiKey ||
+        req.body?.secret ||
+        req.body?.apiKey;
+
+      if (secretOrKey) {
+        const orgBySecret = await Organization.findOne({ webhookKey: secretOrKey });
+        if (orgBySecret) {
+          orgId = orgBySecret._id.toString();
+          req.organization = orgBySecret;
+          const { getTenantModels } = await import("../services/tenantManager.js");
+          req.tenantModels = await getTenantModels(orgBySecret.tenantDbName);
+        }
+      }
+    }
+
+    if (!orgId) {
+      return res.status(401).json({
+        success: false,
+        message: "Organization authentication required. Please provide a valid Bearer token, x-webhook-secret, or x-api-key.",
+      });
+    }
+
+    const captionText = req.body?.caption || req.body?.text || req.body?.message || "";
+    const senderName = req.body?.senderName || req.user?.name || req.organization?.name || "Organization";
+
+    let targetSessionId = req.body?.sessionId;
+    const senderRole = req.user?.role;
+    let salesRepId = null;
+
+    if (senderRole === "sales person" && req.user?._id) {
+      salesRepId = req.user._id.toString();
+      targetSessionId = `org_${orgId}_user_${salesRepId}`;
+    } else if (orgId && !targetSessionId) {
+      targetSessionId = `org_${orgId}`;
+    }
+
+    const documentData = file
+      ? {
+          filePath: file.path,
+          fileName: req.body?.fileName || file.originalname,
+          originalName: file.originalname,
+          mimetype: file.mimetype,
+          mediaUrl: `/uploads/documents/${file.filename}`,
+        }
+      : {
+          fileUrl,
+          fileName: req.body?.fileName || "document.pdf",
+        };
+
+    const result = await sendDocumentMessageFromCRM(
+      phoneOrLeadId,
+      documentData,
+      captionText,
+      senderName,
+      {
+        organizationId: orgId,
+        tenantModels: req.tenantModels,
+        sessionId: targetSessionId,
+        salesRepId,
+        recipientName: req.body?.recipientName || req.body?.name || "",
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "WhatsApp document sent successfully",
+      data: result,
+    });
+  } catch (error) {
+    console.error("[WhatsApp sendDocumentMessage error]:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to send WhatsApp document",
+    });
   }
 };
 

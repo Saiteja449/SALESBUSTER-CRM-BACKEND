@@ -30,24 +30,72 @@ export const tenantMiddleware = async (req, res, next) => {
       }
     }
 
-    // 2. Only allow explicit headers or query params if NO authenticated user token is provided
+    // 2. Check webhook secret or API key (e.g. for external status webhook or API integrations)
+    const secretOrKey =
+      req.headers["x-webhook-secret"] ||
+      req.headers["x-api-key"] ||
+      req.query?.secret ||
+      req.query?.apiKey ||
+      req.body?.secret ||
+      req.body?.apiKey;
+
+    const { Organization } = getMasterModels();
+
+    if (!organizationId && secretOrKey) {
+      try {
+        const orgBySecret = await Organization.findOne({ webhookKey: secretOrKey });
+        if (orgBySecret) {
+          req.organization = orgBySecret;
+          organizationId = orgBySecret._id;
+          tenantDbName = orgBySecret.tenantDbName;
+        }
+      } catch (e) {
+        console.error("Error looking up organization by webhookKey in tenantMiddleware:", e);
+      }
+    }
+
+    // 3. Check explicit organization ID from headers, query, or body (e.g. website lead submission)
+    if (!organizationId) {
+      const explicitOrgId =
+        req.headers["x-organization-id"] ||
+        req.headers["x-org-id"] ||
+        req.query?.orgId ||
+        req.query?.organizationId ||
+        req.body?.organizationId ||
+        req.body?.orgId;
+
+      if (explicitOrgId) {
+        try {
+          const org = await Organization.findById(explicitOrgId);
+          if (org) {
+            req.organization = org;
+            organizationId = org._id;
+            tenantDbName = org.tenantDbName;
+          }
+        } catch (e) {
+          // might not be a valid ObjectId
+        }
+      }
+    }
+
+    // 4. Only allow explicit headers or query params if NO authenticated user token or secret was matched
     // (Genuinely unauthenticated public endpoints like website lead capture or static chat can use this)
     if (!req.headers.authorization && !tenantDbName) {
       tenantDbName =
         req.headers["x-tenant-db"] ||
         req.headers["x-tenant-id"] ||
-        req.query.tenantDb ||
+        req.query?.tenantDb ||
+        req.body?.tenantDb ||
         null;
     }
 
-    // 3. Attach tenant models
+    // 5. Attach tenant models
     req.tenantDbName = tenantDbName;
     req.tenantModels = getTenantModels(tenantDbName);
 
-    // 4. If organizationId exists, fetch and attach organization details
-    if (organizationId) {
+    // 6. If organizationId exists and req.organization not yet set, fetch and attach organization details
+    if (organizationId && !req.organization) {
       try {
-        const { Organization } = getMasterModels();
         const org = await Organization.findById(organizationId);
         if (org) {
           req.organization = org;
@@ -55,9 +103,8 @@ export const tenantMiddleware = async (req, res, next) => {
       } catch (orgErr) {
         console.error("Error loading organization in tenantMiddleware:", orgErr);
       }
-    } else if (tenantDbName) {
+    } else if (tenantDbName && !req.organization) {
       try {
-        const { Organization } = getMasterModels();
         const org = await Organization.findOne({ tenantDbName });
         if (org) {
           req.organization = org;
@@ -89,7 +136,7 @@ export const checkSubscriptionActive = (req, res, next) => {
     return next();
   }
 
-  // 2. Bypass public authentication routes, static chat, and health checks
+  // 2. Bypass public authentication routes, static chat, webhooks, website leads, and health checks
   const path = req.path || req.originalUrl || "";
   if (
     path.startsWith("/api/auth/login") ||
@@ -99,6 +146,8 @@ export const checkSubscriptionActive = (req, res, next) => {
     path.startsWith("/api/whatsapp/cloud/webhook") ||
     path.startsWith("/api/meta/webhook") ||
     path.startsWith("/api/webhooks/meta") ||
+    path.startsWith("/api/leads/webhook/status") ||
+    path.startsWith("/api/website") ||
     path === "/" ||
     path === "/health"
   ) {

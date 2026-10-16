@@ -26,6 +26,7 @@ import {
   getOrganizationSettings,
   uploadServiceImage,
   updateQuotaSplit,
+  regenerateWebhookKey,
 } from "../controllers/organizationController.js";
 import { protect, verifySuperAdmin } from "../middleware/authMiddleware.js";
 
@@ -97,6 +98,12 @@ const requireManagerOrOwner = (req, res, next) => {
 
 // Organization Owner Profile (Read-only view for current tenant owner)
 router.get("/my-org", protect, getMyOrganization);
+router.post(
+  "/my-org/regenerate-webhook-key",
+  protect,
+  requireManagerOrOwner,
+  regenerateWebhookKey,
+);
 
 // Tenant AI Settings & Knowledge Base (Tenant Owner / Sales Manager)
 router.get("/my-org/ai-settings", protect, getMyAISettings);

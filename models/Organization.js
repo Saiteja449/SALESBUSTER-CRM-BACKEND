@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import crypto from "crypto";
 
 // Sub-Schema for Service Images & Descriptions
 export const serviceImageSubSchema = new mongoose.Schema(
@@ -401,6 +402,14 @@ const organizationSchema = new mongoose.Schema(
         type: Date,
         default: null,
       },
+    },
+    webhookKey: {
+      type: String,
+      unique: true,
+      sparse: true,
+      trim: true,
+      index: true,
+      default: () => "sb_whk_" + crypto.randomBytes(16).toString("hex"),
     },
   },
   {

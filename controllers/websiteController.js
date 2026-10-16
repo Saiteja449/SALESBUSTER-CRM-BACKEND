@@ -1,11 +1,75 @@
 import Lead from "../models/Lead.js";
 import User from "../models/User.js";
 import AssignmentState from "../models/AssignmentState.js";
+import Notification from "../models/Notification.js";
+import { getMasterModels, getTenantModels } from "../services/tenantManager.js";
+import { getIO } from "../socket/socket.js";
 import { sendWelcomeEnquiryMessage } from "../whatsapp/whatsappService.js";
 
 export const receiveWebsiteLead = async (req, res) => {
   try {
-    // Support various naming conventions from the website form
+    // 1. Resolve Organization & Tenant Models if not already bound
+    let organization = req.organization || null;
+    let tenantModels = req.tenantModels || null;
+
+    if (!organization) {
+      const explicitOrgId =
+        req.params?.orgId ||
+        req.query?.orgId ||
+        req.query?.organizationId ||
+        req.body?.organizationId ||
+        req.body?.orgId ||
+        req.headers?.["x-organization-id"] ||
+        req.headers?.["x-org-id"];
+
+      const apiKey =
+        req.headers?.["x-api-key"] ||
+        req.headers?.["x-webhook-secret"] ||
+        req.query?.apiKey ||
+        req.body?.apiKey;
+
+      const { Organization } = getMasterModels();
+
+      if (explicitOrgId) {
+        try {
+          organization = await Organization.findById(explicitOrgId);
+        } catch (e) {}
+      } else if (apiKey) {
+        try {
+          organization = await Organization.findOne({ webhookKey: apiKey });
+        } catch (e) {}
+      }
+
+      if (organization) {
+        req.organization = organization;
+        tenantModels = getTenantModels(organization.tenantDbName);
+        req.tenantModels = tenantModels;
+      }
+    }
+
+    const orgId =
+      organization?._id ||
+      req.body?.organizationId ||
+      req.query?.orgId ||
+      null;
+
+    // Check account status if organization is known
+    if (organization) {
+      if (organization.status === "inactive" || organization.status === "suspended") {
+        return res.status(403).json({
+          success: false,
+          message: "Organization account is inactive or suspended.",
+        });
+      }
+      if (organization.subscriptionEndDate && new Date() > new Date(organization.subscriptionEndDate)) {
+        return res.status(403).json({
+          success: false,
+          message: "Organization subscription has expired.",
+        });
+      }
+    }
+
+    // 2. Support various naming conventions from website form submissions
     const rawName =
       req.body.name || req.body.fullName || req.body.full_name || "";
     const rawMobile =
@@ -28,6 +92,7 @@ export const receiveWebsiteLead = async (req, res) => {
       req.body.service ||
       req.body.serviceRequired ||
       req.body.service_required ||
+      req.body.requirement ||
       "";
     const rawMessage =
       req.body.message ||
@@ -48,11 +113,6 @@ export const receiveWebsiteLead = async (req, res) => {
     const errors = [];
     if (!name) errors.push("Full Name is required");
     if (!mobile) errors.push("Mobile Number is required");
-    // Email is optional on the website form (no asterisk on the UI)
-    if (!location) errors.push("State / Location is required");
-    if (!service || service.toLowerCase().includes("select from")) {
-      errors.push("Service is required");
-    }
 
     if (errors.length > 0) {
       return res.status(400).json({ success: false, errors });
@@ -73,6 +133,7 @@ export const receiveWebsiteLead = async (req, res) => {
     ];
     if (last10Digits.length >= 7) {
       orConditions.push({ phone: new RegExp(last10Digits + "$") });
+      orConditions.push({ phoneNormalized: last10Digits });
     }
     if (email) {
       orConditions.push({ email: new RegExp("^" + email + "$", "i") });
@@ -80,94 +141,71 @@ export const receiveWebsiteLead = async (req, res) => {
 
     const LeadModel = req.tenantModels?.Lead || Lead;
     const UserModel = req.tenantModels?.User || User;
-    const AssignmentStateModel = req.tenantModels?.AssignmentState || AssignmentState;
+    const AssignmentStateModel =
+      req.tenantModels?.AssignmentState || AssignmentState;
+    const NotificationModel = req.tenantModels?.Notification || Notification;
 
+    // 3. Duplicate lead check
     const existingLead = await LeadModel.findOne({ $or: orConditions });
     if (existingLead) {
+      if (message) {
+        existingLead.notes = existingLead.notes
+          ? `${existingLead.notes} | [New Website Submission: ${message}]`
+          : message;
+        existingLead.lastActivity = new Date();
+        await existingLead.save();
+      }
+
+      const io = getIO();
+      if (io && orgId) {
+        io.to(`org_${orgId}`).emit("conversation_updated", {
+          leadId: existingLead._id,
+          status: existingLead.status,
+          lead: existingLead,
+        });
+      }
+
       return res.status(200).json({
         success: true,
         message: "Form submitted successfully. We will contact you soon!",
         leadId: existingLead._id,
+        isExisting: true,
       });
     }
 
-    const mapService = (incomingService) => {
-      if (!incomingService) return "General Enquiry";
-      const valid = [
-        "General Enquiry",
-        "Passenger Lift",
-        "MRL Lift",
-        "Hydraulic Lift",
-        "Hospital Bed Lift",
-        "Elevator Maintenance & AMC",
-        "Elevator Modernization",
-      ];
-      const match = valid.find(
-        (v) => v.toLowerCase() === incomingService.trim().toLowerCase(),
-      );
-      if (match) return match;
-
-      const s = incomingService.toLowerCase();
-      if (
-        s.includes("mrl") ||
-        s.includes("machine room less") ||
-        s.includes("no machine room")
-      )
-        return "MRL Lift";
-      if (
-        s.includes("hydraulic") ||
-        s.includes("villa") ||
-        s.includes("home lift") ||
-        s.includes("warehouse") ||
-        s.includes("cargo") ||
-        s.includes("industrial")
-      )
-        return "Hydraulic Lift";
-      if (
-        s.includes("hospital") ||
-        s.includes("bed lift") ||
-        s.includes("stretcher") ||
-        s.includes("clinic") ||
-        s.includes("medical")
-      )
-        return "Hospital Bed Lift";
-      if (
-        s.includes("moderniz") ||
-        s.includes("modernis") ||
-        s.includes("upgrade lift") ||
-        s.includes("replace lift") ||
-        s.includes("replacement")
-      )
-        return "Elevator Modernization";
-      if (
-        s.includes("maintenance") ||
-        s.includes("amc") ||
-        s.includes("servicing") ||
-        s.includes("breakdown") ||
-        s.includes("repair")
-      )
-        return "Elevator Maintenance & AMC";
-      if (
-        s.includes("passenger") ||
-        s.includes("apartment") ||
-        s.includes("office") ||
-        s.includes("elevator") ||
-        s.includes("lift")
-      )
-        return "Passenger Lift";
-      return "General Enquiry";
+    // 4. Dynamic & Generic Service Mapping
+    const resolveService = (incoming) => {
+      if (!incoming || incoming.toLowerCase().includes("select from")) {
+        return "General Enquiry";
+      }
+      // Check against organization services catalog if configured
+      const orgServices = organization?.aiSettings?.services || [];
+      if (orgServices.length > 0) {
+        const found = orgServices.find(
+          (s) =>
+            s.name.toLowerCase() === incoming.toLowerCase() ||
+            (s.keywords &&
+              s.keywords.some((kw) =>
+                incoming.toLowerCase().includes(kw.toLowerCase()),
+              )),
+        );
+        if (found) return found.name;
+      }
+      return incoming;
     };
 
     const notesParts = [];
     if (message) notesParts.push(message);
-    if (location) notesParts.push(`State: ${location}`);
+    if (location) notesParts.push(`Location: ${location}`);
+
+    const resolvedService = resolveService(service);
 
     const leadData = {
       name: name,
       phone: mobile,
       email: email,
       city: location,
-      service: mapService(service),
+      service: resolvedService,
       notes: notesParts.length > 0 ? notesParts.join(" | ") : "Website Inquiry",
       source: "Website Form",
       status: "New",
@@ -175,6 +213,7 @@ export const receiveWebsiteLead = async (req, res) => {
       joinedAt: new Date(),
     };
 
+    // 5. Round-robin assignment among sales reps
     const reps = await UserModel.find({ role: "sales person" }).sort({ _id: 1 });
     if (reps && reps.length > 0) {
       let state = await AssignmentStateModel.findOne({ key: "leadAssignment" });
@@ -195,16 +234,37 @@ export const receiveWebsiteLead = async (req, res) => {
       await state.save();
     }
 
+    // 6. Create Lead
     const lead = await LeadModel.create(leadData);
 
-    // Send automated WhatsApp welcome enquiry message asynchronously
-    const orgId =
-      req.organization?._id ||
-      req.userTokenData?.organizationId ||
-      req.body.organizationId ||
-      req.query.organizationId ||
-      null;
+    // 7. In-App CRM Notification
+    if (NotificationModel) {
+      NotificationModel.create({
+        title: "New Website Lead",
+        message: `New website lead received: ${lead.name} (${lead.phone}) for ${lead.service}.`,
+        type: "lead_create",
+        targetRoles: ["sales manager"],
+        targetUsers:
+          lead.assignedTo && lead.assignedTo !== "Unassigned"
+            ? [lead.assignedTo]
+            : [],
+      }).catch((notifErr) =>
+        console.error("Error creating website lead notification:", notifErr),
+      );
+    }
 
+    // 8. Real-time Socket.IO Broadcast to CRM clients
+    const io = getIO();
+    if (io && orgId) {
+      io.to(`org_${orgId}`).emit("new_lead", { lead });
+      io.to(`org_${orgId}`).emit("conversation_updated", {
+        leadId: lead._id,
+        status: lead.status,
+        lead,
+      });
+    }
+
+    // 9. Send automated WhatsApp welcome enquiry message asynchronously
     sendWelcomeEnquiryMessage(lead, {
       tenantModels: req.tenantModels,
       organizationId: orgId,
@@ -212,13 +272,13 @@ export const receiveWebsiteLead = async (req, res) => {
       console.error("Error in sendWelcomeEnquiryMessage (website):", err),
     );
 
-    // Return a structured response that is easy for the website to consume
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Form submitted successfully. We will contact you soon!",
       leadId: lead._id,
     });
   } catch (error) {
+    console.error("Error in receiveWebsiteLead:", error);
     res.status(400).json({ success: false, message: error.message });
   }
 };

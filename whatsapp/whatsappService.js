@@ -60,7 +60,7 @@ const connectionLocks = new Map(); // sessionId -> Promise
 // Tracks active reconnect timeout handles per sessionId to coordinate between close handler and watchdog
 const reconnectTimers = new Map(); // sessionId -> timeoutHandle
 
-const sessions = {}; // map of sessionId -> { sock, status, qrCode, connectedPhone, connectedName, organizationId, tenantDbName }
+export const sessions = {}; // map of sessionId -> { sock, status, qrCode, connectedPhone, connectedName, organizationId, tenantDbName }
 
 /**
  * Schedules a delayed reconnect for a session, coordinating between the close handler and watchdog.
@@ -1902,6 +1902,228 @@ export const sendMessageFromCRM = async (
   }
 
   return messageRecord;
+};
+
+/**
+ * Expose function to dispatch document (PDF/Word) messages with caption from the CRM UI or API.
+ */
+export const sendDocumentMessageFromCRM = async (
+  recipientPhoneOrLeadId,
+  documentData,
+  captionText = "",
+  senderName = "Agent",
+  context = {}
+) => {
+  let { organizationId, tenantModels, sessionId, salesRepId } = context;
+  const rawOrgId = organizationId
+    ? organizationId.toString().startsWith("org_")
+      ? organizationId.toString().slice(4)
+      : organizationId.toString()
+    : null;
+
+  if (!sessionId && rawOrgId) {
+    sessionId = `org_${rawOrgId}`;
+  }
+
+  // Cross-tenant validation: If organizationId is provided, validate sessionId strictly belongs to this organization
+  if (sessionId && rawOrgId) {
+    const orgPrefix = `org_${rawOrgId}`;
+    const belongsToOrg = sessionId === orgPrefix || sessionId.startsWith(`${orgPrefix}_`);
+    if (!belongsToOrg) {
+      throw new Error(`Unauthorized: WhatsApp session ${sessionId} does not belong to organization ${organizationId}`);
+    }
+  }
+
+  // Find socket strictly for this specific session
+  let sock = null;
+  if (sessionId) {
+    const sessionObj = sessions[sessionId];
+    if (sessionObj && (!organizationId || sessionObj.organizationId?.toString() === organizationId.toString())) {
+      sock = sessionObj.sock;
+    }
+  }
+
+  if (!sock) {
+    // Check if session has saved credentials in DB and trigger auto-reconnect
+    const targetSessionId = sessionId || (organizationId ? `org_${organizationId}` : null);
+    if (targetSessionId) {
+      try {
+        const resolvedModels = tenantModels || (await getModelsForSession(targetSessionId));
+        const AuthModel = resolvedModels?.WhatsAppAuthState;
+        const hasCreds = AuthModel
+          ? await AuthModel.findOne({ sessionId: targetSessionId, type: "creds" })
+          : null;
+
+        if (hasCreds) {
+          console.log(`[WhatsApp] Auto-reconnecting session ${targetSessionId} triggered by CRM document send...`);
+          connectWhatsApp({
+            sessionId: targetSessionId,
+            organizationId,
+          }).catch((e) => console.error("[WhatsApp] Auto-reconnect on document send failed:", e));
+
+          throw new Error("WhatsApp connection was sleeping and is reconnecting now. Please retry sending in 5-10 seconds.");
+        }
+      } catch (checkErr) {
+        if (checkErr.message.includes("reconnecting now")) throw checkErr;
+      }
+    }
+    throw new Error("WhatsApp client is not connected for this organization! Please connect your device in WhatsApp Settings.");
+  }
+
+  const models = tenantModels || (sessionId ? await getModelsForSession(sessionId) : { Lead, Message, Conversation });
+  const LeadModel = models?.Lead || Lead;
+  const MessageModel = models?.Message || Message;
+  const ConversationModel = models?.Conversation || Conversation;
+
+  // Resolve or create lead
+  let lead = null;
+  let rawPhone = "";
+  if (mongoose.Types.ObjectId.isValid(recipientPhoneOrLeadId)) {
+    lead = await LeadModel.findById(recipientPhoneOrLeadId);
+    if (lead) rawPhone = lead.phone;
+  }
+
+  if (!lead) {
+    rawPhone = String(recipientPhoneOrLeadId).replace(/\D/g, "");
+    if (!rawPhone || rawPhone.length < 7) {
+      throw new Error("A valid phone number (minimum 7 digits) or leadId is required.");
+    }
+
+    const last10 = rawPhone.slice(-10);
+    lead = await LeadModel.findOne({
+      $or: [
+        { phone: rawPhone },
+        { phone: last10 },
+        { phone: `+91${last10}` },
+        { phone: `91${last10}` },
+      ],
+    });
+
+    if (!lead) {
+      lead = await LeadModel.create({
+        name: context.recipientName || `Contact ${last10}`,
+        phone: rawPhone.length === 10 ? rawPhone : last10,
+        status: "New",
+        source: "WhatsApp Document",
+        notes: "Initiated document message send from organization",
+      });
+    }
+  }
+
+  // Format destination JID
+  let cleanPhone = String(rawPhone || lead.phone).replace(/\D/g, "");
+  if (cleanPhone.length === 10) {
+    cleanPhone = "91" + cleanPhone;
+  }
+  const targetJid = `${cleanPhone}@s.whatsapp.net`;
+
+  // Determine file payload, path, mime type, and name
+  const originalFileName = documentData.fileName || documentData.originalName || path.basename(documentData.filePath || "document.pdf");
+  const ext = path.extname(originalFileName).toLowerCase();
+  const mimeMap = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+  };
+  const mimetype = mimeMap[ext] || documentData.mimetype || "application/pdf";
+
+  let documentSource;
+  if (documentData.buffer) {
+    documentSource = documentData.buffer;
+  } else if (documentData.filePath && fs.existsSync(documentData.filePath)) {
+    documentSource = fs.readFileSync(documentData.filePath);
+  } else if (documentData.fileUrl) {
+    documentSource = { url: documentData.fileUrl };
+  } else {
+    throw new Error("Invalid document source: file buffer or valid filePath is required.");
+  }
+
+  // Mark automated send so upsert doesn't trigger AI pause if automated
+  const leadIdStr = lead._id.toString();
+  automatedSendInProgress.add(leadIdStr);
+
+  let sendResult;
+  try {
+    sendResult = await sock.sendMessage(targetJid, {
+      document: documentSource,
+      mimetype,
+      fileName: originalFileName,
+      caption: captionText || "",
+    });
+  } finally {
+    setTimeout(() => automatedSendInProgress.delete(leadIdStr), 3000);
+  }
+
+  // Pause AI for 5 minutes if lead had AI enabled
+  if (lead.aiEnabled) {
+    try {
+      await pauseAIForLead(lead._id, models, organizationId);
+      console.log(`[AI SNOOZE] Document send detected for lead ${lead._id}. AI paused for 5 minutes.`);
+    } catch (pauseErr) {
+      console.error(`[AI SNOOZE] Error pausing AI for lead ${lead._id}:`, pauseErr);
+    }
+  }
+
+  const messageId = sendResult?.key?.id || `doc_${Date.now()}`;
+  const timestamp = new Date();
+  const mediaUrl = documentData.mediaUrl || (documentData.filePath ? `/uploads/documents/${path.basename(documentData.filePath)}` : "");
+
+  // Create Message record
+  const messageRecord = await MessageModel.create({
+    messageId,
+    leadId: lead._id,
+    sender: senderName || "Organization",
+    senderName: senderName || "Organization",
+    direction: "outgoing",
+    messageType: "document",
+    mediaUrl,
+    fileName: originalFileName,
+    text: captionText || "",
+    timestamp,
+    aiGenerated: false,
+    delivered: true,
+    read: false,
+    status: "sent",
+    sessionId,
+    salesRepId: salesRepId || null,
+  });
+
+  // Update Conversation record
+  const lastMsgSnippet = captionText
+    ? `[Document: ${originalFileName}] ${captionText}`
+    : `[Document: ${originalFileName}]`;
+
+  await ConversationModel.findOneAndUpdate(
+    { leadId: lead._id },
+    {
+      lastMessage: lastMsgSnippet,
+      lastMessageTime: timestamp,
+      unreadCount: 0,
+    },
+    { upsert: true }
+  );
+
+  // Emit socket updates
+  const io = getIO();
+  if (io) {
+    io.to(lead._id.toString()).emit("new_message", messageRecord);
+    const updatePayload = {
+      leadId: lead._id,
+      unreadCount: 0,
+      lastMessage: lastMsgSnippet,
+      lastMessageTime: timestamp,
+    };
+    const targetOrg =
+      organizationId ||
+      lead.organizationId ||
+      lead.organization ||
+      (sessionId ? sessions[sessionId]?.organizationId : null);
+    if (targetOrg) {
+      io.to(`org_${targetOrg}`).emit("conversation_updated", updatePayload);
+    }
+  }
+
+  return { messageRecord, lead };
 };
 
 /**

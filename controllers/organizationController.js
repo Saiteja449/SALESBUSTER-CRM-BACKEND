@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import fs from "fs";
+import crypto from "crypto";
 import {
   getMasterModels,
   getTenantModels,
@@ -839,6 +840,9 @@ export const getMyOrganization = async (req, res) => {
 
     const defaults = getDefaultAISettings(org.name);
     checkAndResetDailyAiUsage(org);
+    if (!org.webhookKey) {
+      org.webhookKey = "sb_whk_" + crypto.randomBytes(16).toString("hex");
+    }
     if (org.isModified()) {
       await org.save();
     }
@@ -873,6 +877,7 @@ export const getMyOrganization = async (req, res) => {
       success: true,
       data: {
         ...orgJson,
+        webhookKey: org.webhookKey,
         addons: org.addons || { whatsappCampaigns: false, biAnalyst: false },
         whatsappLineLimit: org.whatsappLineLimit || 1,
         whatsappConnectionMode: (org.whatsappLineLimit || 1) === 2 ? "double" : "single",
@@ -894,6 +899,42 @@ export const getMyOrganization = async (req, res) => {
       message:
         error.message || "Server error while fetching organization profile",
     });
+  }
+};
+
+// @desc    Regenerate organization webhook key
+// @route   POST /api/organizations/my-org/regenerate-webhook-key
+// @access  Protected (Org Owner / Manager)
+export const regenerateWebhookKey = async (req, res) => {
+  try {
+    const orgId = req.user?.organizationId || req.organization?._id;
+    if (!orgId) {
+      return res.status(404).json({
+        success: false,
+        message: "No organization profile associated with this account.",
+      });
+    }
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(orgId);
+    if (!org) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found.",
+      });
+    }
+
+    org.webhookKey = "sb_whk_" + crypto.randomBytes(16).toString("hex");
+    await org.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Webhook key successfully regenerated.",
+      webhookKey: org.webhookKey,
+    });
+  } catch (error) {
+    console.error("Error regenerating webhook key:", error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 

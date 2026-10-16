@@ -9,7 +9,7 @@ import Message from "../models/Message.js";
 import AILog from "../models/AILog.js";
 import SystemSettings from "../models/SystemSettings.js";
 import WhatsAppSession from "../models/WhatsAppSession.js";
-import { getMasterModels } from "../services/tenantManager.js";
+import { getMasterModels, getTenantModels } from "../services/tenantManager.js";
 import { getIO } from "../socket/socket.js";
 import fs from "fs";
 import path from "path";
@@ -1074,65 +1074,136 @@ export const deleteLead = async (req, res) => {
 
 export const updateStatusByWebhook = async (req, res) => {
   try {
-    // Webhook secret verification
-    const configuredSecret =
-      process.env.LEAD_WEBHOOK_SECRET && process.env.LEAD_WEBHOOK_SECRET.trim();
+    // 1. Webhook Secret Verification (Organization webhookKey or legacy global secret)
     const providedSecret =
-      (req.headers && (req.headers["x-webhook-secret"] || req.headers["x-secret-key"])) ||
-      (req.query && req.query.secret);
+      (req.headers &&
+        (req.headers["x-webhook-secret"] ||
+          req.headers["x-secret-key"] ||
+          req.headers["x-api-key"])) ||
+      (req.query && (req.query.secret || req.query.apiKey)) ||
+      (req.body && (req.body.secret || req.body.apiKey));
 
-    if (
-      !configuredSecret ||
-      !providedSecret ||
-      providedSecret !== configuredSecret
-    ) {
+    const globalSecret =
+      process.env.LEAD_WEBHOOK_SECRET && process.env.LEAD_WEBHOOK_SECRET.trim();
+
+    let matchedOrg = req.organization || null;
+
+    if (providedSecret && !matchedOrg) {
+      try {
+        const { Organization } = getMasterModels();
+        if (Organization && mongoose.connection?.readyState === 1) {
+          matchedOrg = await Organization.findOne({ webhookKey: providedSecret });
+          if (matchedOrg) {
+            req.organization = matchedOrg;
+            req.tenantDbName = matchedOrg.tenantDbName;
+            req.tenantModels = getTenantModels(matchedOrg.tenantDbName);
+          }
+        }
+      } catch (orgErr) {
+        console.error("Error verifying organization by webhookKey:", orgErr);
+      }
+    }
+
+    const isGlobalValid =
+      Boolean(globalSecret && providedSecret && providedSecret === globalSecret);
+    const isOrgValid =
+      Boolean(matchedOrg && matchedOrg.webhookKey === providedSecret);
+
+    if (!providedSecret || (!isGlobalValid && !isOrgValid)) {
       return res.status(401).json({
         success: false,
         message: "Unauthorized: Invalid or missing webhook secret.",
       });
     }
 
-    const { LeadModel, NotificationModel } = getModels(req);
-    const { phone, email, event } = req.body;
+    // 2. Validate and Extract Phone (Primary lookup per user requirement)
+    const rawPhone =
+      req.body.phone ||
+      req.body.mobile ||
+      req.body.phoneNumber ||
+      req.body.mobileNumber ||
+      "";
+    const leadId = req.body.leadId || req.body.id || null;
+    const email = req.body.email ? String(req.body.email).trim() : null;
 
-    if (!phone && !email) {
+    if (!rawPhone && !leadId && !email) {
       return res.status(400).json({
         success: false,
-        message: "Either phone or email is required.",
+        message: "Phone number is required to update lead status.",
       });
     }
 
-    if (!event) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Event is required." });
+    // 3. Extract and Validate Target Status (STRICT: only status can be updated)
+    const rawStatus =
+      req.body.status ||
+      req.body.leadStatus ||
+      req.body.newStatus ||
+      req.body.event ||
+      "";
+
+    if (!rawStatus) {
+      return res.status(400).json({
+        success: false,
+        message: "Status is required.",
+      });
     }
 
-    let status = "";
-    if (event === "converted") {
-      status = "Converted";
-    } else {
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid event type." });
+    const statusMap = {
+      "new": "New",
+      "missed call": "Missed Call",
+      "missed_call": "Missed Call",
+      "follow up": "Follow Up",
+      "followup": "Follow Up",
+      "follow_up": "Follow Up",
+      "not interested": "Not Interested",
+      "not_interested": "Not Interested",
+      "not attended": "Not Attended",
+      "not_attended": "Not Attended",
+      "price issue": "Price Issue",
+      "price_issue": "Price Issue",
+      "converted": "Converted",
+    };
+
+    const normalizedStatusKey = String(rawStatus).trim().toLowerCase();
+    const targetStatus = statusMap[normalizedStatusKey];
+
+    if (!targetStatus) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Invalid status. Allowed statuses are: "New", "Missed Call", "Follow Up", "Not Interested", "Not Attended", "Price Issue", "Converted".',
+      });
     }
 
+    // 4. Resolve Tenant Models & Locate Lead
+    const { LeadModel, NotificationModel } = getModels(req);
     let lead = null;
 
-    if (phone) {
-      const cleanPhone = phone.replace(/\D/g, "");
-      const last10Digits = cleanPhone.slice(-10);
+    if (rawPhone) {
+      const cleanPhone = String(rawPhone).replace(/\D/g, "");
+      const last10Digits =
+        cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
       lead = await LeadModel.findOne({
         $or: [
+          { phone: rawPhone },
           { phone: cleanPhone },
-          { phone: new RegExp(last10Digits + "$") },
+          { phoneNormalized: last10Digits },
+          ...(last10Digits.length >= 7
+            ? [{ phone: new RegExp(last10Digits + "$") }]
+            : []),
         ],
       });
     }
 
+    if (!lead && leadId) {
+      try {
+        lead = await LeadModel.findById(leadId);
+      } catch (idErr) {}
+    }
+
     if (!lead && email) {
       lead = await LeadModel.findOne({
-        email: new RegExp("^" + email.trim() + "$", "i"),
+        email: new RegExp("^" + email + "$", "i"),
       });
     }
 
@@ -1143,48 +1214,61 @@ export const updateStatusByWebhook = async (req, res) => {
       });
     }
 
-    const funnelOrder = ["New", "Converted"];
-    const currentRank = funnelOrder.indexOf(lead.status);
-    const targetRank = funnelOrder.indexOf(status);
-
-    if (currentRank !== -1 && targetRank !== -1 && currentRank >= targetRank) {
+    // 5. Idempotent check: if already at target status
+    if (lead.status === targetStatus) {
       return res.status(200).json({
         success: true,
-        message: `Lead is already at status "${lead.status}" (requested: "${status}"). No update needed.`,
-        data: lead,
+        message: `Lead is already at status "${lead.status}". No update needed.`,
+        data: {
+          id: lead._id,
+          name: lead.name,
+          phone: lead.phone,
+          status: lead.status,
+        },
       });
     }
 
-    lead.status = status;
+    const previousStatus = lead.status;
+
+    // 6. STRICT UPDATE GUARD: Only the status field is updated!
+    // Explicitly do not modify name, phone, email, assignedTo, notes, dealValue, etc.
+    lead.status = targetStatus;
     await lead.save();
 
+    // 7. Notification and Real-time Socket Dispatch
     const targetUsers =
       lead.assignedTo && lead.assignedTo !== "Unassigned"
         ? [lead.assignedTo]
         : [];
-    await NotificationModel.create({
-      title: "Lead Status Webhook Update",
-      message: `Lead ${lead.name} status updated to "${status}" via external booking app webhook event: ${event}.`,
-      type: "lead_update",
-      targetRoles: ["sales manager"],
-      targetUsers,
-    });
+    if (NotificationModel) {
+      NotificationModel.create({
+        title: "Lead Status Webhook Update",
+        message: `Lead ${lead.name || lead.phone} status updated from "${previousStatus}" to "${targetStatus}" via webhook.`,
+        type: "lead_update",
+        targetRoles: ["sales manager"],
+        targetUsers,
+      }).catch((notifErr) =>
+        console.error("Error creating webhook status notification:", notifErr)
+      );
+    }
 
     const io = getIO();
     if (io) {
       const orgId =
-        req.user?.organizationId ||
         req.organization?._id ||
+        req.user?.organizationId ||
         lead.organizationId ||
         lead.organization ||
         null;
       const payload = {
         leadId: lead._id,
-        status,
+        status: targetStatus,
+        previousStatus,
         lead,
       };
       if (orgId) {
         io.to(`org_${orgId}`).emit("conversation_updated", payload);
+        io.to(`org_${orgId}`).emit("lead_status_updated", payload);
       } else {
         console.warn(
           `[Webhook] Skipping un-scoped conversation_updated emit: no orgId for lead ${lead._id}`
@@ -1192,10 +1276,17 @@ export const updateStatusByWebhook = async (req, res) => {
       }
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: `Status successfully updated to "${status}" for lead ${lead.name}.`,
-      data: lead,
+      message: `Status successfully updated to "${targetStatus}" for lead ${lead.name || lead.phone}.`,
+      data: {
+        id: lead._id,
+        name: lead.name,
+        phone: lead.phone,
+        status: targetStatus,
+        previousStatus,
+        updatedAt: lead.updatedAt,
+      },
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
