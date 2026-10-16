@@ -143,10 +143,11 @@ export const getModelsForSession = async (sessionId) => {
       const { Organization } = getMasterModels();
       const org = await Organization.findById(orgId);
       if (org && org.tenantDbName) {
-        if (sessionData) {
-          sessionData.organizationId = orgId;
-          sessionData.tenantDbName = org.tenantDbName;
+        if (!sessions[sessionId]) {
+          sessions[sessionId] = { status: "disconnected" };
         }
+        sessions[sessionId].organizationId = orgId;
+        sessions[sessionId].tenantDbName = org.tenantDbName;
         return getTenantModels(org.tenantDbName);
       }
     } catch (err) {
@@ -840,59 +841,89 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       `[DEBUG] Extracted content: ${messageType} - "${textContent.substring(0, 30)}..."`,
     );
 
+    // Resolve organizationId for this session to ensure strict multi-tenant isolation
+    let orgId = sessions[sessionId]?.organizationId;
+    if (!orgId && sessionId && sessionId.startsWith("org_")) {
+      const match = sessionId.match(/^org_([a-fA-F0-9]{24})/);
+      if (match) {
+        orgId = match[1];
+        if (sessions[sessionId]) sessions[sessionId].organizationId = orgId;
+      }
+    }
+    if (!orgId) {
+      const dbName = models?.Lead?.db?.name;
+      if (dbName && dbName !== "test" && dbName !== "salesbuster_master") {
+        try {
+          const { Organization: MasterOrg } = getMasterModels();
+          const orgDoc = await MasterOrg.findOne({ tenantDbName: dbName }).lean();
+          if (orgDoc) {
+            orgId = orgDoc._id.toString();
+            if (sessions[sessionId]) sessions[sessionId].organizationId = orgId;
+          }
+        } catch (err) {
+          console.warn(`[WhatsApp] Failed to resolve org by dbName:`, err.message);
+        }
+      }
+    }
+
+    // Dynamic service detection strictly scoped to the organization's own configured catalog
     let detectedService = null;
-    if (textContent && typeof textContent === "string") {
-      const s = textContent.toLowerCase();
-      if (
-        s.includes("mrl") ||
-        s.includes("machine room less") ||
-        s.includes("no machine room")
-      ) {
-        detectedService = "MRL Lift";
-      } else if (
-        s.includes("hydraulic") ||
-        s.includes("villa lift") ||
-        s.includes("home lift") ||
-        s.includes("warehouse lift") ||
-        s.includes("cargo lift") ||
-        s.includes("industrial lift")
-      ) {
-        detectedService = "Hydraulic Lift";
-      } else if (
-        s.includes("hospital") ||
-        s.includes("bed lift") ||
-        s.includes("stretcher") ||
-        s.includes("medical lift") ||
-        s.includes("clinic lift")
-      ) {
-        detectedService = "Hospital Bed Lift";
-      } else if (
-        s.includes("moderniz") ||
-        s.includes("modernis") ||
-        s.includes("upgrade lift") ||
-        s.includes("upgrade elevator") ||
-        s.includes("replace lift") ||
-        s.includes("replacement")
-      ) {
-        detectedService = "Elevator Modernization";
-      } else if (
-        s.includes("maintenance") ||
-        s.includes("amc") ||
-        s.includes("servicing") ||
-        s.includes("breakdown") ||
-        s.includes("repair")
-      ) {
-        detectedService = "Elevator Maintenance & AMC";
-      } else if (
-        s.includes("passenger") ||
-        s.includes("apartment lift") ||
-        s.includes("office lift") ||
-        s.includes("residential lift") ||
-        s.includes("commercial lift") ||
-        s.includes("elevator") ||
-        s.includes("lift")
-      ) {
-        detectedService = "Passenger Lift";
+    let orgServices = [];
+    if (orgId) {
+      try {
+        const { Organization: MasterOrg } = getMasterModels();
+        const orgDoc = await MasterOrg.findById(orgId).select("aiSettings.services").lean();
+        if (Array.isArray(orgDoc?.aiSettings?.services) && orgDoc.aiSettings.services.length > 0) {
+          orgServices = orgDoc.aiSettings.services.filter((s) => s.isActive !== false);
+        }
+      } catch (err) {
+        console.warn(`[WhatsApp] Could not fetch org services for orgId ${orgId}:`, err.message);
+      }
+    }
+
+    if (textContent && typeof textContent === "string" && orgServices.length > 0) {
+      const cleanText = textContent.trim();
+      const lowerText = cleanText.toLowerCase();
+
+      // 1. Numbered selection match (e.g., "1", "2", "option 1", "#2")
+      const matchNumber =
+        cleanText.match(/^(?:option\s*|#)?([1-9][0-9]?)\.?$/i) ||
+        cleanText.match(/^(?:select\s*|choice\s*|service\s*)?([1-9][0-9]?)$/i);
+      if (matchNumber) {
+        const num = parseInt(matchNumber[1], 10);
+        if (num >= 1 && num <= orgServices.length) {
+          detectedService = orgServices[num - 1].name;
+        }
+      }
+
+      // 2. Direct name match
+      if (!detectedService) {
+        const exactMatch = orgServices.find(
+          (s) => s.name && s.name.trim().toLowerCase() === lowerText
+        );
+        if (exactMatch) {
+          detectedService = exactMatch.name;
+        }
+      }
+
+      // 3. Name or keywords inclusion match
+      if (!detectedService) {
+        for (const s of orgServices) {
+          const sNameLower = s.name ? s.name.trim().toLowerCase() : "";
+          if (sNameLower && lowerText.includes(sNameLower)) {
+            detectedService = s.name;
+            break;
+          }
+          if (Array.isArray(s.keywords) && s.keywords.length > 0) {
+            const matchedKw = s.keywords.some(
+              (kw) => kw && kw.trim() && lowerText.includes(kw.trim().toLowerCase())
+            );
+            if (matchedKw) {
+              detectedService = s.name;
+              break;
+            }
+          }
+        }
       }
     }
 
@@ -925,7 +956,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
         name: pushName,
         phone: phone,
         source: "WhatsApp",
-        service: detectedService || "General Enquiry",
+        service: detectedService || (orgServices[0]?.name) || "General Enquiry",
         status: "New",
         joinedAt: new Date(),
         notes: fromMe
@@ -1075,7 +1106,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
 
     // 5. Broadcast message to frontend clients with org room isolation
     const io = getIO();
-    const orgId = sessions[sessionId]?.organizationId;
+    orgId = sessions[sessionId]?.organizationId || orgId;
     if (io) {
       // Broadcast to specific lead chat room
       io.to(lead._id.toString()).emit("new_message", messageRecord);
@@ -1439,7 +1470,29 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
 
     // Emit typing status over socket.io
     const io = getIO();
-    const orgId = sessions[sessionId]?.organizationId;
+    let orgId = sessions[sessionId]?.organizationId;
+    if (!orgId && sessionId && sessionId.startsWith("org_")) {
+      const match = sessionId.match(/^org_([a-fA-F0-9]{24})/);
+      if (match) {
+        orgId = match[1];
+        if (sessions[sessionId]) sessions[sessionId].organizationId = orgId;
+      }
+    }
+    if (!orgId) {
+      const dbName = models?.Lead?.db?.name;
+      if (dbName && dbName !== "test" && dbName !== "salesbuster_master") {
+        try {
+          const { Organization: MasterOrg } = getMasterModels();
+          const orgDoc = await MasterOrg.findOne({ tenantDbName: dbName }).lean();
+          if (orgDoc) {
+            orgId = orgDoc._id.toString();
+            if (sessions[sessionId]) sessions[sessionId].organizationId = orgId;
+          }
+        } catch (err) {
+          console.warn(`[WhatsApp] Failed to resolve org by dbName:`, err.message);
+        }
+      }
+    }
     if (io) {
       io.to(lead._id.toString()).emit("typing_status", {
         leadId: lead._id,

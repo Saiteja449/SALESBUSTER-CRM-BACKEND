@@ -128,27 +128,30 @@ export const resolveOrganization = async (
 
   const { Organization: MasterOrg } = getMasterModels();
 
-  if (typeof organizationContext === "string") {
+  if (typeof organizationContext === "string" && organizationContext.trim()) {
     try {
-      const org = await MasterOrg.findById(organizationContext);
+      const org = await MasterOrg.findById(organizationContext.trim());
       if (org) return org;
     } catch (err) {}
   }
 
-  const dbName = tenantModels?.db?.name;
-  if (dbName) {
+  // Resolve by tenant database name (inspecting tenant models like Lead, User, Message, or db directly)
+  const dbName =
+    tenantModels?.Lead?.db?.name ||
+    tenantModels?.User?.db?.name ||
+    tenantModels?.Message?.db?.name ||
+    tenantModels?.db?.name;
+
+  if (dbName && dbName !== "test" && dbName !== "salesbuster_master") {
     try {
       const org = await MasterOrg.findOne({ tenantDbName: dbName });
       if (org) return org;
     } catch (err) {}
   }
 
-  // Fallback to first registered organization if needed
-  try {
-    const org = await MasterOrg.findOne();
-    if (org) return org;
-  } catch (err) {}
-
+  // STRICT: NEVER fall back to MasterOrg.findOne()!
+  // Falling back to MasterOrg.findOne() causes multi-tenant data leakage where
+  // the first registered organization's services and identity are assigned to another organization's leads.
   return null;
 };
 
@@ -528,6 +531,14 @@ export const generateAIResponse = async (
       organizationContext,
       tenantModels,
     );
+
+    if (!organization) {
+      console.warn(
+        `[AI Service] AI response aborted for lead ${leadId}: Unable to resolve organization context. Multi-tenant isolation enforced.`,
+      );
+      return "Thank you for reaching out! A sales representative will be with you shortly.";
+    }
+
     const defaults = getDefaultAISettings(organization?.name || "");
 
     // Decrypt organization's dedicated Gemini API Key (STRICT: NO GLOBAL FALLBACK)
