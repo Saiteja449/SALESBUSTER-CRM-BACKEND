@@ -213,9 +213,20 @@ const updateSessionStatus = async (
 
     const io = getIO();
     if (io) {
+      let repUserId = null;
+      if (sessionId && sessionId.includes("_user_")) {
+        repUserId = sessionId.split("_user_")[1];
+      }
+      const orgId =
+        sessions[sessionId]?.organizationId ||
+        (sessionId.startsWith("org_")
+          ? sessionId.match(/^org_([a-fA-F0-9]{24})/)?.[1]
+          : null);
+
       const statusPayload = {
         sessionId,
-        organizationId: sessions[sessionId]?.organizationId,
+        userId: repUserId,
+        organizationId: orgId,
         status,
         qrCode: qr,
         connectedPhone: phone || session.connectedPhone,
@@ -223,11 +234,13 @@ const updateSessionStatus = async (
       };
 
       // Emit strictly to organization room if org is known, else broadcast for legacy single-tenant
-      if (sessions[sessionId]?.organizationId) {
-        io.to(`org_${sessions[sessionId].organizationId}`).emit("whatsapp_status", statusPayload);
+      if (orgId) {
+        io.to(`org_${orgId}`).emit("whatsapp_status", statusPayload);
       } else {
         io.emit("whatsapp_status", statusPayload);
       }
+      // Also emit to session room if rep/user is waiting on session status
+      io.to(sessionId).emit("whatsapp_status", statusPayload);
     }
   } catch (err) {
     console.error("Failed to update WhatsAppSession in DB:", err);

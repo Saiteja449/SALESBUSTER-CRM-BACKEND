@@ -79,6 +79,7 @@ export const provisionOrganization = async (req, res) => {
       notes,
       whatsappLineLimit,
       whatsappConnectionMode,
+      addons,
     } = req.body;
 
     // 1. Validate required fields
@@ -195,6 +196,10 @@ export const provisionOrganization = async (req, res) => {
         }
         return 1;
       })(),
+      addons: {
+        whatsappCampaigns: Boolean(addons?.whatsappCampaigns),
+        biAnalyst: Boolean(addons?.biAnalyst),
+      },
       aiSettings: getDefaultAISettings(name.trim()),
       createdBy: req.user?._id || null,
     });
@@ -671,6 +676,56 @@ export const updateOrganizationWhatsAppLimit = async (req, res) => {
   }
 };
 
+// @desc    Update organization Add-ons (whatsappCampaigns, biAnalyst)
+// @route   PUT /api/organizations/:id/addons
+// @access  Protected (Super Admin)
+export const updateOrganizationAddons = async (req, res) => {
+  try {
+    const { whatsappCampaigns, biAnalyst } = req.body;
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(req.params.id);
+
+    if (!org) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found",
+      });
+    }
+
+    if (!org.addons) {
+      org.addons = { whatsappCampaigns: false, biAnalyst: false };
+    }
+
+    if (whatsappCampaigns !== undefined) {
+      org.addons.whatsappCampaigns = Boolean(whatsappCampaigns);
+    }
+    if (biAnalyst !== undefined) {
+      org.addons.biAnalyst = Boolean(biAnalyst);
+    }
+
+    org.markModified("addons");
+    await org.save();
+
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit("organization_updated", org.toJSON());
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Add-ons updated successfully for organization "${org.name}".`,
+      data: org,
+    });
+  } catch (error) {
+    console.error("Error updating organization add-ons:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error while updating organization add-ons",
+    });
+  }
+};
+
 // @desc    Resend Welcome Email / regenerate credentials
 // @route   POST /api/organizations/:id/resend-welcome
 // @access  Protected (Super Admin)
@@ -818,6 +873,7 @@ export const getMyOrganization = async (req, res) => {
       success: true,
       data: {
         ...orgJson,
+        addons: org.addons || { whatsappCampaigns: false, biAnalyst: false },
         whatsappLineLimit: org.whatsappLineLimit || 1,
         whatsappConnectionMode: (org.whatsappLineLimit || 1) === 2 ? "double" : "single",
         usedSeats,
@@ -1021,6 +1077,7 @@ export const updateMyAISettings = async (req, res) => {
       isAiConfigured,
       geminiApiKey,
       dailyQuotaLimit,
+      quotaSplit,
       welcomeMessageTemplate,
       welcomeMessageFallbackService,
       missedCallMessageEnabled,
@@ -1127,14 +1184,41 @@ export const updateMyAISettings = async (req, res) => {
     if (qdrantCollection !== undefined)
       org.aiSettings.qdrantCollection = qdrantCollection.trim();
     if (dailyQuotaLimit !== undefined) {
-      const parsedLimit = parseInt(dailyQuotaLimit, 10);
-      if (!isNaN(parsedLimit) && parsedLimit > 0) {
-        if (!org.aiSettings.dailyAiUsage) {
-          org.aiSettings.dailyAiUsage = {};
-        }
-        org.aiSettings.dailyAiUsage.dailyQuotaLimit = parsedLimit;
-        org.markModified("aiSettings");
+      // Daily quota is fixed at 500 for organizations
+      checkAndResetDailyAiUsage(org);
+      org.aiSettings.dailyAiUsage.dailyQuotaLimit = 500;
+      org.markModified("aiSettings");
+    }
+    if (quotaSplit && typeof quotaSplit === "object") {
+      checkAndResetDailyAiUsage(org);
+      const calls = Math.max(0, parseInt(quotaSplit.calls, 10) || 0);
+      const whatsappAi = Math.max(0, parseInt(quotaSplit.whatsappAi, 10) || 0);
+      const isBiActive = Boolean(org.addons?.biAnalyst);
+
+      if (!isBiActive && quotaSplit.biAnalyst && parseInt(quotaSplit.biAnalyst, 10) > 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Cannot allocate quota to BI Analyst because the BI Analyst add-on is not active for this organization.",
+        });
       }
+
+      const biAnalyst = isBiActive ? Math.max(0, parseInt(quotaSplit.biAnalyst, 10) || 0) : 0;
+      const totalAllocated = calls + whatsappAi + biAnalyst;
+
+      if (totalAllocated > 500) {
+        return res.status(400).json({
+          success: false,
+          message: `The sum of split allocations (${totalAllocated}) cannot exceed the fixed daily limit of 500 conversations.`,
+        });
+      }
+
+      org.aiSettings.dailyAiUsage.quotaSplit = {
+        calls,
+        whatsappAi,
+        biAnalyst,
+      };
+      org.markModified("aiSettings");
     }
     if (welcomeMessageTemplate !== undefined) {
       org.aiSettings.welcomeMessageTemplate =
@@ -1809,3 +1893,93 @@ export const uploadServiceImage = async (req, res) => {
     });
   }
 };
+
+/**
+ * @desc    Update organization daily conversation quota split (Calls, BI Analyst, WhatsApp AI)
+ * @route   PUT /api/organizations/my-org/quota-split
+ * @access  Sales Manager / Owner / Super Admin
+ */
+export const updateQuotaSplit = async (req, res) => {
+  try {
+    const orgId = req.user?.organizationId;
+    if (!orgId) {
+      return res.status(400).json({
+        success: false,
+        message: "Organization ID is required",
+      });
+    }
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(orgId);
+    if (!org) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found",
+      });
+    }
+
+    const { calls, whatsappAi, biAnalyst } = req.body || {};
+
+    const parsedCalls = Math.max(0, parseInt(calls, 10) || 0);
+    const parsedWhatsApp = Math.max(0, parseInt(whatsappAi, 10) || 0);
+    const isBiActive = Boolean(org.addons?.biAnalyst);
+
+    if (!isBiActive && biAnalyst && parseInt(biAnalyst, 10) > 0) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Cannot allocate quota to BI Analyst because the BI Analyst add-on is not active for this organization.",
+      });
+    }
+
+    const parsedBI = isBiActive ? Math.max(0, parseInt(biAnalyst, 10) || 0) : 0;
+    const totalAllocated = parsedCalls + parsedWhatsApp + parsedBI;
+
+    if (totalAllocated > 500) {
+      return res.status(400).json({
+        success: false,
+        message: `Total allocated quota (${totalAllocated}) cannot exceed the daily limit of 500 conversations.`,
+      });
+    }
+
+    checkAndResetDailyAiUsage(org);
+    org.aiSettings.dailyAiUsage.dailyQuotaLimit = 500;
+    org.aiSettings.dailyAiUsage.quotaSplit = {
+      calls: parsedCalls,
+      whatsappAi: parsedWhatsApp,
+      biAnalyst: parsedBI,
+    };
+
+    org.markModified("aiSettings");
+    await org.save();
+
+    // Real-time broadcast
+    try {
+      const io = getIO();
+      if (io) {
+        io.to(`org_${org._id}`).emit("daily_ai_usage_updated", {
+          orgId: org._id.toString(),
+          dailyAiUsage: org.aiSettings.dailyAiUsage,
+        });
+      }
+    } catch (e) {
+      // non-blocking
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Daily conversation quota split updated successfully",
+      data: {
+        dailyAiUsage: org.aiSettings.dailyAiUsage,
+        quotaSplit: org.aiSettings.dailyAiUsage.quotaSplit,
+      },
+    });
+  } catch (error) {
+    console.error("Error updating quota split:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to update quota split",
+    });
+  }
+};
+

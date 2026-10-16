@@ -10,6 +10,7 @@ import {
   summarizeConversation,
   getQR,
   getStatus,
+  getTeamWhatsAppStatuses,
 } from "../controllers/whatsappController.js";
 import {
   socketAuthMiddleware,
@@ -648,5 +649,85 @@ test("WhatsApp: getQR retrieves rep personal session QR and does not fall back t
   assert.equal(res.data.sessionId, "org_alpha_user_rep99");
   assert.equal(res.data.qrCode, "data:image/png;base64,mockrepqr123");
 });
+
+// ============================================================================
+// 12. TEAM WHATSAPP STATUS AUTHORIZATION TESTS
+// ============================================================================
+test("Team WhatsApp Status - Rejects standard sales person role (403)", async () => {
+  const req = {
+    user: { _id: "u1", role: "sales person", organizationId: "alpha" },
+  };
+  const res = createMockRes();
+  await getTeamWhatsAppStatuses(req, res);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.data.success, false);
+});
+
+test("Team WhatsApp Status - Rejects alternate sales-rep role spellings (403)", async () => {
+  const variations = ["Sales Person", "sales rep", "Sales Representative", "salesperson", "agent", "viewer"];
+  for (const role of variations) {
+    const req = {
+      user: { _id: "u1", role, organizationId: "alpha" },
+    };
+    const res = createMockRes();
+    await getTeamWhatsAppStatuses(req, res);
+    assert.equal(res.statusCode, 403, `Role '${role}' must be rejected with 403`);
+    assert.equal(res.data.success, false);
+  }
+});
+
+test("Team WhatsApp Status - Allows sales manager role", async () => {
+  const mockUserModel = {
+    find: () => ({
+      select: () => ({
+        lean: async () => [{ _id: "rep1", name: "Rep One", phone: "+919876543210", email: "rep1@test.com" }],
+      }),
+    }),
+  };
+  const mockSessionModel = {
+    findOne: () => ({
+      select: () => ({
+        lean: async () => ({ status: "connected", connectedPhone: "+919876543210" }),
+      }),
+    }),
+  };
+
+  const req = {
+    user: { _id: "mgr1", role: "Sales Manager", organizationId: "507f1f77bcf86cd799439011" },
+    tenantModels: {
+      User: mockUserModel,
+      WhatsAppSession: mockSessionModel,
+    },
+  };
+  const res = createMockRes();
+  await getTeamWhatsAppStatuses(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.success, true);
+  assert.equal(Array.isArray(res.data.data), true);
+  assert.equal(res.data.data.length, 1);
+  assert.equal(res.data.data[0].name, "Rep One");
+});
+
+test("Team WhatsApp Status - Allows organization owner regardless of role", async () => {
+  const mockUserModel = {
+    find: () => ({
+      select: () => ({
+        lean: async () => [],
+      }),
+    }),
+  };
+  const req = {
+    user: { _id: "owner1", role: "custom_role", isOrgOwner: true, organizationId: "507f1f77bcf86cd799439011" },
+    tenantModels: {
+      User: mockUserModel,
+      WhatsAppSession: { findOne: () => ({ select: () => ({ lean: async () => null }) }) },
+    },
+  };
+  const res = createMockRes();
+  await getTeamWhatsAppStatuses(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.success, true);
+});
+
 
 

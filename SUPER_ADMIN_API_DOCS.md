@@ -505,7 +505,49 @@ curl -X PUT https://betaapi.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1
 
 ---
 
-## 10. Upload & Manage Mobile App APK (`POST /api/app-release/upload`)
+## 10. Update Organization Add-ons (`PUT /api/organizations/:id/addons`)
+
+Enables or disables modular organization add-ons:
+- `whatsappCampaigns`: Unlocks Meta Cloud bulk messaging, campaign builder, template creation, and audience targeting.
+- `biAnalyst`: Unlocks AI CRM Business Intelligence chat, data synthesis, and Gemini Multimodal Live Real-Time Voice session.
+
+### Endpoints:
+- `PUT /api/organizations/:id/addons`
+
+### Headers:
+- `Content-Type: application/json`
+- `Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>` OR `x-admin-key: salesbuster_super_admin_secret_key_2026`
+
+### cURL Request:
+```bash
+curl -X PUT https://betaapi.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c1d0001/addons \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <YOUR_SUPER_ADMIN_JWT_TOKEN>" \
+  -d '{
+    "whatsappCampaigns": true,
+    "biAnalyst": true
+  }'
+```
+
+### Success Response (`200 OK`):
+```json
+{
+  "success": true,
+  "message": "Add-ons updated successfully for organization \"Acme Technologies Inc.\".",
+  "data": {
+    "_id": "66dd1f5e8b4e7a2b9c1d0001",
+    "name": "Acme Technologies Inc.",
+    "addons": {
+      "whatsappCampaigns": true,
+      "biAnalyst": true
+    }
+  }
+}
+```
+
+---
+
+## 11. Upload & Manage Mobile App APK (`POST /api/app-release/upload`)
 
 Uploads a new Android application package (`.apk`). **Every time a new APK is uploaded, the backend automatically deletes the previous APK file from disk to conserve storage space, purges obsolete records, and stores the new release.**
 

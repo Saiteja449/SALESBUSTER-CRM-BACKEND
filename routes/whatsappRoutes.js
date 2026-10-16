@@ -23,10 +23,13 @@ const router = express.Router();
 
 // Middleware to restrict administrative WhatsApp actions to managers, super admins, or owners
 const requireManagerOrOwner = (req, res, next) => {
+  const role = (req.user?.role || "").toLowerCase().trim();
   if (
-    req.user?.role === "sales manager" ||
-    req.user?.role === "super_admin" ||
-    req.user?.isOrgOwner
+    role === "sales manager" ||
+    role === "super_admin" ||
+    role === "super admin" ||
+    role === "admin" ||
+    Boolean(req.user?.isOrgOwner)
   ) {
     return next();
   }
@@ -58,7 +61,7 @@ router.post("/message/send", sendMessage);
 
 // AI Features
 router.post("/conversation/:leadId/summarize", summarizeConversation);
-router.get("/team-status", getTeamWhatsAppStatuses);
+router.get("/team-status", requireManagerOrOwner, getTeamWhatsAppStatuses);
 
 // AI Automation Toggle
 router.post("/ai/toggle", toggleAI);

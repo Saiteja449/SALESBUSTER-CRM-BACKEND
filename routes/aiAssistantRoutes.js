@@ -8,6 +8,8 @@ import {
   clearAllChatSessions,
 } from "../controllers/aiAssistantController.js";
 
+import { requireAddon } from "../middleware/addonMiddleware.js";
+
 const router = express.Router();
 
 /**
@@ -30,9 +32,10 @@ export const requireSalesManager = (req, res, next) => {
   next();
 };
 
-// All assistant routes require authentication and Sales Manager role
+// All assistant routes require authentication, Sales Manager role, and the biAnalyst add-on
 router.use(protect);
 router.use(requireSalesManager);
+router.use(requireAddon("biAnalyst"));
 
 // Chat & History Endpoints
 router.post("/chat", sendMessage);

@@ -399,13 +399,7 @@ STRICT OPERATIONAL RULES:
       )
   );
 
-  try {
-    if (organization?._id) {
-      await recordAiUsage(organization._id, "chat");
-    }
-  } catch (usageErr) {
-    console.warn("[AI Assistant] Failed to record AI usage:", usageErr.message);
-  }
+  // Quota was already reserved atomically prior to calling runSalesManagerAssistant
 
   const executionTimeMs = Date.now() - startTime;
 

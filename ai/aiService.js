@@ -21,7 +21,7 @@ import Organization, { getDefaultAISettings } from "../models/Organization.js";
 import { getMasterModels } from "../services/tenantManager.js";
 import { getOrgCollectionName } from "../services/knowledgeService.js";
 import { decryptApiKey } from "../utils/encryption.js";
-import { recordAiUsage } from "../services/aiUsageService.js";
+import { recordAiUsage, checkAiQuotaAvailable, reserveAiQuota, releaseAiQuota } from "../services/aiUsageService.js";
 import { getIO } from "../socket/socket.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -563,6 +563,15 @@ export const generateAIResponse = async (
       return "Thank you for reaching out! Our team is currently finalizing our automated assistant. A sales representative will be with you shortly.";
     }
 
+    // Atomically reserve WhatsApp AI Daily Quota before invoking model
+    const quotaReservation = await reserveAiQuota(organization?._id || organization, "whatsapp", 1);
+    if (!quotaReservation.allowed) {
+      console.warn(
+        `[AI Service] AI response aborted for ${organization?.name || "organization"}: ${quotaReservation.reason}`,
+      );
+      return "Thank you for reaching out! Our automated assistant has reached today's conversation limit. A sales representative will be with you shortly.";
+    }
+
     const effectiveSettings = {
       companyName:
         organization?.aiSettings?.companyName ||
@@ -762,18 +771,13 @@ Latest Message: ${incomingText}`;
       ]);
       console.log("Success with model: Gemini");
 
-      // Record Chat AI API call usage
-      if (organization?._id) {
-        recordAiUsage(organization._id, "chat", 1).catch((err) =>
-          console.warn(
-            "[AI Service] Failed recording chat usage:",
-            err.message,
-          ),
-        );
-      }
+      // Quota was already reserved atomically prior to invoking model
     } catch (e) {
       lastError = e;
       console.warn("Model Gemini structured output failed. Error:", e.message);
+      if (organization?._id) {
+        await releaseAiQuota(organization._id, "whatsapp", 1);
+      }
     }
 
     if (!parsed) {

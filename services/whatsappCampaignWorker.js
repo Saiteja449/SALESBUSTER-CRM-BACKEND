@@ -77,6 +77,15 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
       return;
     }
 
+    if (!org.addons?.whatsappCampaigns) {
+      console.error(`[CampaignWorker] Organization ${organizationId} does not have WhatsApp Campaigns add-on active.`);
+      await WhatsAppCampaign.findByIdAndUpdate(campaignId, {
+        status: "Paused",
+        statusNote: "Campaign paused: WhatsApp Campaigns add-on is disabled for this organization.",
+      });
+      return;
+    }
+
     const { phoneNumberId, accessTokenEncrypted } = org.whatsappCloudSettings;
     const accessToken = decryptApiKey(accessTokenEncrypted);
     if (!accessToken) {

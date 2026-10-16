@@ -193,6 +193,18 @@ const organizationSchema = new mongoose.Schema(
       enum: [1, 2],
       default: 1,
     },
+    addons: {
+      whatsappCampaigns: {
+        type: Boolean,
+        default: false,
+        index: true,
+      },
+      biAnalyst: {
+        type: Boolean,
+        default: false,
+        index: true,
+      },
+    },
     aiSettings: {
       geminiApiKey: {
         type: String,
@@ -292,13 +304,42 @@ const organizationSchema = new mongoose.Schema(
           type: Number,
           default: 0,
         },
+        whatsappAiCalls: {
+          type: Number,
+          default: 0,
+        },
+        callsApiCalls: {
+          type: Number,
+          default: 0,
+        },
+        biAnalystCalls: {
+          type: Number,
+          default: 0,
+        },
         totalApiCalls: {
           type: Number,
           default: 0,
         },
         dailyQuotaLimit: {
           type: Number,
-          default: 1500,
+          default: 500,
+        },
+        quotaSplit: {
+          whatsappAi: {
+            type: Number,
+            default: 250,
+            min: 0,
+          },
+          calls: {
+            type: Number,
+            default: 250,
+            min: 0,
+          },
+          biAnalyst: {
+            type: Number,
+            default: 0,
+            min: 0,
+          },
         },
         lastResetAt: {
           type: Date,
@@ -446,8 +487,16 @@ export const getDefaultAISettings = (orgName = "") => {
       date: new Date().toISOString().slice(0, 10),
       chatApiCalls: 0,
       audioApiCalls: 0,
+      whatsappAiCalls: 0,
+      callsApiCalls: 0,
+      biAnalystCalls: 0,
       totalApiCalls: 0,
-      dailyQuotaLimit: 1500,
+      dailyQuotaLimit: 500,
+      quotaSplit: {
+        whatsappAi: 250,
+        calls: 250,
+        biAnalyst: 0,
+      },
       lastResetAt: new Date(),
     },
   };

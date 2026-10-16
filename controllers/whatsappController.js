@@ -1252,9 +1252,20 @@ export const summarizeConversation = async (req, res) => {
 // @access  Protected (Admin / Sales Manager only)
 export const getTeamWhatsAppStatuses = async (req, res) => {
   try {
-    // Only admins and managers can access this
-    if (req.user?.role === "sales person") {
-      return res.status(403).json({ success: false, message: "Access denied." });
+    // Only admins and managers can access team WhatsApp statuses
+    const role = (req.user?.role || "").toLowerCase().trim();
+    const isManagerOrAdmin =
+      role === "sales manager" ||
+      role === "super_admin" ||
+      role === "super admin" ||
+      role === "admin" ||
+      Boolean(req.user?.isOrgOwner);
+
+    if (!isManagerOrAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied: Manager or Administrator privileges required.",
+      });
     }
 
     const orgId = req.user?.organizationId?.toString() || req.organization?._id?.toString();
@@ -1264,8 +1275,11 @@ export const getTeamWhatsAppStatuses = async (req, res) => {
 
     const { UserModel, WhatsAppSessionModel } = getModels(req);
 
-    // Fetch all active sales reps
-    const reps = await UserModel.find({ role: "sales person", status: "active" })
+    // Fetch all active sales reps (case-insensitive and handles spelling variations)
+    const reps = await UserModel.find({
+      role: { $regex: /^sales\s*(person|rep)/i },
+      status: "active",
+    })
       .select("name phone email _id")
       .lean();
 

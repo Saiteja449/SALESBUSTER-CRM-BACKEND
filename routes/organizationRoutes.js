@@ -11,6 +11,7 @@ import {
   toggleStatus,
   resendWelcomeEmail,
   updateOrganizationWhatsAppLimit,
+  updateOrganizationAddons,
   getMyOrganization,
   getMyAISettings,
   updateMyAISettings,
@@ -24,6 +25,7 @@ import {
   getOrganizationServices,
   getOrganizationSettings,
   uploadServiceImage,
+  updateQuotaSplit,
 } from "../controllers/organizationController.js";
 import { protect, verifySuperAdmin } from "../middleware/authMiddleware.js";
 
@@ -99,6 +101,7 @@ router.get("/my-org", protect, getMyOrganization);
 // Tenant AI Settings & Knowledge Base (Tenant Owner / Sales Manager)
 router.get("/my-org/ai-settings", protect, getMyAISettings);
 router.put("/my-org/ai-settings", protect, requireManagerOrOwner, updateMyAISettings);
+router.put("/my-org/quota-split", protect, requireManagerOrOwner, updateQuotaSplit);
 router.post("/my-org/validate-gemini-key", protect, requireManagerOrOwner, validateGeminiApiKey);
 router.post(
   "/my-org/knowledge-base/upload",
@@ -145,6 +148,7 @@ router.put("/:id/renew", verifySuperAdmin, renewSubscription);
 router.patch("/:id/status", verifySuperAdmin, toggleStatus);
 router.post("/:id/resend-welcome", verifySuperAdmin, resendWelcomeEmail);
 router.put("/:id/whatsapp-limit", verifySuperAdmin, updateOrganizationWhatsAppLimit);
+router.put("/:id/addons", verifySuperAdmin, updateOrganizationAddons);
 
 // Super Admin AI Settings & Knowledge Base APIs
 router.get("/:id/ai-settings", verifySuperAdmin, getOrgAISettings);

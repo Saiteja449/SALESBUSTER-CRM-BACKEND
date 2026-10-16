@@ -2,6 +2,7 @@ import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
 import { getTenantModels, getMasterModels } from "../services/tenantManager.js";
 import { GeminiLiveSessionManager } from "../ai/assistant/geminiLiveGateway.js";
+import { checkAiQuotaAvailable, recordAiUsage } from "../services/aiUsageService.js";
 
 let io;
 
@@ -214,6 +215,24 @@ export const initSocket = (server) => {
         const { Organization: MasterOrg } = getMasterModels();
         const orgId = socket.user?.organizationId;
         const organization = orgId ? await MasterOrg.findById(orgId).lean() : null;
+
+        const isSuperAdmin = userRole === "super_admin" || userRole === "Super Admin";
+        if (!isSuperAdmin && !Boolean(organization?.addons?.biAnalyst)) {
+          socket.emit("bi_voice_error", {
+            message: "The BI Analyst add-on is not active for your organization. Please contact your administrator to enable this feature.",
+            addonRequired: "biAnalyst",
+          });
+          return;
+        }
+
+        const quotaCheck = await checkAiQuotaAvailable(organization || orgId, "biAnalyst", 1);
+        if (!quotaCheck.allowed) {
+          socket.emit("bi_voice_error", {
+            message: quotaCheck.reason,
+            quotaExceeded: true,
+          });
+          return;
+        }
 
         const liveSession = new GeminiLiveSessionManager({
           socket,

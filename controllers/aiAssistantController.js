@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import AIAssistantChat from "../models/AIAssistantChat.js";
 import { runSalesManagerAssistant } from "../ai/assistant/aiAssistantService.js";
+import { checkAiQuotaAvailable, reserveAiQuota, releaseAiQuota } from "../services/aiUsageService.js";
 
 /**
  * Helper to resolve AIAssistantChat model for the tenant
@@ -22,6 +23,21 @@ export const sendMessage = async (req, res) => {
         success: false,
         message: "Message text is required.",
       });
+    }
+
+    const orgId = req.organization?._id || req.user?.organizationId;
+    if (orgId) {
+      const reservation = await reserveAiQuota(orgId, "biAnalyst", 1);
+      if (!reservation.allowed) {
+        return res.status(429).json({
+          success: false,
+          message: reservation.reason,
+          quotaExceeded: true,
+          channel: "biAnalyst",
+          used: reservation.used,
+          limit: reservation.limit,
+        });
+      }
     }
 
     const cleanMessage = message.trim();
@@ -87,6 +103,10 @@ export const sendMessage = async (req, res) => {
       updatedAt: chat.updatedAt,
     });
   } catch (error) {
+    const orgId = req.organization?._id || req.user?.organizationId;
+    if (orgId) {
+      await releaseAiQuota(orgId, "biAnalyst", 1);
+    }
     console.error("[AI Assistant Controller] Error in sendMessage:", error);
     res.status(500).json({
       success: false,

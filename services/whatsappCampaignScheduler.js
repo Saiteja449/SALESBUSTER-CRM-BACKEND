@@ -267,6 +267,7 @@ export const checkAndRunScheduledCampaigns = async () => {
     const { Organization } = getMasterModels();
     const organizations = await Organization.find({
       "whatsappCloudSettings.isConfigured": true,
+      "addons.whatsappCampaigns": true,
     }).lean();
 
     const now = new Date();

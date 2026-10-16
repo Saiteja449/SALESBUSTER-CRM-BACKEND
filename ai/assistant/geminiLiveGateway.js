@@ -3,6 +3,7 @@ import { buildAssistantTools } from "./tools/index.js";
 import { getISTDateBoundaries } from "./dateUtils.js";
 import { executeToolCall } from "./toolRunner.js";
 import { decryptApiKey } from "../../utils/encryption.js";
+import { reserveAiQuota } from "../../services/aiUsageService.js";
 
 /**
  * Standard Function Declarations for Gemini Live API
@@ -125,6 +126,7 @@ export class GeminiLiveSessionManager {
     this.isActive = false;
     this.toolsByName = {};
     this.isSpeakingEmitted = false; // Tracks whether 'speaking' status was emitted for the current turn
+    this.isTurnReserved = false; // Tracks whether quota has been reserved for the active voice query turn
 
     // 1. Build Authenticated CRM Tools Suite
     const { toolsByName } = buildAssistantTools({
@@ -133,6 +135,30 @@ export class GeminiLiveSessionManager {
       user,
     });
     this.toolsByName = toolsByName;
+  }
+
+  /**
+   * Ensures 1 unit of BI Analyst conversation quota is atomically reserved for the current voice query turn.
+   */
+  async ensureTurnQuota() {
+    if (this.isTurnReserved) return true;
+    const orgId = this.organization?._id;
+    if (!orgId) return true;
+
+    const reservation = await reserveAiQuota(orgId, "biAnalyst", 1);
+    if (!reservation.allowed) {
+      console.warn(`[Gemini Live Gateway] Quota exceeded for org ${orgId}: ${reservation.reason}`);
+      this.socket.emit("bi_voice_error", {
+        message: reservation.reason || "Daily quota limit reached for BI Analyst voice queries.",
+        quotaExceeded: true,
+      });
+      this.socket.emit("bi_voice_turn_complete");
+      this.close();
+      return false;
+    }
+
+    this.isTurnReserved = true;
+    return true;
   }
 
   /**
@@ -252,6 +278,9 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
 
     // 1. Tool Calls from Gemini mid-speech
     if (serverMsg.toolCall?.functionCalls?.length > 0) {
+      const hasQuota = await this.ensureTurnQuota();
+      if (!hasQuota) return;
+
       const functionCalls = serverMsg.toolCall.functionCalls;
       const functionResponses = [];
 
@@ -290,11 +319,16 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       // Check for native user barge-in / interruption
       if (content.interrupted) {
         console.log(`[Gemini Live Gateway] Model interrupted by user speech on socket ${this.socket.id}`);
+        this.isSpeakingEmitted = false;
+        this.isTurnReserved = false;
         this.socket.emit("bi_voice_interrupted");
       }
 
       // Process model turn parts
       if (content.modelTurn?.parts) {
+        const hasQuota = await this.ensureTurnQuota();
+        if (!hasQuota) return;
+
         for (const part of content.modelTurn.parts) {
           // Audio chunk (24kHz PCM)
           if (part.inlineData?.data) {
@@ -320,9 +354,10 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         }
       }
 
-      // Turn complete flag — reset speaking tracker for the next turn
+      // Turn complete flag — reset speaking and quota reservation trackers for the next turn
       if (content.turnComplete) {
         this.isSpeakingEmitted = false;
+        this.isTurnReserved = false;
         this.socket.emit("bi_voice_turn_complete");
       }
     }

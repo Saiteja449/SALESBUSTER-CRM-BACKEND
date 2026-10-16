@@ -26,6 +26,8 @@ import {
   getCampaignAnalytics,
 } from "../controllers/whatsappCampaignController.js";
 
+import { requireAddon } from "../middleware/addonMiddleware.js";
+
 const router = express.Router();
 
 // Role-based authorization guard for administrative actions
@@ -49,9 +51,10 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB max
 });
 
-// All WhatsApp Cloud routes require authentication and manager/owner privileges
+// All WhatsApp Cloud routes require authentication, manager/owner privileges, and the whatsappCampaigns add-on
 router.use(protect);
 router.use(requireManagerOrOwner);
+router.use(requireAddon("whatsappCampaigns"));
 
 // 1. Account & Health (Configuration restricted to manager/admin)
 router.get("/status", requireManagerOrOwner, getCloudStatus);

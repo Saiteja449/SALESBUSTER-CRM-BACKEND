@@ -16,9 +16,10 @@ import path from "path";
 import { processAudioUpload } from "../utils/audioConverter.js";
 import { analyzeAudioFile } from "../services/audioAnalysisService.js";
 import { sendWelcomeEnquiryMessage, sendMessageFromCRM, getWhatsAppStatus } from "../whatsapp/whatsappService.js";
-import { decryptApiKey } from "../utils/encryption.js";
-import { recordAiUsage } from "../services/aiUsageService.js";
+import { recordAiUsage, checkAiQuotaAvailable, reserveAiQuota, releaseAiQuota } from "../services/aiUsageService.js";
 import * as XLSX from "xlsx";
+import { decryptApiKey } from "../utils/encryption.js";
+
 
 // Feature toggle for AI Call Analysis & Transcription
 const ENABLE_AI_AUDIO_ANALYSIS =
@@ -117,6 +118,34 @@ const triggerAudioAnalysis = async (
     return;
   }
   try {
+    if (orgId) {
+      const reservation = await reserveAiQuota(orgId, "calls", 1);
+      if (!reservation.allowed) {
+        console.warn(
+          `[AudioAnalysis] Analysis aborted for recording ${recordingId}: ${reservation.reason}`,
+        );
+        await LeadModel.updateOne(
+          { _id: leadId, "recordings._id": recordingId },
+          {
+            $set: {
+              "recordings.$.analysisStatus": "failed",
+              "recordings.$.analysisError": reservation.reason,
+            },
+          },
+        );
+        const io = getIO();
+        if (io) {
+          io.to(`org_${orgId}`).emit("recording_analyzed", {
+            leadId: leadId.toString(),
+            recordingId: recordingId.toString(),
+            analysisStatus: "failed",
+            analysisError: reservation.reason,
+          });
+        }
+        return;
+      }
+    }
+
     console.log(
       `[AudioAnalysis] Starting background transcription and analysis for lead ${leadId}, recording ${recordingId}`,
     );
@@ -166,12 +195,11 @@ const triggerAudioAnalysis = async (
       }
     }
 
-    if (orgId) {
-      recordAiUsage(orgId, "audio", 1).catch((err) =>
-        console.warn("[AudioAnalysis] Failed recording audio usage:", err.message),
-      );
-    }
+    // Quota was already reserved atomically before starting analysis
   } catch (error) {
+    if (orgId) {
+      await releaseAiQuota(orgId, "calls", 1);
+    }
     console.error(
       `[AudioAnalysis] Failed to analyze recording ${recordingId}:`,
       error,
