@@ -1,16 +1,29 @@
 import mongoose from "mongoose";
 import TelecallerAnalytics from "../models/TelecallerAnalytics.js";
 import AILimit from "../models/AILimit.js";
+import Lead from "../models/Lead.js";
+import { getIO } from "../socket/socket.js";
+import { recordLeadCallAtomic } from "../services/leadCallService.js";
 
 const getModels = (req) => ({
   AnalyticsModel: req.tenantModels?.TelecallerAnalytics || TelecallerAnalytics,
   AILimitModel: req.tenantModels?.AILimit || AILimit,
+  LeadModel: req.tenantModels?.Lead || Lead,
 });
 
 // Logs a single call and increments daily analytics
 export const logCall = async (req, res) => {
   try {
-    let { salesperson, salespersonId, date, duration, callType, status } = req.body;
+    let {
+      salesperson,
+      salespersonId,
+      date,
+      duration,
+      callType,
+      status,
+      leadId,
+      phone,
+    } = req.body;
 
     // Strict identity enforcement: if caller is a sales rep, bind to their verified user identity
     if (req.user?.role === "sales person") {
@@ -27,7 +40,48 @@ export const logCall = async (req, res) => {
       });
     }
 
-    const { AnalyticsModel } = getModels(req);
+    const { AnalyticsModel, LeadModel } = getModels(req);
+
+    // If leadId or phone is provided, atomically update lead call counters first
+    let updatedLead = null;
+    if (leadId || phone) {
+      updatedLead = await recordLeadCallAtomic({
+        LeadModel,
+        leadId,
+        phone,
+        salespersonId,
+        salespersonName: salesperson,
+      });
+
+      // If an explicit leadId was provided but no lead was found, abort and report 404
+      if (leadId && !updatedLead) {
+        return res.status(404).json({
+          success: false,
+          message: `Lead not found for leadId: ${leadId}. Call log aborted to preserve counter integrity.`,
+        });
+      }
+
+      if (updatedLead) {
+        const io = getIO();
+        if (io) {
+          const orgId = req.organization?._id || req.user?.organizationId;
+          if (orgId) {
+            const payload = {
+              leadId: updatedLead._id.toString(),
+              callCount: updatedLead.callCount,
+              repCallCounts: updatedLead.repCallCounts,
+              lastCallAt: updatedLead.lastCallAt,
+            };
+            io.to(`org_${orgId}`).emit("lead_call_updated", payload);
+            io.to(`org_${orgId}`).emit("lead_updated", {
+              leadId: updatedLead._id,
+              lead: updatedLead,
+            });
+          }
+        }
+      }
+    }
+
     const durationNum = parseInt(duration) || 0;
 
     const update = {
@@ -66,7 +120,18 @@ export const logCall = async (req, res) => {
       { new: true, upsert: true },
     );
 
-    res.status(200).json({ success: true, data: analytics });
+    res.status(200).json({
+      success: true,
+      data: analytics,
+      lead: updatedLead
+        ? {
+            id: updatedLead._id,
+            callCount: updatedLead.callCount,
+            repCallCounts: updatedLead.repCallCounts,
+            lastCallAt: updatedLead.lastCallAt,
+          }
+        : null,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
