@@ -19,6 +19,7 @@ import { sendWelcomeEnquiryMessage, sendMessageFromCRM, getWhatsAppStatus } from
 import { recordAiUsage, checkAiQuotaAvailable, reserveAiQuota, releaseAiQuota } from "../services/aiUsageService.js";
 import * as XLSX from "xlsx";
 import { decryptApiKey } from "../utils/encryption.js";
+import { recordLeadCallAtomic } from "../services/leadCallService.js";
 
 
 // Feature toggle for AI Call Analysis & Transcription
@@ -752,13 +753,27 @@ export const createLead = async (req, res) => {
         req.headers["x-forwarded-proto"] ||
         (host && !host.includes("localhost") ? "https" : req.protocol);
       const fileUrl = `${protocol}://${host}${basePath}${req.file.filename}`;
-      console.log(`[createLead] [Step 7] Audio processing complete. File URL: ${fileUrl}`);
+      const creatorId = req.user?._id || req.user?.id || null;
+      const creatorName = req.user?.name || "Sales Representative";
       leadData.recordings = [
         {
           name: req.body.recordingName || req.file.originalname,
           url: fileUrl,
+          duration: parseInt(req.body.duration) || 0,
+          salespersonId: creatorId,
+          salespersonName: creatorName,
           analysisStatus: ENABLE_AI_AUDIO_ANALYSIS ? "pending" : "paused",
           uploadedAt: new Date(),
+        },
+      ];
+      leadData.callCount = 1;
+      leadData.lastCallAt = new Date();
+      leadData.repCallCounts = [
+        {
+          salespersonId: creatorId,
+          salespersonName: creatorName,
+          count: 1,
+          lastCalledAt: new Date(),
         },
       ];
       console.log("[createLead] [Step 7] Recording record created:", leadData.recordings[0]);
@@ -949,6 +964,9 @@ export const updateLead = async (req, res) => {
     }
 
     // Handle file upload
+    let recordingObj = null;
+    let uploaderId = null;
+    let uploaderName = null;
     if (req.file) {
       console.log(`[updateLead] [Step 5] Processing audio upload: ${req.file.originalname}`);
       await processAudioUpload(req.file);
@@ -960,17 +978,20 @@ export const updateLead = async (req, res) => {
       const fileUrl = `${protocol}://${host}${basePath}${req.file.filename}`;
       console.log(`[updateLead] [Step 5] Audio file ready at URL: ${fileUrl}`);
 
-      const recordingObj = {
-        name: req.body.recordingName || req.file.originalname,
+      uploaderId = req.user?._id || req.user?.id || null;
+      uploaderName = req.user?.name || "Sales Representative";
+
+      recordingObj = {
+        _id: new mongoose.Types.ObjectId(),
+        name: req.body.recordingName || req.file.originalname || `Recording_${Date.now()}`,
         url: fileUrl,
+        duration: parseInt(req.body.duration) || 0,
+        salespersonId: uploaderId,
+        salespersonName: uploaderName,
         analysisStatus: ENABLE_AI_AUDIO_ANALYSIS ? "pending" : "paused",
         uploadedAt: new Date(),
       };
-      if (!lead.recordings) {
-        lead.recordings = [];
-      }
-      lead.recordings.push(recordingObj);
-      console.log("[updateLead] [Step 5] Attached new recording to lead:", recordingObj);
+      console.log("[updateLead] [Step 5] Prepared atomic recording object:", recordingObj);
     } else {
       console.log("[updateLead] [Step 5] No recording file to process.");
     }
@@ -981,34 +1002,54 @@ export const updateLead = async (req, res) => {
     await lead.save();
     console.log(`[updateLead] [Step 6] Lead document saved to DB. ID: ${lead._id}, Previous Status: "${previousStatus}", Current Status: "${lead.status}"`);
 
-    // AI Audio analysis trigger for newly uploaded recording
-    if (req.file && ENABLE_AI_AUDIO_ANALYSIS) {
-      const newRecording = lead.recordings[lead.recordings.length - 1];
-      if (newRecording) {
-        console.log(`[updateLead] [Step 7] Triggering background AI audio analysis for recording ${newRecording._id}...`);
-        const orgApiKey = decryptApiKey(req.organization?.aiSettings?.geminiApiKey);
-        triggerAudioAnalysis(
-          lead._id,
-          newRecording._id,
-          req.file.path,
-          req.file.mimetype,
-          LeadModel,
-          orgApiKey,
-          req.organization?._id || req.user?.organizationId,
-        ).catch((err) =>
-          console.error("[AudioAnalysis] Background analysis error (updateLead):", err),
-        );
+    let finalLead = lead;
+    let newRecording = null;
+    if (recordingObj) {
+      // Atomically add recording, increment callCount, increment repCallCounts, update lastCallAt
+      const atomicallyUpdatedLead = await recordLeadCallAtomic({
+        LeadModel,
+        leadId: lead._id,
+        salespersonId: uploaderId,
+        salespersonName: uploaderName,
+        recordingObj,
+      });
+
+      if (atomicallyUpdatedLead) {
+        finalLead = atomicallyUpdatedLead;
+        newRecording =
+          (finalLead.recordings && finalLead.recordings.find(
+            (r) => r._id && r._id.toString() === recordingObj._id.toString()
+          )) ||
+          (finalLead.recordings && finalLead.recordings[finalLead.recordings.length - 1]) ||
+          recordingObj;
       }
+    }
+
+    // AI Audio analysis trigger for newly uploaded recording
+    if (req.file && ENABLE_AI_AUDIO_ANALYSIS && newRecording) {
+      console.log(`[updateLead] [Step 7] Triggering background AI audio analysis for recording ${newRecording._id}...`);
+      const orgApiKey = decryptApiKey(req.organization?.aiSettings?.geminiApiKey);
+      triggerAudioAnalysis(
+        finalLead._id,
+        newRecording._id,
+        req.file.path,
+        req.file.mimetype,
+        LeadModel,
+        orgApiKey,
+        req.organization?._id || req.user?.organizationId,
+      ).catch((err) =>
+        console.error("[AudioAnalysis] Background analysis error (updateLead):", err),
+      );
     } else {
       console.log(`[updateLead] [Step 7] Skipping audio analysis (file present: ${!!req.file}, AI enabled: ${ENABLE_AI_AUDIO_ANALYSIS})`);
     }
 
     // Status change notification
     if (updateData.status) {
-      console.log(`[updateLead] [Step 8] Status changed ("${previousStatus}" -> "${lead.status}"). Creating notification for sales managers...`);
+      console.log(`[updateLead] [Step 8] Status changed ("${previousStatus}" -> "${finalLead.status}"). Creating notification for sales managers...`);
       const statusNotif = await NotificationModel.create({
         title: "Lead Status Updated",
-        message: `Lead ${lead.name || lead.phone || "Lead"} status updated to ${lead.status}.`,
+        message: `Lead ${finalLead.name || finalLead.phone || "Lead"} status updated to ${finalLead.status}.`,
         type: "lead_update",
         targetRoles: ["sales manager"],
       });
@@ -1030,9 +1071,33 @@ export const updateLead = async (req, res) => {
       console.warn("[updateLead] [Step 9] Error marking pending AI follow-up as done:", fuErr.message);
     }
 
-    console.log(`[updateLead] [Step 10] Responding with HTTP 200 OK for updated lead ID: ${lead._id}`);
+    // Broadcast real-time updates via Socket.IO
+    const io = getIO();
+    if (io) {
+      const orgId = req.organization?._id || req.user?.organizationId;
+      if (orgId) {
+        if (recordingObj && newRecording) {
+          const callPayload = {
+            leadId: finalLead._id.toString(),
+            recording: newRecording,
+            newRecording: newRecording,
+            callCount: finalLead.callCount,
+            repCallCounts: finalLead.repCallCounts,
+            lastCallAt: finalLead.lastCallAt,
+          };
+          io.to(`org_${orgId}`).emit("recording_uploaded", callPayload);
+          io.to(`org_${orgId}`).emit("lead_call_updated", callPayload);
+        }
+        io.to(`org_${orgId}`).emit("lead_updated", {
+          leadId: finalLead._id,
+          lead: finalLead,
+        });
+      }
+    }
+
+    console.log(`[updateLead] [Step 10] Responding with HTTP 200 OK for updated lead ID: ${finalLead._id}`);
     console.log("==================== [updateLead] SUCCESS ====================\n");
-    res.json({ success: true, data: lead });
+    res.json({ success: true, data: finalLead });
   } catch (error) {
     console.error(`[updateLead] [ERROR] Exception caught during lead update for ID ${id}:`, {
       message: error.message,
@@ -1428,26 +1493,45 @@ export const uploadRecordingForLead = async (req, res) => {
     const recordingName =
       req.body.recordingName || req.file.originalname || `Recording_${Date.now()}`;
 
+    const uploaderId = req.user?._id || req.user?.id || null;
+    const uploaderName = req.user?.name || "Sales Representative";
+
     const recordingObj = {
+      _id: new mongoose.Types.ObjectId(),
       name: recordingName,
       url: fileUrl,
+      duration: parseInt(req.body.duration) || 0,
+      salespersonId: uploaderId,
+      salespersonName: uploaderName,
       analysisStatus: ENABLE_AI_AUDIO_ANALYSIS ? "pending" : "paused",
       uploadedAt: new Date(),
     };
 
-    if (!lead.recordings) {
-      lead.recordings = [];
-    }
-    lead.recordings.push(recordingObj);
-    await lead.save();
+    // Atomically increment callCount, increment repCallCounts, update lastCallAt, and push recording
+    const updatedLead = await recordLeadCallAtomic({
+      LeadModel,
+      leadId: lead._id,
+      salespersonId: uploaderId,
+      salespersonName: uploaderName,
+      recordingObj,
+    });
 
-    const newRecording = lead.recordings[lead.recordings.length - 1];
+    if (!updatedLead) {
+      return res.status(404).json({ success: false, message: "Lead not found" });
+    }
+
+    const newRecording =
+      (updatedLead.recordings && updatedLead.recordings.find(
+        (r) => r._id && r._id.toString() === recordingObj._id.toString()
+      )) ||
+      (updatedLead.recordings && updatedLead.recordings[updatedLead.recordings.length - 1]) ||
+      recordingObj;
 
     if (ENABLE_AI_AUDIO_ANALYSIS && newRecording) {
       const orgApiKey = decryptApiKey(req.organization?.aiSettings?.geminiApiKey);
       const orgId = req.organization?._id || req.user?.organizationId;
       triggerAudioAnalysis(
-        lead._id,
+        updatedLead._id,
         newRecording._id,
         req.file.path,
         req.file.mimetype,
@@ -1463,11 +1547,20 @@ export const uploadRecordingForLead = async (req, res) => {
     if (io) {
       const orgId = req.organization?._id || req.user?.organizationId;
       const payload = {
-        leadId: lead._id.toString(),
+        leadId: updatedLead._id.toString(),
         recording: newRecording,
+        newRecording: newRecording,
+        callCount: updatedLead.callCount,
+        repCallCounts: updatedLead.repCallCounts,
+        lastCallAt: updatedLead.lastCallAt,
       };
       if (orgId) {
         io.to(`org_${orgId}`).emit("recording_uploaded", payload);
+        io.to(`org_${orgId}`).emit("lead_call_updated", payload);
+        io.to(`org_${orgId}`).emit("lead_updated", {
+          leadId: updatedLead._id,
+          lead: updatedLead,
+        });
       }
     }
 
@@ -1475,7 +1568,7 @@ export const uploadRecordingForLead = async (req, res) => {
       success: true,
       message: "Recording uploaded successfully. Transcription & analysis started.",
       data: newRecording,
-      lead,
+      lead: updatedLead,
     });
   } catch (error) {
     console.error("[UploadRecording] Error:", error);

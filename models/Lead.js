@@ -206,6 +206,35 @@ const leadSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    callCount: {
+      type: Number,
+      default: 0,
+      index: true,
+    },
+    repCallCounts: [
+      {
+        salespersonId: {
+          type: mongoose.Schema.Types.Mixed,
+          ref: "User",
+        },
+        salespersonName: {
+          type: String,
+          default: "",
+        },
+        count: {
+          type: Number,
+          default: 0,
+        },
+        lastCalledAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
+    lastCallAt: {
+      type: Date,
+      default: null,
+    },
     recordings: [
       {
         name: String,
@@ -215,6 +244,15 @@ const leadSchema = new mongoose.Schema(
         analysisStatus: { type: String, default: "pending" }, // pending, completed, failed
         analysisError: String,
         duration: Number,
+        salespersonId: {
+          type: mongoose.Schema.Types.Mixed,
+          ref: "User",
+          default: null,
+        },
+        salespersonName: {
+          type: String,
+          default: "",
+        },
         uploadedAt: { type: Date, default: Date.now },
       },
     ],
