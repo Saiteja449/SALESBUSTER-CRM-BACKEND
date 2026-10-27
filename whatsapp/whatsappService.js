@@ -954,6 +954,63 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
     const repSessionUserId = repUserMatch ? repUserMatch[1] : null;
 
     if (!lead) {
+      // Check if this phone number belongs to an existing non-lead prospect conversation
+      const nonLeadConv = await ConversationModel.findOne({
+        $or: [
+          { phone: phone },
+          { phone: cleanPhone },
+          { phone: new RegExp((cleanPhone.slice(-10) || phone) + "$") },
+        ],
+        isLead: false,
+      });
+
+      if (nonLeadConv) {
+        console.log(
+          `[WhatsApp] Message from non-lead prospect ${phone}. Skipping lead creation and AI auto-response.`
+        );
+
+        const incomingRecord = await MessageModel.create({
+          leadId: nonLeadConv._id,
+          messageId: msg.key.id,
+          contactPhone: phone,
+          sender: "Customer",
+          senderName: pushName || nonLeadConv.customerName || "Customer",
+          direction: "incoming",
+          messageType: "text",
+          text: textContent || "",
+          timestamp: new Date(),
+          aiGenerated: false,
+          delivered: true,
+          status: "delivered",
+          sessionId,
+        });
+
+        await ConversationModel.findByIdAndUpdate(nonLeadConv._id, {
+          lastMessage: textContent || "",
+          lastMessageTime: new Date(),
+          $inc: { unreadCount: 1 },
+        });
+
+        const io = getIO();
+        if (io) {
+          io.to(sessionId).emit("new_message", incomingRecord);
+          io.to(nonLeadConv._id.toString()).emit("new_message", incomingRecord);
+          if (orgId) {
+            io.to(`org_${orgId}`).emit("conversation_update", {
+              _id: nonLeadConv._id,
+              leadId: nonLeadConv._id,
+              phone,
+              customerName: nonLeadConv.customerName,
+              companyName: nonLeadConv.companyName,
+              isLead: false,
+              lastMessage: textContent || "",
+              lastMessageTime: new Date(),
+            });
+          }
+        }
+        return;
+      }
+
       // Do NOT create a lead if the identifier is a LID (not a real phone number)
       // or if the message is outgoing (sent by us/fromMe) to a non-existent lead
       if (isLid || msg.key.fromMe) {
@@ -1824,13 +1881,37 @@ export const sendMessageFromCRM = async (
   const MessageModel = models?.Message || Message;
   const ConversationModel = models?.Conversation || Conversation;
 
-  const lead = await LeadModel.findById(leadId);
+  let lead = null;
+  let prospectConversation = null;
+
+  if (mongoose.Types.ObjectId.isValid(leadId)) {
+    lead = await LeadModel.findById(leadId);
+  }
+
   if (!lead) {
-    throw new Error("Lead not found!");
+    const isObjectId = mongoose.Types.ObjectId.isValid(leadId);
+    const cleanP = String(leadId).replace(/\D/g, "");
+    const searchConditions = [
+      ...(isObjectId ? [{ _id: leadId }, { leadId }] : []),
+    ];
+    if (cleanP.length >= 10) {
+      searchConditions.push({ phone: cleanP });
+      searchConditions.push({ phone: "91" + cleanP.slice(-10) });
+      searchConditions.push({ phone: cleanP.slice(-10) });
+    }
+    if (searchConditions.length > 0) {
+      prospectConversation = await ConversationModel.findOne({
+        $or: searchConditions,
+      });
+    }
+    if (!prospectConversation) {
+      throw new Error("Lead not found!");
+    }
   }
 
   // Format destination jid
-  let cleanPhone = String(lead.phone).replace(/\D/g, "");
+  const targetPhone = lead ? lead.phone : prospectConversation.phone;
+  let cleanPhone = String(targetPhone).replace(/\D/g, "");
   if (cleanPhone.length === 10) {
     cleanPhone = "91" + cleanPhone;
   }
@@ -1839,7 +1920,7 @@ export const sendMessageFromCRM = async (
   const sendResult = await sock.sendMessage(targetJid, { text: messageText });
 
   // Pause AI for 5 minutes when an agent sends a manual CRM message
-  if (lead.aiEnabled) {
+  if (lead && lead.aiEnabled) {
     try {
       await pauseAIForLead(lead._id, models, organizationId);
       console.log(`[AI SNOOZE] CRM manual message detected for lead ${lead._id}. AI paused for 5 minutes.`);
@@ -1851,9 +1932,11 @@ export const sendMessageFromCRM = async (
   const timestamp = new Date();
 
   // Create message record
+  const conversationRecordId = lead ? lead._id : prospectConversation._id;
   const messageRecord = await MessageModel.create({
     messageId,
-    leadId: lead._id,
+    leadId: conversationRecordId,
+    contactPhone: cleanPhone,
     sender: "Sales Representative",
     senderName,
     direction: "outgoing",
@@ -1867,36 +1950,51 @@ export const sendMessageFromCRM = async (
   });
 
   // Update Conversation details
-  await ConversationModel.findOneAndUpdate(
-    { leadId: lead._id },
-    {
+  if (lead) {
+    await ConversationModel.findOneAndUpdate(
+      { leadId: lead._id },
+      {
+        lastMessage: messageText,
+        lastMessageTime: timestamp,
+        unreadCount: 0,
+      },
+      { upsert: true }
+    );
+  } else {
+    await ConversationModel.findByIdAndUpdate(prospectConversation._id, {
       lastMessage: messageText,
       lastMessageTime: timestamp,
       unreadCount: 0,
-    },
-    { upsert: true }
-  );
+    });
+  }
 
   // Emit socket updates
   const io = getIO();
   if (io) {
-    io.to(lead._id.toString()).emit("new_message", messageRecord);
+    io.to(conversationRecordId.toString()).emit("new_message", messageRecord);
     const updatePayload = {
-      leadId: lead._id,
+      _id: conversationRecordId,
+      leadId: conversationRecordId,
+      phone: cleanPhone,
+      customerName: prospectConversation?.customerName || lead?.name,
+      companyName: prospectConversation?.companyName || lead?.company,
+      isLead: !!lead,
       unreadCount: 0,
       lastMessage: messageText,
       lastMessageTime: timestamp,
     };
     const targetOrg =
       organizationId ||
-      lead.organizationId ||
-      lead.organization ||
+      lead?.organizationId ||
+      lead?.organization ||
+      prospectConversation?.organizationId ||
+      prospectConversation?.organization ||
       (sessionId ? sessions[sessionId]?.organizationId : null);
     if (targetOrg) {
       io.to(`org_${targetOrg}`).emit("conversation_updated", updatePayload);
     } else {
       console.warn(
-        `[WhatsApp] Skipping un-scoped conversation_updated emit: no organizationId for lead ${lead._id}`
+        `[WhatsApp] Skipping un-scoped conversation_updated emit: no organizationId for record ${conversationRecordId}`
       );
     }
   }

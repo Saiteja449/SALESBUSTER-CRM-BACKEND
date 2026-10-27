@@ -11,7 +11,12 @@ const messageSchema = new mongoose.Schema(
     leadId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Lead",
-      required: true,
+      required: false,
+      index: true,
+    },
+    contactPhone: {
+      type: String,
+      default: "",
       index: true,
     },
     sender: {
