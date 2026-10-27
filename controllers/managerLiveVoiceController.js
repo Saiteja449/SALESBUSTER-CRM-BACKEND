@@ -62,26 +62,19 @@ export const captureAndSendLiveVoiceWhatsApp = async (req, res) => {
 
     console.log(`[ManagerLiveVoice] Extracted details:`, extracted);
 
-    // 2. Resolve Customer Phone
-    let rawPhone = (req.body?.phone || extracted.spokenPhone || "").trim();
-    if (!rawPhone) {
-      return res.status(400).json({
-        success: false,
-        error:
-          "Customer phone number is required. Please provide a mobile number.",
-        extractedDetails: extracted,
-      });
-    }
-
+    // 2. Resolve Customer Phone (Voice extraction prioritized for zero manual data entry)
+    let rawPhone = (extracted.spokenPhone || req.body?.phone || "").trim();
     let cleanPhone = rawPhone.replace(/\D/g, "");
-    if (cleanPhone.length === 10) {
-      cleanPhone = "91" + cleanPhone;
-    }
-
-    if (cleanPhone.length < 10) {
-      return res.status(400).json({
+    if (cleanPhone.length >= 10) {
+      if (cleanPhone.length === 10) {
+        cleanPhone = "91" + cleanPhone;
+      }
+    } else {
+      return res.status(422).json({
         success: false,
-        error: "Invalid phone number provided.",
+        extractionFailed: true,
+        error:
+          "Could not detect a 10-digit customer mobile number from the voice recording. Please ensure the customer's phone number is spoken clearly during the conversation.",
         extractedDetails: extracted,
       });
     }
@@ -253,6 +246,14 @@ export const captureAndSendLiveVoiceWhatsApp = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Personalized WhatsApp message sent successfully via SalesBuster AI!",
+      phone: cleanPhone,
+      extracted: {
+        customerName,
+        companyName,
+        spokenPhone: cleanPhone,
+        phone: cleanPhone,
+        keyTopic: extracted.keyTopic,
+      },
       extractedDetails: {
         customerName,
         companyName,

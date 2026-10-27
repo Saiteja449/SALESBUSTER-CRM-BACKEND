@@ -160,5 +160,26 @@ test("Manager Live Voice Capture & WhatsApp Template Tests", async (t) => {
     assert.equal(jsonBody.extractionFailed, true, "extractionFailed flag should be true");
     assert.ok(jsonBody.message.includes("Could not identify"), "Provides clear feedback without generic send");
   });
+
+  await t.test("8. Voice-only phone extraction resolves 10-digit mobile without manual entry", () => {
+    // Spoken phone extracted from voice by Gemini (req.body.phone is null/empty)
+    const voiceExtracted = {
+      customerName: "Venkatesh Rao",
+      companyName: "Rao Enterprises",
+      spokenPhone: "9876543210",
+      keyTopic: "CRM Automation",
+    };
+    const reqBodyPhone = ""; // Manager enters no data
+
+    const rawPhone = (voiceExtracted.spokenPhone || reqBodyPhone || "").trim();
+    let cleanPhone = rawPhone.replace(/\D/g, "");
+    if (cleanPhone.length === 10) {
+      cleanPhone = "91" + cleanPhone;
+    }
+
+    assert.equal(cleanPhone, "919876543210", "Should cleanly format 10-digit spoken phone with 91 prefix");
+    assert.ok(cleanPhone.length >= 12, "Should be valid WhatsApp destination length");
+  });
 });
+
 

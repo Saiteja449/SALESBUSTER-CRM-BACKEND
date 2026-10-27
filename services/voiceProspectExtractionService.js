@@ -88,12 +88,17 @@ export const extractProspectDetailsFromVoice = async (
 You are the SalesBuster AI conversation intelligence engine.
 Analyze the attached live recorded voice conversation between a Sales Manager and a prospective customer.
 The conversation may be in English, Hindi, Telugu, or natural multilingual mixing (code-switching).
+CRITICAL: The sales manager does NOT enter any data manually. All prospect details including the customer's phone number MUST be extracted directly from this audio recording.
 
 TASK:
 Identify and extract:
-1. customerName: The customer's spoken name or greeting (e.g. "Rahul", "Suresh Sharma", "Dr. Mehta"). If no clear person name was spoken, return null.
+1. customerName: The customer's spoken name or greeting (e.g. "Rahul", "Suresh Sharma", "Dr. Mehta", "Ramesh"). If no clear person name was spoken, return null.
 2. companyName: The business, shop, firm, or company name associated with the customer (e.g. "Apex Technologies", "Balaji Textiles", "Kiran Hospital"). If none was mentioned, return null.
-3. spokenPhone: Any phone or mobile number verbally mentioned, or null.
+3. spokenPhone: The customer's 10-digit mobile or WhatsApp number verbally spoken, dictated, or exchanged anywhere in the conversation.
+   - May be spoken as digits or words in English, Hindi, or Telugu (e.g. "nine eight seven six five four three two one zero", "double nine, eight seven six...", "mera number 9876543210", "na number note cheyandi 9876543210").
+   - Convert spoken number words into a continuous numeric digit string (e.g. "9876543210").
+   - If country code (+91 or 91) is mentioned, include it or return the 10 digits.
+   - If no valid phone number was spoken, return null.
 4. keyTopic: A short 3-6 word summary of the service or product discussed.
 
 CRITICAL FORMAT REQUIREMENT:
@@ -102,7 +107,7 @@ Example format:
 {
   "customerName": "Rahul Sharma",
   "companyName": "Apex Technologies",
-  "spokenPhone": null,
+  "spokenPhone": "9876543210",
   "keyTopic": "CRM automation & WhatsApp marketing"
 }
 `;
@@ -148,10 +153,19 @@ Example format:
       throw new Error("Could not identify customer name or company in the audio recording. Please ensure clear speech and record again.");
     }
 
+    // Sanitize spoken phone
+    let cleanSpokenPhone = null;
+    if (parsed.spokenPhone && parsed.spokenPhone !== "null") {
+      const rawDigits = String(parsed.spokenPhone).replace(/\D/g, "");
+      if (rawDigits.length >= 10) {
+        cleanSpokenPhone = rawDigits.slice(-10);
+      }
+    }
+
     return {
       customerName: customerName || "Valued Customer",
       companyName: companyName || "",
-      spokenPhone: parsed.spokenPhone || null,
+      spokenPhone: cleanSpokenPhone,
       keyTopic: (parsed.keyTopic || "our discussion").trim(),
     };
   } catch (err) {
