@@ -24,7 +24,6 @@
     "@langchain/qdrant": "^1.0.3",
     "@langchain/textsplitters": "^1.0.1",
     "@qdrant/js-client-rest": "^1.19.0",
-    "@whiskeysockets/baileys": "^7.0.0-rc14",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",

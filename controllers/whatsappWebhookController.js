@@ -60,15 +60,16 @@ export const verifyWhatsAppWebhook = async (req, res) => {
 
     const defaultGlobalToken = "salesbuster_whatsapp_cloud_verify_token_2026";
     const altGlobalToken = "salesbuster_meta_verify_token_2026";
-    const envVerifyToken = process.env.WHATSAPP_CLOUD_VERIFY_TOKEN;
-    const envMetaToken = process.env.META_VERIFY_TOKEN;
+    const envVerifyToken =
+      process.env.META_WEBHOOK_VERIFY_TOKEN ||
+      process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ||
+      process.env.META_VERIFY_TOKEN;
 
     // Fast path: if token matches standard global token or the orgId itself, verify immediately
     const quickValidTokens = [
       defaultGlobalToken,
       altGlobalToken,
       envVerifyToken,
-      envMetaToken,
       orgId, // Allows using orgId directly as verify token
     ].filter(Boolean);
 
@@ -82,7 +83,10 @@ export const verifyWhatsAppWebhook = async (req, res) => {
       try {
         const { Organization } = getMasterModels();
         const org = await Organization.findById(orgId).maxTimeMS(2000);
-        if (org?.whatsappCloudSettings?.webhookVerifyToken && token === org.whatsappCloudSettings.webhookVerifyToken) {
+        if (
+          org?.whatsappCloudSettings?.webhookVerifyToken &&
+          token === org.whatsappCloudSettings.webhookVerifyToken
+        ) {
           console.log(`[WebhookVerification] Verified via custom DB token for org: ${orgId}`);
           return res.status(200).send(challenge);
         }
@@ -116,6 +120,7 @@ const STATUS_RANK = {
 
 /**
  * Handles incoming Meta WhatsApp Cloud API events (POST).
+ * Routes multi-field coexistence payloads: messages, smb_message_echoes, smb_app_state_sync, history, account_update.
  */
 export const receiveWhatsAppWebhook = async (req, res) => {
   // 1. Cryptographic signature check FIRST before responding
@@ -133,51 +138,131 @@ export const receiveWhatsAppWebhook = async (req, res) => {
       return;
     }
 
-    const { Organization } = getMasterModels();
+    const { Organization, WAAccount, WAWebhookEvent } = getMasterModels();
 
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
-        if (change.field !== "messages") continue;
-
+        const field = change.field;
         const value = change.value;
         if (!value) continue;
 
-        const phoneNumberId = value.metadata?.phone_number_id;
-        if (!phoneNumberId) continue;
+        // Durable Event Logging & Deduplication
+        const eventId = `${entry.id || "entry"}_${field}_${
+          value.metadata?.phone_number_id ||
+          value.messages?.[0]?.id ||
+          Date.now()
+        }`;
 
-        // 3. Resolve Organization from Master Database by phone_number_id
-        let org = await Organization.findOne({
-          "whatsappCloudSettings.phoneNumberId": phoneNumberId,
-        });
+        try {
+          if (WAWebhookEvent) {
+            const existingEvent = await WAWebhookEvent.findOne({ eventId });
+            if (existingEvent && existingEvent.status === "processed") {
+              console.log(`[WhatsAppWebhook] Skipping duplicate eventId: ${eventId}`);
+              continue;
+            }
+            await WAWebhookEvent.findOneAndUpdate(
+              { eventId },
+              { $set: { eventId, field, payload: value, status: "pending" } },
+              { upsert: true }
+            );
+          }
+        } catch (eventErr) {
+          console.warn("[WhatsAppWebhook] Audit log warning:", eventErr.message);
+        }
 
-        // Fallback: If route provided :orgId parameter
+        const phoneNumberId =
+          value.metadata?.phone_number_id ||
+          value.phone_number_id ||
+          value.metadata?.display_phone_number;
+
+        // 3. Resolve Organization & WAAccount
+        let waAccount = null;
+        let org = null;
+
+        if (phoneNumberId) {
+          waAccount = await WAAccount.findOne({ phoneNumberId });
+          if (waAccount) {
+            org = await Organization.findById(waAccount.organizationId);
+          }
+        }
+
+        if (!org && phoneNumberId) {
+          org = await Organization.findOne({
+            "whatsappCloudSettings.phoneNumberId": phoneNumberId,
+          });
+        }
+
         if (!org && req.params.orgId) {
           org = await Organization.findById(req.params.orgId);
-          if (org && !org.whatsappCloudSettings?.phoneNumberId) {
-            org.whatsappCloudSettings = org.whatsappCloudSettings || {};
-            org.whatsappCloudSettings.phoneNumberId = phoneNumberId;
-            await org.save().catch((err) => console.warn("[WhatsAppWebhook] Auto-save phoneNumberId failed:", err.message));
-          }
         }
 
         if (!org || !org.tenantDbName) {
           console.warn(
-            `[WhatsAppWebhook] No active organization found for phone_number_id: ${phoneNumberId} (orgId: ${req.params.orgId || "none"})`
+            `[WhatsAppWebhook] No active organization found for phone_number_id: ${phoneNumberId} (field: ${field})`
           );
           continue;
         }
 
         const tenantModels = getTenantModels(org.tenantDbName);
 
-        // 4. Process Status Updates (sent / delivered / read / failed)
-        if (Array.isArray(value.statuses) && value.statuses.length > 0) {
-          await processStatusUpdates(value.statuses, tenantModels, org);
+        // -----------------------------------------------------------------
+        // 4. MULTI-FIELD DISPATCH
+        // -----------------------------------------------------------------
+
+        // (A) FIELD: "messages"
+        if (field === "messages") {
+          // Status updates (sent / delivered / read / failed)
+          if (Array.isArray(value.statuses) && value.statuses.length > 0) {
+            await processStatusUpdates(value.statuses, tenantModels, org);
+          }
+
+          // Inbound customer messages
+          if (Array.isArray(value.messages) && value.messages.length > 0) {
+            await processInboundMessages(
+              value.messages,
+              value.contacts,
+              tenantModels,
+              org,
+              waAccount
+            );
+          }
         }
 
-        // 5. Process Inbound Customer Messages & Trigger AI Auto-Reply
-        if (Array.isArray(value.messages) && value.messages.length > 0) {
-          await processInboundMessages(value.messages, value.contacts, tenantModels, org);
+        // (B) FIELD: "smb_message_echoes" (Outbound echoes from mobile WhatsApp Business app)
+        else if (field === "smb_message_echoes") {
+          const echoes = value.messages || value.message_echoes || [];
+          if (Array.isArray(echoes) && echoes.length > 0) {
+            await processMobileAppEchoes(echoes, tenantModels, org, waAccount);
+          }
         }
+
+        // (C) FIELD: "smb_app_state_sync" (Address book contacts sync from mobile phone)
+        else if (field === "smb_app_state_sync") {
+          const contactsData = value.contacts || value.app_state_sync || [];
+          if (Array.isArray(contactsData) && contactsData.length > 0) {
+            await processAppStateContacts(contactsData, tenantModels, org, waAccount);
+          }
+        }
+
+        // (D) FIELD: "history" (Historic chat import chunks)
+        else if (field === "history") {
+          await processChatHistoryChunk(value, tenantModels, org, waAccount);
+        }
+
+        // (E) FIELD: "account_update" (Lifecycle events: PARTNER_REMOVED, PRIMARY_INACTIVITY)
+        else if (field === "account_update") {
+          await processAccountUpdate(value, org, waAccount);
+        }
+
+        // Mark event as processed in audit trail
+        try {
+          if (WAWebhookEvent) {
+            await WAWebhookEvent.updateOne(
+              { eventId },
+              { $set: { status: "processed", processedAt: new Date() } }
+            );
+          }
+        } catch (logErr) {}
       }
     }
   } catch (error) {
@@ -189,7 +274,7 @@ export const receiveWhatsAppWebhook = async (req, res) => {
  * Idempotently updates recipient records based on Meta delivery receipts with status ranking.
  */
 const processStatusUpdates = async (statuses, tenantModels, org) => {
-  const { WhatsAppCampaignRecipient, WhatsAppCampaign } = tenantModels;
+  const { WhatsAppCampaignRecipient, Message } = tenantModels;
   const io = getIO();
 
   for (const statusObj of statuses) {
@@ -201,12 +286,27 @@ const processStatusUpdates = async (statuses, tenantModels, org) => {
 
     if (!metaMessageId) continue;
 
+    // Update Message status in chat if found
+    if (Message) {
+      await Message.updateOne(
+        { $or: [{ messageId: metaMessageId }, { wamid: metaMessageId }] },
+        {
+          $set: {
+            status: statusStr,
+            delivered: statusStr === "delivered" || statusStr === "read",
+            read: statusStr === "read",
+          },
+        }
+      ).catch(() => {});
+    }
+
+    if (!WhatsAppCampaignRecipient) continue;
+
     const recipient = await WhatsAppCampaignRecipient.findOne({ metaMessageId });
     if (!recipient) {
       continue;
     }
 
-    // Never alter skipped recipients
     if (recipient.status === "Skipped") continue;
 
     const currentRank = STATUS_RANK[recipient.status] || 0;
@@ -214,7 +314,6 @@ const processStatusUpdates = async (statuses, tenantModels, org) => {
     let campaignInc = {};
 
     if (statusStr === "delivered") {
-      // Do not downgrade if already Read
       if (currentRank < STATUS_RANK.Delivered) {
         updateFields = {
           status: "Delivered",
@@ -223,7 +322,6 @@ const processStatusUpdates = async (statuses, tenantModels, org) => {
         campaignInc.deliveredCount = 1;
       }
     } else if (statusStr === "read") {
-      // Upgrade to Read
       if (currentRank < STATUS_RANK.Read) {
         updateFields = {
           status: "Read",
@@ -231,14 +329,12 @@ const processStatusUpdates = async (statuses, tenantModels, org) => {
         };
         campaignInc.readCount = 1;
 
-        // If skipped intermediate "delivered" webhook, also count as delivered
         if (currentRank < STATUS_RANK.Delivered) {
           updateFields.deliveredAt = recipient.deliveredAt || timestamp;
           campaignInc.deliveredCount = 1;
         }
       }
     } else if (statusStr === "failed") {
-      // NEVER downgrade a recipient that has already reached Delivered or Read
       if (currentRank >= STATUS_RANK.Delivered) {
         console.warn(
           `[WhatsAppWebhook] Ignored late failed webhook for recipient ${recipient._id} already at '${recipient.status}'`
@@ -251,92 +347,123 @@ const processStatusUpdates = async (statuses, tenantModels, org) => {
         updateFields = {
           status: "Failed",
           failedAt: timestamp,
-          errorCode: String(errDetail.code || "FAILED"),
-          errorMessage: errDetail.title || errDetail.message || "Delivery failed",
+          errorCode: String(errDetail.code || "UNKNOWN"),
+          errorMessage: errDetail.title || errDetail.message || "Meta delivery failure",
         };
         campaignInc.failedCount = 1;
       }
     }
 
     if (Object.keys(updateFields).length > 0) {
-      await WhatsAppCampaignRecipient.findByIdAndUpdate(recipient._id, updateFields);
-
-      if (Object.keys(campaignInc).length > 0) {
-        await WhatsAppCampaign.findByIdAndUpdate(recipient.campaignId, {
-          $inc: campaignInc,
-        });
-      }
-
-      if (io) {
-        io.to(`org_${org._id}`).emit("recipient_status_updated", {
-          campaignId: recipient.campaignId,
-          recipientId: recipient._id,
-          status: updateFields.status,
-          timestamp,
-        });
-      }
+      await WhatsAppCampaignRecipient.updateOne(
+        { _id: recipient._id },
+        { $set: updateFields }
+      );
     }
   }
 };
 
 /**
- * Handles inbound customer messages, opt-outs, and triggers AI responses within the 24h window.
+ * Normalizes an international phone number string to digits only.
  */
-const processInboundMessages = async (messages, contacts, tenantModels, org) => {
+const normalizePhoneDigits = (rawPhone) => {
+  if (!rawPhone) return "";
+  let digits = String(rawPhone).replace(/\D/g, "");
+  if (digits.startsWith("91") && digits.length === 12) {
+    digits = digits.slice(2);
+  } else if (digits.startsWith("0") && digits.length === 11) {
+    digits = digits.slice(1);
+  }
+  return digits;
+};
+
+/**
+ * Processes incoming customer messages, deduplicates via wamid, updates 24h window, and triggers AI reply.
+ */
+const processInboundMessages = async (
+  messages,
+  contacts,
+  tenantModels,
+  org,
+  waAccount
+) => {
   const { Lead, Message, Conversation, WhatsAppOptOut } = tenantModels;
   const io = getIO();
-  const contactMap = {};
-
-  if (Array.isArray(contacts)) {
-    for (const c of contacts) {
-      if (c.wa_id) contactMap[c.wa_id] = c.profile?.name || "";
-    }
-  }
 
   for (const msg of messages) {
-    const rawPhone = msg.from; // E.g. "919876543210"
-    if (!rawPhone) continue;
+    const rawSender = msg.from;
+    const cleanPhone = normalizePhoneDigits(rawSender);
+    if (!cleanPhone) continue;
 
-    const cleanPhone = rawPhone.replace(/\D/g, "");
-    const last10 = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
-    const senderName = contactMap[rawPhone] || "WhatsApp User";
+    // Strict deduplication by wamid / messageId
+    const wamid = msg.id;
+    if (wamid) {
+      const existing = await Message.findOne({
+        $or: [{ wamid }, { messageId: wamid }],
+      });
+      if (existing) {
+        // If message is an edit
+        if (msg.type === "edited" || msg.edited_text) {
+          const newText = msg.edited_text || msg.text?.body || "";
+          existing.text = newText;
+          await existing.save();
+          if (io) {
+            io.to(existing.leadId.toString()).emit("message_edited", existing);
+          }
+        }
+        continue;
+      }
+    }
 
-    // Extract message content
-    let messageText = "";
+    const contactObj = contacts?.find((c) => c.wa_id === rawSender);
+    const senderName = contactObj?.profile?.name || rawSender;
+
     let messageType = "text";
+    let messageText = "";
+    let mediaUrl = "";
 
     if (msg.type === "text") {
       messageText = msg.text?.body || "";
-    } else if (msg.type === "button") {
-      messageText = msg.button?.text || "";
-    } else if (msg.type === "interactive") {
-      messageText =
-        msg.interactive?.button_reply?.title ||
-        msg.interactive?.list_reply?.title ||
-        "";
     } else if (msg.type === "image") {
       messageType = "image";
-      messageText = msg.image?.caption || "[Image received]";
+      messageText = msg.image?.caption || "[Image]";
+      mediaUrl = msg.image?.id || "";
+    } else if (msg.type === "audio") {
+      messageType = "audio";
+      messageText = "[Audio Note]";
+      mediaUrl = msg.audio?.id || "";
+    } else if (msg.type === "document") {
+      messageType = "document";
+      messageText = msg.document?.caption || msg.document?.filename || "[Document]";
+      mediaUrl = msg.document?.id || "";
+    } else if (msg.type === "location") {
+      messageType = "location";
+      messageText = `[Location: ${msg.location?.latitude}, ${msg.location?.longitude}]`;
     } else {
-      messageText = `[${msg.type} attachment]`;
+      messageText = `[${msg.type || "Media"}]`;
     }
 
-    // 1. Locate or create Lead in tenant database
+    // 1. Find or create Lead in tenant database
     let lead = await Lead.findOne({
       $or: [
         { phone: cleanPhone },
-        { phone: last10 },
-        { phone: new RegExp(last10 + "$") },
+        { phone: `+91${cleanPhone}` },
+        { phone: `91${cleanPhone}` },
+        { phone: rawSender },
       ],
     });
 
     if (!lead) {
+      // If line is assigned to a specific sales rep, assign new lead to that rep
+      const assignedTo = waAccount?.userId ? waAccount.userId : "Unassigned";
+
       lead = await Lead.create({
         name: senderName,
         phone: cleanPhone,
         source: "WhatsApp",
         service: "General Enquiry",
         status: "New",
+        assignedTo,
         joinedAt: new Date(),
         lastActivity: new Date(),
       });
@@ -356,16 +483,18 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
       lead.optedOutAt = now;
       await lead.save();
 
-      await WhatsAppOptOut.findOneAndUpdate(
-        { phone: cleanPhone },
-        {
-          phone: cleanPhone,
-          reason: `Customer texted: "${messageText}"`,
-          sourceMessage: messageText,
-          optedOutAt: now,
-        },
-        { upsert: true }
-      );
+      if (WhatsAppOptOut) {
+        await WhatsAppOptOut.findOneAndUpdate(
+          { phone: cleanPhone },
+          {
+            phone: cleanPhone,
+            reason: `Customer texted: "${messageText}"`,
+            sourceMessage: messageText,
+            optedOutAt: now,
+          },
+          { upsert: true }
+        );
+      }
 
       console.log(`[WhatsAppWebhook] Recorded marketing opt-out for ${cleanPhone}`);
 
@@ -382,16 +511,19 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
 
     // 4. Save incoming message in tenant Message collection
     const incomingRecord = await Message.create({
-      messageId: msg.id || `in_cloud_${Date.now()}`,
+      messageId: wamid || `in_cloud_${Date.now()}`,
+      wamid: wamid || null,
       leadId: lead._id,
       sender: cleanPhone,
       senderName,
       direction: "incoming",
       messageType,
       text: messageText,
-      timestamp: now,
-      source: "cloud_api_chat",
+      mediaUrl,
+      timestamp: msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : now,
+      source: "cloud_api",
       status: "delivered",
+      rawPayload: msg,
     });
 
     // Update Conversation
@@ -405,7 +537,7 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
       { upsert: true }
     );
 
-    // Emit live Socket.IO update (deliver new_message ONLY to authorized lead chat room)
+    // Emit live Socket.IO update
     if (io) {
       io.to(lead._id.toString()).emit("new_message", incomingRecord);
       io.to(`org_${org._id}`).emit("conversation_updated", {
@@ -413,6 +545,9 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
         lastMessage: messageText,
         lastMessageTime: now,
       });
+      if (lead.assignedTo && lead.assignedTo !== "Unassigned") {
+        io.to(`user_${lead.assignedTo}`).emit("new_message", incomingRecord);
+      }
     }
 
     // 5. Inbound AI Auto-Reply Check
@@ -426,13 +561,10 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
       org.aiSettings?.geminiApiKey;
 
     if (!canAiReply) {
-      console.log(
-        `[WhatsAppWebhook] AI reply skipped for lead ${cleanPhone} (aiEnabled: ${lead.aiEnabled}, paused: ${isAiPaused})`
-      );
       continue;
     }
 
-    // Trigger AI in background (does not block webhook response)
+    // Trigger AI auto-reply
     (async () => {
       try {
         console.log(`[WhatsAppWebhook] Generating AI response for lead ${cleanPhone}...`);
@@ -457,15 +589,19 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
           return;
         }
 
-        const accessToken = decryptApiKey(org.whatsappCloudSettings.accessTokenEncrypted);
-        if (!accessToken) {
-          console.error(`[WhatsAppWebhook] Missing decrypted access token for org ${org._id}`);
+        const accessToken = waAccount?.accessTokenEncrypted
+          ? decryptApiKey(waAccount.accessTokenEncrypted)
+          : decryptApiKey(org.whatsappCloudSettings?.accessTokenEncrypted);
+        const targetPhoneId =
+          waAccount?.phoneNumberId || org.whatsappCloudSettings?.phoneNumberId;
+
+        if (!accessToken || !targetPhoneId) {
+          console.error(`[WhatsAppWebhook] Missing access token or phone ID for AI reply.`);
           return;
         }
 
-        // Send free-form AI message via Cloud API
         const sendResult = await sendTextMessage({
-          phoneNumberId: org.whatsappCloudSettings.phoneNumberId,
+          phoneNumberId: targetPhoneId,
           accessToken,
           toPhone: cleanPhone,
           textBody: aiResponseText,
@@ -473,9 +609,9 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
 
         const replyTime = new Date();
 
-        // Save AI outgoing message
         const outgoingRecord = await Message.create({
           messageId: sendResult.metaMessageId || `out_ai_${Date.now()}`,
+          wamid: sendResult.metaMessageId || null,
           leadId: lead._id,
           sender: "AI Agent",
           senderName: org.aiSettings?.agentPersona || "AI Sales Representative",
@@ -484,11 +620,10 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
           text: aiResponseText,
           timestamp: replyTime,
           aiGenerated: true,
-          source: "cloud_api_chat",
+          source: "ai_agent",
           status: "sent",
         });
 
-        // Update Conversation
         await Conversation.findOneAndUpdate(
           { leadId: lead._id },
           {
@@ -507,11 +642,284 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
             lastMessageTime: replyTime,
           });
         }
-
-        console.log(`[WhatsAppWebhook] Successfully sent AI reply to ${cleanPhone}`);
       } catch (aiErr) {
-        console.error(`[WhatsAppWebhook] Error generating/sending AI reply to ${cleanPhone}:`, aiErr);
+        console.error(`[WhatsAppWebhook] Error generating/sending AI reply:`, aiErr);
       }
     })();
+  }
+};
+
+/**
+ * Handles smb_message_echoes: messages sent by sales rep from their physical WhatsApp Business phone app.
+ * Persists with source: "business_app", triggers 60-minute AI pause, and emits live updates.
+ */
+const processMobileAppEchoes = async (echoes, tenantModels, org, waAccount) => {
+  const { Lead, Message, Conversation } = tenantModels;
+  const io = getIO();
+  const now = new Date();
+
+  for (const echo of echoes) {
+    const rawRecipient = echo.to || echo.recipient_id;
+    const cleanPhone = normalizePhoneDigits(rawRecipient);
+    if (!cleanPhone) continue;
+
+    const wamid = echo.id;
+    if (wamid) {
+      const existing = await Message.findOne({
+        $or: [{ wamid }, { messageId: wamid }],
+      });
+      if (existing) continue; // Deduplication
+    }
+
+    let echoText = "";
+    let messageType = "text";
+    if (echo.type === "text") {
+      echoText = echo.text?.body || "";
+    } else if (echo.type === "image") {
+      messageType = "image";
+      echoText = echo.image?.caption || "[Image sent from phone]";
+    } else if (echo.type === "audio") {
+      messageType = "audio";
+      echoText = "[Audio sent from phone]";
+    } else {
+      echoText = `[${echo.type || "Message"} sent from phone]`;
+    }
+
+    // Resolve or create lead
+    let lead = await Lead.findOne({
+      $or: [
+        { phone: cleanPhone },
+        { phone: `+91${cleanPhone}` },
+        { phone: `91${cleanPhone}` },
+        { phone: rawRecipient },
+      ],
+    });
+
+    if (!lead) {
+      const assignedTo = waAccount?.userId ? waAccount.userId : "Unassigned";
+      lead = await Lead.create({
+        name: cleanPhone,
+        phone: cleanPhone,
+        source: "WhatsApp",
+        service: "General Enquiry",
+        status: "Contacted",
+        assignedTo,
+        joinedAt: now,
+        lastActivity: now,
+      });
+    }
+
+    // CRITICAL: SMART COEXISTENCE AI PAUSE
+    // When a human sales rep replies directly from their phone, pause AI for 60 minutes!
+    const pauseUntil = new Date(now.getTime() + 60 * 60 * 1000);
+    lead.aiPausedUntil = pauseUntil;
+    lead.lastActivity = now;
+    await lead.save();
+
+    console.log(
+      `[WhatsAppCoexistence] Captured mobile echo for ${cleanPhone}. AI paused for 60m until ${pauseUntil.toISOString()}`
+    );
+
+    // Insert Outbound message record with source: "business_app"
+    const timestamp = echo.timestamp ? new Date(parseInt(echo.timestamp) * 1000) : now;
+    const echoRecord = await Message.create({
+      messageId: wamid || `echo_${Date.now()}`,
+      wamid: wamid || null,
+      leadId: lead._id,
+      sender: "Sales Representative (Phone App)",
+      senderName: waAccount?.displayPhone || "WhatsApp Business App",
+      direction: "outgoing",
+      messageType,
+      text: echoText,
+      timestamp,
+      source: "business_app",
+      status: "sent",
+      salesRepId: waAccount?.userId || null,
+      rawPayload: echo,
+    });
+
+    // Update Conversation
+    await Conversation.findOneAndUpdate(
+      { leadId: lead._id },
+      {
+        lastMessage: echoText,
+        lastMessageTime: timestamp,
+      },
+      { upsert: true }
+    );
+
+    if (io) {
+      io.to(lead._id.toString()).emit("new_message", echoRecord);
+      io.to(`org_${org._id}`).emit("conversation_updated", {
+        leadId: lead._id,
+        lastMessage: echoText,
+        lastMessageTime: timestamp,
+      });
+      if (waAccount?.userId) {
+        io.to(`user_${waAccount.userId}`).emit("new_message", echoRecord);
+      }
+    }
+  }
+};
+
+/**
+ * Handles smb_app_state_sync: Address book contacts mirrored from mobile phone app.
+ */
+const processAppStateContacts = async (contacts, tenantModels, org, waAccount) => {
+  const { WAContact, Lead } = tenantModels;
+  if (!WAContact) return;
+
+  for (const c of contacts) {
+    const waId = normalizePhoneDigits(c.wa_id || c.phone);
+    if (!waId) continue;
+
+    const name = c.name || c.display_name || "";
+    const action = c.action === "delete" ? "delete" : "upsert";
+
+    if (action === "delete") {
+      await WAContact.deleteOne({
+        accountId: waAccount?._id,
+        waId,
+      });
+      continue;
+    }
+
+    // Upsert into WAContact
+    let lead = null;
+    if (Lead) {
+      lead = await Lead.findOne({
+        $or: [{ phone: waId }, { phone: `+91${waId}` }, { phone: `91${waId}` }],
+      });
+    }
+
+    await WAContact.findOneAndUpdate(
+      { accountId: waAccount?._id, waId },
+      {
+        $set: {
+          organizationId: org._id,
+          accountId: waAccount?._id,
+          waId,
+          name,
+          leadId: lead?._id || null,
+          syncAction: "upsert",
+          lastSyncedAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+  }
+};
+
+/**
+ * Handles history: Backfill chunks of previous chats exported from mobile phone.
+ */
+const processChatHistoryChunk = async (value, tenantModels, org, waAccount) => {
+  const { Message, Conversation, Lead } = tenantModels;
+  const historyData = value.history || value;
+
+  // Handle User Declined Error (code 2593109 or decline flag)
+  if (
+    historyData.error?.code === 2593109 ||
+    historyData.status === "declined" ||
+    historyData.sharing_declined === true
+  ) {
+    console.log(`[WhatsAppCoexistence] Client declined history sharing for account ${waAccount?._id}`);
+    if (waAccount) {
+      waAccount.historySharingDeclined = true;
+      waAccount.status = "connected";
+      await waAccount.save();
+    }
+    return;
+  }
+
+  const messagesList = historyData.messages || [];
+  let importedCount = 0;
+
+  for (const item of messagesList) {
+    const wamid = item.id;
+    if (!wamid) continue;
+
+    const existing = await Message.findOne({
+      $or: [{ wamid }, { messageId: wamid }],
+    });
+    if (existing) continue;
+
+    const cleanPhone = normalizePhoneDigits(item.from || item.to);
+    if (!cleanPhone) continue;
+
+    let lead = await Lead.findOne({
+      $or: [{ phone: cleanPhone }, { phone: `+91${cleanPhone}` }],
+    });
+
+    if (!lead) {
+      lead = await Lead.create({
+        name: cleanPhone,
+        phone: cleanPhone,
+        source: "WhatsApp History",
+        status: "Existing Client",
+        assignedTo: waAccount?.userId || "Unassigned",
+        joinedAt: new Date(),
+      });
+    }
+
+    const direction = item.from === waAccount?.displayPhone ? "outgoing" : "incoming";
+    const timestamp = item.timestamp
+      ? new Date(parseInt(item.timestamp) * 1000)
+      : new Date();
+
+    await Message.create({
+      messageId: wamid,
+      wamid,
+      leadId: lead._id,
+      sender: direction === "outgoing" ? "Me" : cleanPhone,
+      direction,
+      messageType: item.type || "text",
+      text: item.text?.body || `[${item.type || "History Message"}]`,
+      timestamp,
+      source: "history", // Does NOT open 24h window
+      status: "delivered",
+      rawPayload: item,
+    });
+
+    importedCount++;
+  }
+
+  if (waAccount) {
+    waAccount.historyProgress = waAccount.historyProgress || {};
+    waAccount.historyProgress.chunksReceived =
+      (waAccount.historyProgress.chunksReceived || 0) + 1;
+    waAccount.historyProgress.messagesImported =
+      (waAccount.historyProgress.messagesImported || 0) + importedCount;
+    waAccount.historyProgress.lastChunkReceivedAt = new Date();
+
+    if (historyData.is_last_chunk || historyData.is_complete) {
+      waAccount.historyProgress.isComplete = true;
+      waAccount.status = "connected";
+    }
+    await waAccount.save();
+  }
+};
+
+/**
+ * Handles account_update: Account lifecycle events (PARTNER_REMOVED, PRIMARY_INACTIVITY).
+ */
+const processAccountUpdate = async (value, org, waAccount) => {
+  const reason = value.reason || value.event || "UNKNOWN";
+  console.warn(
+    `[WhatsAppCoexistence] Received account_update for org ${org._id} (reason: ${reason})`
+  );
+
+  if (waAccount) {
+    waAccount.status = "disconnected";
+    waAccount.disconnectReason = reason;
+    await waAccount.save();
+  }
+
+  const io = getIO();
+  if (io) {
+    io.to(`org_${org._id}`).emit("whatsapp_account_disconnected", {
+      reason,
+      phoneNumberId: waAccount?.phoneNumberId,
+    });
   }
 };

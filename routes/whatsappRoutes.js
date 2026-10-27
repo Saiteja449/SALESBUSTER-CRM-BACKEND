@@ -3,10 +3,8 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import {
-  connectClient,
   getStatus,
   logoutClient,
-  getQR,
   getConversations,
   getMessages,
   sendMessage,
@@ -19,8 +17,12 @@ import {
   getTestAIHistory,
   summarizeConversation,
   getTeamWhatsAppStatuses,
-  requestPairingCode,
 } from "../controllers/whatsappController.js";
+import {
+  onboardCoexistenceAccount,
+  disconnectCoexistenceAccount,
+  getCoexistenceStatus,
+} from "../controllers/whatsappCoexistenceController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { getMasterModels } from "../services/tenantManager.js";
 
@@ -170,12 +172,14 @@ router.get("/settings", getGlobalSettings);
 router.post("/settings", requireManagerOrOwner, updateGlobalSettings);
 router.post("/my-ai-toggle", toggleMyAIAutoReply);
 
-// Session Control
-router.post("/connect", connectClient);
+// Official Meta Cloud API Coexistence Endpoints
+router.post("/coexistence/onboard", onboardCoexistenceAccount);
+router.post("/coexistence/disconnect", disconnectCoexistenceAccount);
+router.get("/coexistence/status", getCoexistenceStatus);
+
+// WhatsApp Line Status & Logout (Official Meta Cloud API)
 router.get("/status", getStatus);
 router.post("/logout", logoutClient);
-router.get("/qr", getQR);
-router.post("/pairing-code", requestPairingCode);
 
 // Chats and Messages
 router.get("/conversations", getConversations);

@@ -11,6 +11,7 @@ import {
   maskApiKey,
 } from "../utils/encryption.js";
 import { getMasterModels } from "../services/tenantManager.js";
+import WAAccount from "../models/WhatsAppAccount.js";
 
 /**
  * Normalizes phone string to clean digits only.
@@ -74,9 +75,44 @@ export const getCloudStatus = async (req, res) => {
         .json({ success: false, message: "Organization not found." });
     }
 
-    const cloud = org.whatsappCloudSettings || {};
+    let cloud = org.whatsappCloudSettings || {};
     const orgId = org._id ? org._id.toString() : "";
     const webhookCallbackUrl = `https://betaapi.salesbuster.ai/api/whatsapp/cloud/webhook/${orgId}`;
+
+    // Seamless Coexistence fallback: check if official WhatsApp Coexistence account is connected
+    if (!cloud.isConfigured) {
+      try {
+        const waAccount = await WAAccount.findOne({
+          organizationId: org._id,
+          status: { $in: ["connected", "syncing"] },
+        }).sort({ updatedAt: -1 });
+
+        if (waAccount && waAccount.wabaId && waAccount.phoneNumberId) {
+          const { Organization } = getMasterModels();
+          await Organization.findByIdAndUpdate(org._id, {
+            $set: {
+              "whatsappCloudSettings.isConfigured": true,
+              "whatsappCloudSettings.wabaId": waAccount.wabaId,
+              "whatsappCloudSettings.phoneNumberId": waAccount.phoneNumberId,
+              "whatsappCloudSettings.displayPhoneNumber": waAccount.displayPhone || "",
+              "whatsappCloudSettings.accessTokenEncrypted": waAccount.accessTokenEncrypted,
+              "whatsappCloudSettings.lastSyncedAt": waAccount.lastActivityAt || new Date(),
+            },
+          });
+          cloud = {
+            ...cloud,
+            isConfigured: true,
+            wabaId: waAccount.wabaId,
+            phoneNumberId: waAccount.phoneNumberId,
+            displayPhoneNumber: waAccount.displayPhone || "",
+            accessTokenEncrypted: waAccount.accessTokenEncrypted,
+            lastSyncedAt: waAccount.lastActivityAt || new Date(),
+          };
+        }
+      } catch (fallbackErr) {
+        console.warn("[getCloudStatus] Error checking WAAccount coexistence fallback:", fallbackErr.message);
+      }
+    }
 
     res.status(200).json({
       success: true,

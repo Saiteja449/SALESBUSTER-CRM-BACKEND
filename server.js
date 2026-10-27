@@ -28,12 +28,8 @@ import whatsappWebhookRoutes from "./routes/whatsappWebhookRoutes.js";
 import appReleaseRoutes from "./routes/appReleaseRoutes.js";
 import aiAssistantRoutes from "./routes/aiAssistantRoutes.js";
 
-// Socket & WhatsApp Imports
+// Socket & WhatsApp Cloud Imports
 import { initSocket } from "./socket/socket.js";
-import {
-  initAllOrganizationWhatsAppConnections,
-  startWhatsAppWatchdog,
-} from "./whatsapp/whatsappService.js";
 import { resumeInterruptedCampaigns } from "./services/whatsappCampaignWorker.js";
 import { startCampaignScheduler } from "./services/whatsappCampaignScheduler.js";
 
@@ -121,12 +117,6 @@ const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-
-  // Auto-connect WhatsApp on server start for all active tenant organizations
-  initAllOrganizationWhatsAppConnections();
-
-  // Start background watchdog to auto-heal disconnected WhatsApp sessions
-  startWhatsAppWatchdog();
 
   // Resume any interrupted WhatsApp Cloud campaigns
   resumeInterruptedCampaigns();

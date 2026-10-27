@@ -128,7 +128,7 @@ test("sendDocumentMessageFromCRM: Finds existing lead or creates new lead, forma
   const mockSock = {
     sendMessage: async (jid, payload) => {
       sentSockData = { jid, payload };
-      return { key: { id: "baileys_msg_xyz_123" } };
+      return { key: { id: "mock_msg_xyz_123" } };
     },
   };
 
@@ -199,7 +199,7 @@ test("sendDocumentMessageFromCRM: Supports Word DOCX mimetype mapping", async ()
   const mockSock = {
     sendMessage: async (jid, payload) => {
       sentSockData = { jid, payload };
-      return { key: { id: "baileys_docx_999" } };
+      return { key: { id: "mock_docx_999" } };
     },
   };
 

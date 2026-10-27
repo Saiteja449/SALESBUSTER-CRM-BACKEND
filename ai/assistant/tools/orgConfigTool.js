@@ -28,18 +28,18 @@ export const createOrgConfigTool = ({ organization, tenantModels }) => {
             }
           : { status: "Not Connected" };
 
-        // 2. WhatsApp Baileys / QR Sessions
-        let baileysSessionsCount = 0;
-        let baileysActiveNumbers = [];
-        if (SessionModel) {
-          const sessions = await SessionModel.find({
-            status: { $in: ["connected", "authenticated"] },
-          })
-            .select("sessionId phoneNumber status")
-            .lean();
-          baileysSessionsCount = sessions.length;
-          baileysActiveNumbers = sessions.map((s) => s.phoneNumber || s.sessionId);
-        }
+        // 2. WhatsApp Connections (Meta Cloud API & Coexistence)
+        let activeAccountsCount = 0;
+        let activeNumbers = [];
+        try {
+          const WAAccount = (await import("../../../models/WhatsAppAccount.js")).default;
+          const accounts = await WAAccount.find({
+            organizationId: organization._id,
+            status: { $in: ["connected", "syncing"] },
+          }).select("displayPhone businessName status").lean();
+          activeAccountsCount = accounts.length;
+          activeNumbers = accounts.map((a) => a.displayPhone || "Connected");
+        } catch (e) {}
 
         // 3. AI / Gemini Integration
         const ai = organization.aiSettings || {};
@@ -65,10 +65,10 @@ export const createOrgConfigTool = ({ organization, tenantModels }) => {
           },
           integrations: {
             metaWhatsAppCloudAPI: cloudDetails,
-            whatsappWebDeviceSessions: {
-              activeConnectedSessions: baileysSessionsCount,
+            whatsappConnections: {
+              activeConnectedLines: activeAccountsCount,
               lineLimit: organization.whatsappLineLimit || 1,
-              connectedNumbers: baileysActiveNumbers,
+              connectedNumbers: activeNumbers,
             },
             googleGeminiAI: {
               status: isAiConfigured ? "Configured & Active" : "Not Configured",

@@ -637,18 +637,7 @@ export const updateOrganizationWhatsAppLimit = async (req, res) => {
     org.whatsappLineLimit = limit;
     await org.save();
 
-    // If downgrading from 2 → 1, disconnect secondary session if active
-    if (previousLimit === 2 && limit === 1) {
-      try {
-        const { logoutWhatsApp } = await import("../whatsapp/whatsappService.js");
-        const secondarySessionId = `org_${org._id}_device_2`;
-        await logoutWhatsApp(secondarySessionId);
-        console.log(`[WhatsApp] Auto-disconnected secondary session ${secondarySessionId} after line limit downgrade for org "${org.name}".`);
-      } catch (disconnectErr) {
-        // Non-fatal — session may not have been active
-        console.warn(`[WhatsApp] Could not disconnect secondary session for org "${org.name}":`, disconnectErr.message);
-      }
-    }
+
 
     const io = getIO();
     if (io) {

@@ -1,6 +1,12 @@
 # WhatsApp API Documentation (Sales Manager vs Sales Person)
 
-This document details the non-cloud WhatsApp APIs (Baileys Web Multi-Device QR Connection) partitioned specifically by user roles: **Sales Manager** (and Super Admin / Organization Owner) vs **Sales Person** (Sales Representative).
+> [!CAUTION]
+> **DEPRECATED / RETIRED ARCHITECTURE**:
+> The Baileys Web Multi-Device QR Connection engine has been **fully decommissioned** across SalesBuster CRM.
+> All WhatsApp messaging is now exclusively powered by the **Official Meta WhatsApp Cloud API** with **WhatsApp Business Mobile App Coexistence (Embedded Signup v4)**.
+> For the active Coexistence specification, refer to [WHATSAPP_COEXISTENCE_EMBEDDED_SIGNUP_V4_IMPLEMENTATION_PLAN.md](../WHATSAPP_COEXISTENCE_EMBEDDED_SIGNUP_V4_IMPLEMENTATION_PLAN.md).
+
+This document details the historical/legacy WhatsApp APIs (Baileys Web Multi-Device QR Connection) partitioned specifically by user roles: **Sales Manager** (and Super Admin / Organization Owner) vs **Sales Person** (Sales Representative).
 
 ---
 

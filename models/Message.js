@@ -67,12 +67,29 @@ const messageSchema = new mongoose.Schema(
       type: String,
       enum: [
         "baileys",
+        "cloud_api",
         "cloud_api_campaign",
         "cloud_api_chat",
+        "business_app",
+        "history",
         "crm_manual",
         "ai_agent",
       ],
-      default: "baileys",
+      default: "cloud_api",
+    },
+    wamid: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+    originalMessageId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    rawPayload: {
+      type: mongoose.Schema.Types.Mixed,
     },
     campaignId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -80,8 +97,7 @@ const messageSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
-    // Tracks which Baileys session this message was received/sent on
-    // e.g. "org_<orgId>_user_<userId>" for rep sessions, "org_<orgId>" for admin line
+    // Tracks which session or line this message was received/sent on
     sessionId: {
       type: String,
       default: null,

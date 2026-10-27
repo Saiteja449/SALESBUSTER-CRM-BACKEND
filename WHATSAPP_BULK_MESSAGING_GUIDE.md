@@ -13,8 +13,8 @@ SalesBuster CRM features a dual-layer WhatsApp communication engine:
    - Connects via official Meta Graph API (`v26.0`) with approved templates.
    - Multi-tenant: Each organization securely connects its own WhatsApp Business Account (WABA).
    - Credentials (System User Access Tokens) are encrypted at rest using hardware **AES-256-GCM**.
-2. **Baileys Web/QR WhatsApp** (Direct 1-on-1 Chats):
-   - Designed for direct sales conversations via phone QR pairing in the **WhatsApp Chat** tab.
+2. **Meta Coexistence v4** (Direct 1-on-1 Sales Chats):
+   - Direct sales conversations in the **WhatsApp Chat** hub operate seamlessly via official Meta Coexistence, echoing real-time between CRM and the WhatsApp Business mobile app.
 
 ---
 

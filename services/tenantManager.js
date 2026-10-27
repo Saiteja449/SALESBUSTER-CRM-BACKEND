@@ -23,6 +23,10 @@ import AIAssistantChat from "../models/AIAssistantChat.js";
 import Organization, { organizationSchema } from "../models/Organization.js";
 import AuthUser, { authUserSchema } from "../models/AuthUser.js";
 import AppRelease, { appReleaseSchema } from "../models/AppRelease.js";
+import WAAccount, { waAccountSchema } from "../models/WhatsAppAccount.js";
+import WAContact, { waContactSchema } from "../models/WhatsAppContact.js";
+import WAMessage, { waMessageSchema } from "../models/WhatsAppMessage.js";
+import WAWebhookEvent, { waWebhookEventSchema } from "../models/WhatsAppWebhookEvent.js";
 
 /**
  * Gets master database connection and models
@@ -39,11 +43,19 @@ export const getMasterModels = () => {
   const MasterAppRelease =
     masterDb.models.AppRelease ||
     masterDb.model("AppRelease", appReleaseSchema);
+  const MasterWAAccount =
+    masterDb.models.WAAccount ||
+    masterDb.model("WAAccount", waAccountSchema);
+  const MasterWAWebhookEvent =
+    masterDb.models.WAWebhookEvent ||
+    masterDb.model("WAWebhookEvent", waWebhookEventSchema);
 
   return {
     Organization: MasterOrg,
     AuthUser: MasterAuthUser,
     AppRelease: MasterAppRelease,
+    WAAccount: MasterWAAccount,
+    WAWebhookEvent: MasterWAWebhookEvent,
     masterDb,
   };
 };
@@ -105,6 +117,14 @@ export const getTenantModels = (tenantDbName) => {
     AIAssistantChat:
       db.models.AIAssistantChat ||
       db.model("AIAssistantChat", AIAssistantChat.schema),
+    WAAccount:
+      db.models.WAAccount || db.model("WAAccount", waAccountSchema),
+    WAContact:
+      db.models.WAContact || db.model("WAContact", waContactSchema),
+    WAMessage:
+      db.models.WAMessage || db.model("WAMessage", waMessageSchema),
+    WAWebhookEvent:
+      db.models.WAWebhookEvent || db.model("WAWebhookEvent", waWebhookEventSchema),
     db,
   };
 };

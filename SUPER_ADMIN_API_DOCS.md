@@ -450,7 +450,7 @@ curl -X POST https://betaapi.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b9c
 
 ## 9. Update WhatsApp Connection Limit (`PUT /api/organizations/:id/whatsapp-limit`)
 
-Configures the maximum number of WhatsApp Baileys connection lines for an organization tenant.
+Configures the maximum number of WhatsApp connection lines for an organization tenant.
 
 - `1` (or `"single"`): **Single Line (1 Device)**
 - `2` (or `"double"` / `"dual"`): **Dual Lines (2 Devices)**

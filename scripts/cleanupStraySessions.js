@@ -48,8 +48,7 @@ async function cleanup() {
     if (!tenantDbName) continue;
 
     const primarySessionId = `org_${orgId}`;
-    const secondarySessionId = `org_${orgId}_device_2`;
-    const allowedSessionIds = [primarySessionId, secondarySessionId];
+    const allowedSessionIds = [primarySessionId];
 
     const tenantDb = mongoose.connection.useDb(tenantDbName);
 

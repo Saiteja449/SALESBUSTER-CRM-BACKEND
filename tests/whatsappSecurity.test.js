@@ -2,13 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
-import { verifyPhoneNumberMatch, getWhatsAppStatus } from "../whatsapp/whatsappService.js";
+import { verifyPhoneNumberMatch } from "../whatsapp/whatsappService.js";
 import {
   sendMessage,
   getConversations,
   getMessages,
   summarizeConversation,
-  getQR,
   getStatus,
   getTeamWhatsAppStatuses,
 } from "../controllers/whatsappController.js";
@@ -402,52 +401,8 @@ test("summarizeConversation - Sales Rep blocked (403) from summarizing unassigne
 });
 
 // ============================================================================
-// 6. QR ACCESS CONTROL IN getQR
-// ============================================================================
-test("getQR - Sales Rep blocked (403) from requesting other session IDs", async () => {
-  const authRepId = new mongoose.Types.ObjectId().toString();
-  const orgId = new mongoose.Types.ObjectId().toString();
-
-  const req = {
-    user: {
-      _id: authRepId,
-      role: "sales person",
-      organizationId: orgId,
-    },
-    query: {
-      // Rep maliciously tries to access org line QR
-      sessionId: `org_${orgId}`,
-    },
-  };
-
-  const res = createMockRes();
-  await getQR(req, res);
-
-  assert.equal(res.statusCode, 403, "Sales rep should receive 403 when requesting other session QR");
-  assert.match(res.data.message, /only access their own WhatsApp session QR code/);
-});
-
-test("getQR - Admin blocked (403) from requesting a rep session QR code", async () => {
-  const orgId = new mongoose.Types.ObjectId().toString();
-  const repId = new mongoose.Types.ObjectId().toString();
-
-  const req = {
-    user: {
-      _id: new mongoose.Types.ObjectId().toString(),
-      role: "sales manager",
-      organizationId: orgId,
-    },
-    query: {
-      sessionId: `org_${orgId}_user_${repId}`,
-    },
-  };
-
-  const res = createMockRes();
-  await getQR(req, res);
-
-  assert.equal(res.statusCode, 403, "Admin should receive 403 when requesting rep session QR");
-  assert.match(res.data.message, /only generate QR codes for organization lines/);
-});
+// 6. QR ACCESS CONTROL (RETIRED)
+// Note: QR endpoints have been fully decommissioned in favor of Meta Cloud API Coexistence Embedded Signup.
 
 // ============================================================================
 // 7. SOCKET.IO AUTHENTICATION & ROOM AUTHORIZATION (PRODUCTION HANDLERS)
@@ -617,38 +572,6 @@ test("WhatsApp: getStatus resolves to disconnected when server restarted and DB 
   assert.equal(res.data.sessions[0].status, "disconnected", "Must resolve to disconnected instead of stuck connecting");
 });
 
-test("WhatsApp: getQR retrieves rep personal session QR and does not fall back to org line", async () => {
-  const mockSessionModel = {
-    findOne: () => ({
-      select: () => ({
-        lean: async () => ({
-          sessionId: "org_alpha_user_rep99",
-          status: "qr",
-          qrCode: "data:image/png;base64,mockrepqr123",
-        }),
-      }),
-    }),
-  };
-
-  const req = {
-    user: {
-      _id: "rep99",
-      role: "sales person",
-      organizationId: "alpha",
-    },
-    query: {
-      sessionId: "org_alpha_user_rep99",
-    },
-    tenantModels: {
-      WhatsAppSession: mockSessionModel,
-    },
-  };
-  const res = createMockRes();
-  await getQR(req, res);
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.data.sessionId, "org_alpha_user_rep99");
-  assert.equal(res.data.qrCode, "data:image/png;base64,mockrepqr123");
-});
 
 // ============================================================================
 // 12. TEAM WHATSAPP STATUS AUTHORIZATION TESTS

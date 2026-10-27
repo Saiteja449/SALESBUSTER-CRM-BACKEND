@@ -4,19 +4,11 @@ import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
 import WhatsAppSession from "../models/WhatsAppSession.js";
 import User from "../models/User.js";
-import {
-  connectWhatsApp,
-  logoutWhatsApp,
-  getWhatsAppStatus,
-  sendMessageFromCRM,
-  sendDocumentMessageFromCRM,
-  getSystemSettings,
-  updateSystemSettings,
-  DEFAULT_WELCOME_MESSAGE_TEMPLATE,
-  clearAIPauseForLead,
-} from "../whatsapp/whatsappService.js";
 import { getMasterModels } from "../services/tenantManager.js";
 import { getIO } from "../socket/socket.js";
+import WAAccount from "../models/WhatsAppAccount.js";
+import { sendTextMessage } from "../services/whatsappCloudService.js";
+import { decryptApiKey } from "../utils/encryption.js";
 
 const getModels = (req) => ({
   LeadModel: req.tenantModels?.Lead || Lead,
@@ -41,316 +33,89 @@ const isLeadAssignedToUser = (lead, user) => {
   return (userIdStr && assignedStr === userIdStr) || (userName && assignedStr === userName);
 };
 
-// @desc    Connect WhatsApp (starts Baileys client initialization)
-// @route   POST /api/whatsapp/connect
-// @access  Protected
-export const connectClient = async (req, res) => {
-  try {
-    const orgId = req.user?.organizationId
-      ? req.user.organizationId.toString()
-      : req.organization?._id
-        ? req.organization._id.toString()
-        : req.body.organizationId || null;
-    const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
 
-    // ================================================================
-    // SALES REP PERSONAL SESSION GATE
-    // Sales reps always connect to their own personal session.
-    // They cannot choose a device number or sessionId — it's auto-set.
-    // ================================================================
-    if (req.user?.role === "sales person") {
-      const repUserId = req.user._id.toString();
-      const targetSessionId = `org_${orgId}_user_${repUserId}`;
-      try {
-        const SessionModel = req.tenantModels?.WhatsAppSession || WhatsAppSessionModel;
-        if (SessionModel) {
-          await SessionModel.updateOne(
-            { sessionId: targetSessionId },
-            { $set: { errorMessage: "" } }
-          );
-        }
-      } catch (e) {}
-
-      connectWhatsApp({
-        sessionId: targetSessionId,
-        organizationId: orgId,
-        tenantDbName,
-      });
-      return res.status(200).json({
-        message: "WhatsApp connection started for your personal line. Please scan the QR code when it appears.",
-        sessionId: targetSessionId,
-      });
-    }
-    // ================================================================
-    // END SALES REP GATE — falls through to existing admin logic below
-    // ================================================================
-
-    // Determine organization's allowed WhatsApp line limit
-    let lineLimit = 2; // default fallback
-    if (orgId) {
-      try {
-        const { Organization } = getMasterModels();
-        const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
-        if (org) lineLimit = org.whatsappLineLimit || 1;
-      } catch (e) {}
-    }
-    
-    let targetSessionId;
-    if (orgId) {
-      const isDevice2 = req.body.device === 2 || req.body.deviceNumber === 2 || req.body.isSecondary;
-      const allowedSessionIds = lineLimit >= 2
-        ? [`org_${orgId}`, `org_${orgId}_device_2`]
-        : [`org_${orgId}`];
-
-      if (isDevice2 && lineLimit < 2) {
-        return res.status(403).json({
-          message: "This organization is restricted to a Single WhatsApp Line. Upgrade to Dual Lines to connect a second device.",
-        });
-      }
-
-      if (req.body.sessionId && allowedSessionIds.includes(req.body.sessionId)) {
-        targetSessionId = req.body.sessionId;
-      } else if (isDevice2) {
-        targetSessionId = `org_${orgId}_device_2`;
-      } else {
-        targetSessionId = `org_${orgId}`;
-      }
-    } else {
-      targetSessionId = req.body.sessionId || (req.body.device === 2 ? "device_2" : "device_1");
-    }
-
-    connectWhatsApp({
-      sessionId: targetSessionId,
-      organizationId: orgId,
-      tenantDbName,
-    });
-    res.status(200).json({ message: "WhatsApp connection worker started.", sessionId: targetSessionId });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-// @desc    Get WhatsApp connection status
+// @desc    Get WhatsApp connection status (Meta Cloud API)
 // @route   GET /api/whatsapp/status
 // @access  Protected
 export const getStatus = async (req, res) => {
   try {
-    const { WhatsAppSessionModel } = getModels(req);
     const orgId = req.user?.organizationId
       ? req.user.organizationId.toString()
       : req.organization?._id
         ? req.organization._id.toString()
         : null;
 
-    const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
+    const isSalesRep = req.user?.role === "sales person";
 
-    // ================================================================
-    // SALES REP: Return only their personal session status
-    // ================================================================
-    if (req.user?.role === "sales person") {
-      const repUserId = req.user._id.toString();
-      const repSessionId = `org_${orgId}_user_${repUserId}`;
-      const memStatuses = getWhatsAppStatus(orgId);
-      const memSession = memStatuses.find((s) => s.sessionId === repSessionId) || {};
-      const dbSession = await WhatsAppSessionModel.findOne({ sessionId: repSessionId }).lean();
-
-      // Resolve status: prefer active in-memory runtime state.
-      // If there is no in-memory session:
-      // - If DB says "connected", trigger auto-heal and report "connecting".
-      // - Otherwise, any stale "connecting" or "qr" in DB from a previous server run is reset to "disconnected".
-      let status = "disconnected";
-      if (memSession.status) {
-        status = memSession.status;
-      } else if (dbSession?.status === "connected") {
-        status = "connecting";
-        connectWhatsApp({ sessionId: repSessionId, organizationId: orgId, tenantDbName }).catch(() => {});
-      } else {
-        status = "disconnected";
-        if (dbSession?.status === "connecting" || dbSession?.status === "qr") {
-          WhatsAppSessionModel.updateOne(
-            { sessionId: repSessionId },
-            { $set: { status: "disconnected", qrCode: "" } }
-          ).catch(() => {});
+    let waAccount = null;
+    const AccountModel = req.tenantModels?.WAAccount || WAAccount;
+    if (orgId && (mongoose.connection?.readyState === 1 || req.tenantModels?.WAAccount)) {
+      try {
+        if (isSalesRep) {
+          waAccount = await AccountModel.findOne({
+            organizationId: orgId,
+            userId: req.user._id,
+          }).lean();
         }
-      }
+        if (!waAccount) {
+          waAccount = await AccountModel.findOne({
+            organizationId: orgId,
+            userId: null,
+          }).lean();
+        }
+      } catch (e) {}
+    }
 
-      if ((status === "connected" || status === "qr" || status === "connecting") && dbSession?.errorMessage) {
-        WhatsAppSessionModel.updateOne(
-          { sessionId: repSessionId },
-          { $set: { errorMessage: "" } }
-        ).catch(() => {});
-      }
-
+    if (waAccount && (waAccount.status === "connected" || waAccount.status === "syncing")) {
       return res.status(200).json({
+        isCoexistence: true,
         sessions: [
           {
-            sessionId: repSessionId,
+            sessionId: `coexist_${waAccount.phoneNumberId}`,
             organizationId: orgId,
-            status,
-            qrCode: status === "qr" ? memSession.qrCode || dbSession?.qrCode || "" : "",
-            connectedPhone: memSession.connectedPhone || dbSession?.connectedPhone || "",
-            connectedName: memSession.connectedName || dbSession?.connectedName || "",
+            status: waAccount.status,
+            qrCode: "",
+            connectedPhone: waAccount.displayPhone || waAccount.phoneNumberId,
+            connectedName: waAccount.businessName || "WhatsApp Business (Official)",
             isPrimary: true,
-            label: "My WhatsApp Line",
-            isRepSession: true,
-            expectedPhone: req.user.phone || "",
-            errorMessage:
-              status === "connected" || status === "qr" || status === "connecting"
-                ? ""
-                : dbSession?.errorMessage || "",
+            label: isSalesRep ? "My WhatsApp Line" : "Official WhatsApp Line",
+            isRepSession: Boolean(waAccount.userId),
+            isCoexistence: true,
+            phoneNumberId: waAccount.phoneNumberId,
+            syncDeadline: waAccount.syncDeadline,
+            historyProgress: waAccount.historyProgress,
           },
         ],
-        isRepSession: true,
+        isRepSession: isSalesRep,
         whatsappLineLimit: 1,
       });
     }
-    // ================================================================
-    // END SALES REP PATH — falls through to existing admin logic below
-    // ================================================================
 
-    if (!orgId) {
-      // Legacy single-tenant fallback (always return both device slots)
-      const allowedSessionIds = ["device_1", "device_2"];
-      const memoryStatuses = getWhatsAppStatus(null);
-      const dbSessions = await WhatsAppSessionModel.find({
-        sessionId: { $in: allowedSessionIds },
-      });
-      const result = allowedSessionIds.map((sId, index) => {
-        const mem = memoryStatuses.find((m) => m.sessionId === sId);
-        const db = dbSessions.find((d) => d.sessionId === sId);
-        if (db?.status === "connected" && mem?.status !== "connected" && mem?.status !== "connecting") {
-          connectWhatsApp(sId).catch((e) => console.error(`[WhatsApp] Legacy auto-connect failed for ${sId}:`, e));
-        }
-        const status =
-          mem?.status ||
-          (db?.status === "connected" ? "connecting" : db?.status || "disconnected");
-        return {
-          sessionId: sId,
-          organizationId: null,
-          status,
-          qrCode: status === "qr" ? mem?.qrCode || db?.qrCode || "" : "",
-          connectedPhone: mem?.connectedPhone || db?.connectedPhone || "",
-          connectedName: mem?.connectedName || db?.connectedName || "",
-          isPrimary: index === 0,
-          label: index === 0 ? "Device 1 (Primary)" : "Device 2 (Secondary)",
-        };
-      });
-      return res.status(200).json(result);
-    }
-
-    // Determine organization's allowed WhatsApp line limit
-    let lineLimit = 1;
-    try {
-      const { Organization } = getMasterModels();
-      const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
-      if (org) lineLimit = org.whatsappLineLimit || 1;
-    } catch (e) {}
-
-    const primarySessionId = `org_${orgId}`;
-    const secondarySessionId = `org_${orgId}_device_2`;
-    const allowedSessionIds = lineLimit >= 2
-      ? [primarySessionId, secondarySessionId]
-      : [primarySessionId];
-
-    const memoryStatuses = getWhatsAppStatus(orgId).filter((m) =>
-      allowedSessionIds.includes(m.sessionId)
-    );
-
-    const dbSessions = await WhatsAppSessionModel.find({
-      sessionId: { $in: allowedSessionIds },
-    });
-
-    const result = [];
-
-    // 1. Always include Primary Session
-    const primaryMem = memoryStatuses.find((m) => m.sessionId === primarySessionId);
-    const primaryDb = dbSessions.find((d) => d.sessionId === primarySessionId);
-
-    // If DB says connected but in-memory socket is missing, auto-heal connection in background
-    if (primaryDb?.status === "connected" && primaryMem?.status !== "connected" && primaryMem?.status !== "connecting") {
-      console.log(`[WhatsApp] getStatus detected disconnected memory state for ${primarySessionId}. Triggering auto-heal...`);
-      connectWhatsApp({
-        sessionId: primarySessionId,
-        organizationId: orgId,
-        tenantDbName,
-      }).catch((e) => console.error(`[WhatsApp] Auto-connect from getStatus failed for ${primarySessionId}:`, e));
-    }
-
-    let primaryStatus = "disconnected";
-    if (primaryMem?.status) {
-      primaryStatus = primaryMem.status;
-    } else if (primaryDb?.status === "connected") {
-      primaryStatus = "connecting";
-    } else {
-      primaryStatus = "disconnected";
-      if (primaryDb?.status === "connecting" || primaryDb?.status === "qr") {
-        WhatsAppSessionModel.updateOne(
-          { sessionId: primarySessionId },
-          { $set: { status: "disconnected", qrCode: "" } }
-        ).catch(() => {});
-      }
-    }
-
-    result.push({
-      sessionId: primarySessionId,
-      organizationId: orgId,
-      status: primaryStatus,
-      qrCode: primaryStatus === "qr" ? primaryMem?.qrCode || primaryDb?.qrCode || "" : "",
-      connectedPhone: primaryMem?.connectedPhone || primaryDb?.connectedPhone || "",
-      connectedName: primaryMem?.connectedName || primaryDb?.connectedName || "",
-      isPrimary: true,
-      label: "Device 1 (Primary)",
-    });
-
-    // 2. Include Secondary Session only if line limit allows
-    if (lineLimit >= 2) {
-      const secondaryMem = memoryStatuses.find((m) => m.sessionId === secondarySessionId);
-      const secondaryDb = dbSessions.find((d) => d.sessionId === secondarySessionId);
-
-      if (secondaryDb?.status === "connected" && secondaryMem?.status !== "connected" && secondaryMem?.status !== "connecting") {
-        console.log(`[WhatsApp] getStatus detected disconnected memory state for ${secondarySessionId}. Triggering auto-heal...`);
-        connectWhatsApp({
-          sessionId: secondarySessionId,
+    // Default disconnected state
+    return res.status(200).json({
+      sessions: [
+        {
+          sessionId: orgId ? (isSalesRep ? `org_${orgId}_user_${req.user._id}` : `org_${orgId}`) : "device_1",
           organizationId: orgId,
-          tenantDbName,
-        }).catch((e) => console.error(`[WhatsApp] Auto-connect from getStatus failed for ${secondarySessionId}:`, e));
-      }
-
-      let secondaryStatus = "disconnected";
-      if (secondaryMem?.status) {
-        secondaryStatus = secondaryMem.status;
-      } else if (secondaryDb?.status === "connected") {
-        secondaryStatus = "connecting";
-      } else {
-        secondaryStatus = "disconnected";
-        if (secondaryDb?.status === "connecting" || secondaryDb?.status === "qr") {
-          WhatsAppSessionModel.updateOne(
-            { sessionId: secondarySessionId },
-            { $set: { status: "disconnected", qrCode: "" } }
-          ).catch(() => {});
-        }
-      }
-
-      result.push({
-        sessionId: secondarySessionId,
-        organizationId: orgId,
-        status: secondaryStatus,
-        qrCode: secondaryStatus === "qr" ? secondaryMem?.qrCode || secondaryDb?.qrCode || "" : "",
-        connectedPhone: secondaryMem?.connectedPhone || secondaryDb?.connectedPhone || "",
-        connectedName: secondaryMem?.connectedName || secondaryDb?.connectedName || "",
-        isPrimary: false,
-        label: "Device 2 (Secondary)",
-      });
-    }
-
-    // Include the line limit in the response for frontend adaptation
-    res.status(200).json({ sessions: result, whatsappLineLimit: lineLimit });
+          status: "disconnected",
+          qrCode: "",
+          connectedPhone: "",
+          connectedName: "",
+          isPrimary: true,
+          label: isSalesRep ? "My WhatsApp Line" : "Company WhatsApp Line",
+          isRepSession: isSalesRep,
+          isCoexistence: true,
+        },
+      ],
+      isRepSession: isSalesRep,
+      whatsappLineLimit: 1,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// @desc    Disconnect WhatsApp and delete credentials
+// @desc    Disconnect WhatsApp (Meta Cloud API)
 // @route   POST /api/whatsapp/logout
 // @access  Protected
 export const logoutClient = async (req, res) => {
@@ -361,131 +126,23 @@ export const logoutClient = async (req, res) => {
         ? req.organization._id.toString()
         : null;
 
-    // ================================================================
-    // SALES REP: Only allow logout of their own personal session
-    // ================================================================
-    if (req.user?.role === "sales person") {
-      const repUserId = req.user._id.toString();
-      const targetSessionId = `org_${orgId}_user_${repUserId}`;
-      await logoutWhatsApp(targetSessionId);
-      return res.status(200).json({
-        message: "Your WhatsApp line has been disconnected successfully.",
-        sessionId: targetSessionId,
-      });
-    }
-    // ================================================================
-
-    let targetSessionId;
     if (orgId) {
-      const allowedSessionIds = [`org_${orgId}`, `org_${orgId}_device_2`];
-      if (req.body.sessionId && allowedSessionIds.includes(req.body.sessionId)) {
-        targetSessionId = req.body.sessionId;
-      } else if (req.body.device === 2 || req.body.deviceNumber === 2 || req.body.isSecondary) {
-        targetSessionId = `org_${orgId}_device_2`;
-      } else {
-        targetSessionId = `org_${orgId}`;
+      const query = { organizationId: orgId };
+      if (req.user?.role === "sales person") {
+        query.userId = req.user._id;
       }
-    } else {
-      targetSessionId = req.body.sessionId || (req.body.device === 2 ? "device_2" : "device_1");
+      await WAAccount.updateMany(query, { $set: { status: "disconnected" } });
     }
 
-    await logoutWhatsApp(targetSessionId);
-    res
-      .status(200)
-      .json({ message: "WhatsApp disconnected and logged out successfully.", sessionId: targetSessionId });
+    res.status(200).json({
+      message: "WhatsApp disconnected successfully.",
+      sessionId: orgId ? `org_${orgId}` : "device_1",
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// @desc    Get current active QR code image string
-// @route   GET /api/whatsapp/qr
-// @access  Protected
-export const getQR = async (req, res) => {
-  try {
-    const orgId = req.user?.organizationId
-      ? req.user.organizationId.toString()
-      : req.organization?._id
-        ? req.organization._id.toString()
-        : null;
-    let lineLimit = 1;
-    if (orgId && mongoose.connection.readyState === 1) {
-      try {
-        const { Organization } = getMasterModels();
-        const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
-        if (org) lineLimit = org.whatsappLineLimit || 1;
-      } catch (e) {}
-    }
-
-    let targetSessionId = req.query.sessionId;
-
-    // ================================================================
-    // QR SESSION OWNERSHIP ENFORCEMENT
-    // Sales reps can only access their own session QR code.
-    // Admins can only access organization line QR codes.
-    // ================================================================
-    if (req.user?.role === "sales person") {
-      const repSessionId = orgId
-        ? `org_${orgId}_user_${req.user._id.toString()}`
-        : `user_${req.user._id.toString()}`;
-      if (req.query.sessionId && req.query.sessionId !== repSessionId) {
-        return res.status(403).json({
-          message:
-            "Access denied. Sales representatives can only access their own WhatsApp session QR code.",
-          qrCode: "",
-        });
-      }
-      targetSessionId = repSessionId;
-    } else if (req.user?.role === "sales manager" || req.user?.role === "super_admin") {
-      if (targetSessionId && targetSessionId.includes("_user_")) {
-        return res.status(403).json({
-          message:
-            "Administrators can only generate QR codes for organization lines.",
-          qrCode: "",
-        });
-      }
-    }
-
-    const isDevice2 =
-      req.query.device === "2" ||
-      req.query.deviceNumber === "2" ||
-      targetSessionId?.includes("device_2");
-
-    if (orgId && isDevice2 && lineLimit < 2) {
-      return res.status(403).json({
-        message:
-          "This organization is configured for a Single WhatsApp Line. Upgrade to Dual Lines to access Line 2.",
-        qrCode: "",
-      });
-    }
-
-    const statusDataList = getWhatsAppStatus(orgId);
-    if (!targetSessionId) {
-      targetSessionId = isDevice2
-        ? (orgId ? `org_${orgId}_device_2` : "device_2")
-        : (orgId ? `org_${orgId}` : "device_1");
-    }
-    const statusData = statusDataList.find((s) => s.sessionId === targetSessionId) || {};
-    let qrCode = statusData.qrCode || "";
-
-    // Fallback to database persisted QR code if memory QR is not set
-    if (!qrCode && targetSessionId) {
-      try {
-        const { WhatsAppSessionModel } = getModels(req);
-        const dbSession = await WhatsAppSessionModel.findOne({ sessionId: targetSessionId })
-          .select("qrCode status")
-          .lean();
-        if (dbSession?.status === "qr" && dbSession?.qrCode) {
-          qrCode = dbSession.qrCode;
-        }
-      } catch (dbErr) {}
-    }
-
-    res.status(200).json({ qrCode, sessionId: targetSessionId });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
 
 // @desc    Get all WhatsApp conversations
 // @route   GET /api/whatsapp/conversations
@@ -741,31 +398,106 @@ export const sendMessage = async (req, res) => {
       // Always route to the sales rep's personal session
       targetSessionId = orgId ? `org_${orgId}_user_${repId}` : `user_${repId}`;
     } else if (orgId) {
-      let lineLimit = 1;
-      try {
-        const { Organization } = getMasterModels();
-        const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
-        if (org) lineLimit = org.whatsappLineLimit || 1;
-      } catch (e) {}
+      targetSessionId = `org_${orgId}`;
+    }
 
-      if (!targetSessionId) {
-        targetSessionId = req.body.device === 2 && lineLimit >= 2 ? `org_${orgId}_device_2` : `org_${orgId}`;
-      } else if (targetSessionId.includes("device_2") && lineLimit < 2) {
-        targetSessionId = `org_${orgId}`;
+    // ================================================================
+    // META CLOUD API COEXISTENCE OUTBOUND ROUTING
+    // ================================================================
+    let waAccount = null;
+    if (orgId) {
+      if (senderRole === "sales person") {
+        waAccount = await WAAccount.findOne({
+          organizationId: orgId,
+          userId: req.user._id,
+          status: { $in: ["connected", "syncing"] },
+        });
+      }
+      if (!waAccount) {
+        waAccount = await WAAccount.findOne({
+          organizationId: orgId,
+          userId: null,
+          status: { $in: ["connected", "syncing"] },
+        });
       }
     }
 
-    const messageRecord = await sendMessageFromCRM(
-      leadId,
-      text,
-      senderName || req.user?.name || "Agent",
-      {
-        organizationId: orgId,
-        tenantModels: req.tenantModels,
-        sessionId: targetSessionId,
-      },
-    );
-    res.status(200).json(messageRecord);
+    if (waAccount && waAccount.accessTokenEncrypted) {
+      // 24-hour customer service window check
+      const now = new Date();
+      const serviceExpires = lead.serviceWindowExpiresAt
+        ? new Date(lead.serviceWindowExpiresAt)
+        : lead.lastCloudInboundAt
+        ? new Date(new Date(lead.lastCloudInboundAt).getTime() + 24 * 60 * 60 * 1000)
+        : null;
+
+      const isWindowExpired = serviceExpires && now.getTime() > serviceExpires.getTime();
+
+      if (isWindowExpired) {
+        return res.status(400).json({
+          success: false,
+          windowExpired: true,
+          message:
+            "The 24-hour customer service window has expired. WhatsApp policy requires sending an approved template to initiate contact.",
+        });
+      }
+
+      const accessToken = decryptApiKey(waAccount.accessTokenEncrypted);
+      const cleanPhone = (lead.phone || "").replace(/\D/g, "");
+
+      const sendResult = await sendTextMessage({
+        phoneNumberId: waAccount.phoneNumberId,
+        accessToken,
+        toPhone: cleanPhone,
+        textBody: text,
+      });
+
+      const messageRecord = await MessageModel.create({
+        messageId: sendResult.metaMessageId || `out_cloud_${Date.now()}`,
+        wamid: sendResult.metaMessageId || null,
+        leadId,
+        sender: senderName || req.user?.name || "Agent",
+        senderName: senderName || req.user?.name || "Agent",
+        direction: "outgoing",
+        messageType: "text",
+        text,
+        timestamp: new Date(),
+        source: "cloud_api",
+        status: "sent",
+        salesRepId: waAccount.userId || (senderRole === "sales person" ? req.user._id : null),
+      });
+
+      const { ConversationModel } = getModels(req);
+      await ConversationModel.findOneAndUpdate(
+        { leadId },
+        {
+          lastMessage: text,
+          lastMessageTime: new Date(),
+        },
+        { upsert: true }
+      );
+
+      const io = getIO();
+      if (io) {
+        io.to(leadId.toString()).emit("new_message", messageRecord);
+        if (orgId) {
+          io.to(`org_${orgId}`).emit("conversation_updated", {
+            leadId,
+            lastMessage: text,
+            lastMessageTime: new Date(),
+          });
+        }
+      }
+
+      return res.status(200).json(messageRecord);
+    }
+
+    // No active WhatsApp Cloud API connection found
+    return res.status(400).json({
+      success: false,
+      message:
+        "No active WhatsApp Cloud API connection found for this organization. Please connect your WhatsApp Business account via Meta Embedded Signup.",
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -1403,17 +1135,34 @@ export const getTeamWhatsAppStatuses = async (req, res) => {
       .select("name phone email _id")
       .lean();
 
-    const allMemSessions = getWhatsAppStatus(orgId);
+    let accounts = [];
+    if (mongoose.connection?.readyState === 1 || req.tenantModels?.WAAccount) {
+      try {
+        const AccountModel = req.tenantModels?.WAAccount || WAAccount;
+        if (AccountModel && AccountModel.find) {
+          accounts = await AccountModel.find({ organizationId: orgId }).lean();
+        }
+      } catch (e) {}
+    }
 
     const result = await Promise.all(
       reps.map(async (rep) => {
         const repSessionId = `org_${orgId}_user_${rep._id.toString()}`;
-        const memSession = allMemSessions.find((s) => s.sessionId === repSessionId) || {};
-        const dbSession = await WhatsAppSessionModel.findOne({ sessionId: repSessionId })
-          .select("status connectedPhone connectedName updatedAt errorMessage")
-          .lean();
+        const repAccount = accounts.find(
+          (a) => a.userId && a.userId.toString() === rep._id.toString()
+        );
+        let dbSession = null;
+        try {
+          if (WhatsAppSessionModel && WhatsAppSessionModel.findOne) {
+            dbSession = await WhatsAppSessionModel.findOne({ sessionId: repSessionId })
+              .select("status connectedPhone connectedName updatedAt errorMessage")
+              .lean();
+          }
+        } catch (e) {}
 
-        const status = memSession.status || dbSession?.status || "disconnected";
+        const status = repAccount?.status || dbSession?.status || "disconnected";
+        const connectedPhone = repAccount?.displayPhone || dbSession?.connectedPhone || "";
+        const connectedName = repAccount?.businessName || dbSession?.connectedName || "";
 
         return {
           userId: rep._id,
@@ -1422,10 +1171,11 @@ export const getTeamWhatsAppStatuses = async (req, res) => {
           profilePhone: rep.phone || "",
           sessionId: repSessionId,
           status,
-          connectedPhone: memSession.connectedPhone || dbSession?.connectedPhone || "",
-          connectedName: memSession.connectedName || dbSession?.connectedName || "",
-          lastSeen: dbSession?.updatedAt || null,
+          connectedPhone,
+          connectedName,
+          lastSeen: repAccount?.updatedAt || dbSession?.updatedAt || null,
           errorMessage: dbSession?.errorMessage || "",
+          isCoexistence: true,
         };
       })
     );
@@ -1434,108 +1184,6 @@ export const getTeamWhatsAppStatuses = async (req, res) => {
   } catch (error) {
     console.error("[WhatsApp] getTeamWhatsAppStatuses error:", error.message);
     res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// @desc    Request WhatsApp pairing code (phone-number linking — alternative to QR scan)
-// @route   POST /api/whatsapp/pairing-code
-// @access  Protected
-export const requestPairingCode = async (req, res) => {
-  try {
-    const { phoneNumber, device, isSecondary, sessionId: bodySessionId } = req.body;
-
-    // Validate phone: digits only with country code, 10–15 digits total
-    if (!phoneNumber) {
-      return res.status(400).json({
-        message: "A phone number is required to generate a pairing code.",
-      });
-    }
-    const cleanPhone = String(phoneNumber).replace(/\D/g, "");
-    if (cleanPhone.length < 10 || cleanPhone.length > 15) {
-      return res.status(400).json({
-        message:
-          "Please enter a valid phone number with country code (e.g. 919876543210). Must be 10–15 digits.",
-      });
-    }
-
-    const orgId = req.user?.organizationId
-      ? req.user.organizationId.toString()
-      : req.organization?._id
-        ? req.organization._id.toString()
-        : null;
-    const tenantDbName = req.tenantDbName || req.user?.tenantDbName;
-
-    let targetSessionId;
-
-    // ================================================================
-    // SALES REP: Use personal session
-    // ================================================================
-    if (req.user?.role === "sales person") {
-      const repUserId = req.user._id.toString();
-      targetSessionId = `org_${orgId}_user_${repUserId}`;
-
-      // Clear any previous error messages for clean retry
-      try {
-        const SessionModel = req.tenantModels?.WhatsAppSession;
-        if (SessionModel) {
-          await SessionModel.updateOne(
-            { sessionId: targetSessionId },
-            { $set: { errorMessage: "" } }
-          );
-        }
-      } catch (e) {}
-    } else {
-      // ================================================================
-      // ADMIN / MANAGER: Use org session
-      // ================================================================
-      if (!orgId) {
-        return res.status(400).json({ message: "Organization context is required." });
-      }
-
-      // Determine device: default to primary
-      const isDevice2 = device === 2 || isSecondary === true;
-
-      // Check line limit for secondary device
-      if (isDevice2) {
-        try {
-          const { Organization } = getMasterModels();
-          const org = await Organization.findById(orgId).select("whatsappLineLimit").lean();
-          if (!org || (org.whatsappLineLimit || 1) < 2) {
-            return res.status(403).json({
-              message:
-                "This organization is restricted to a Single WhatsApp Line. Upgrade to Dual Lines to connect a second device.",
-            });
-          }
-        } catch (e) {}
-      }
-
-      if (bodySessionId) {
-        const allowed = [`org_${orgId}`, `org_${orgId}_device_2`];
-        targetSessionId = allowed.includes(bodySessionId)
-          ? bodySessionId
-          : `org_${orgId}`;
-      } else {
-        targetSessionId = isDevice2 ? `org_${orgId}_device_2` : `org_${orgId}`;
-      }
-    }
-
-    // Fire connection in pairing code mode (non-blocking)
-    connectWhatsApp({
-      sessionId: targetSessionId,
-      organizationId: orgId,
-      tenantDbName,
-      usePairingCode: true,
-      pairingPhone: cleanPhone,
-    });
-
-    return res.status(200).json({
-      message:
-        "Pairing code is being generated. It will appear on-screen within a few seconds.",
-      sessionId: targetSessionId,
-    });
-  } catch (error) {
-    console.error("[WhatsApp] requestPairingCode error:", error.message);
-    res.status(500).json({ message: error.message });
   }
 };
 

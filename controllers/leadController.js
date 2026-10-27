@@ -15,10 +15,12 @@ import fs from "fs";
 import path from "path";
 import { processAudioUpload } from "../utils/audioConverter.js";
 import { analyzeAudioFile } from "../services/audioAnalysisService.js";
-import { sendWelcomeEnquiryMessage, sendMessageFromCRM, getWhatsAppStatus } from "../whatsapp/whatsappService.js";
+
 import { recordAiUsage, checkAiQuotaAvailable, reserveAiQuota, releaseAiQuota } from "../services/aiUsageService.js";
 import * as XLSX from "xlsx";
 import { decryptApiKey } from "../utils/encryption.js";
+import WAAccount from "../models/WhatsAppAccount.js";
+import { sendTemplateMessage } from "../services/whatsappCloudService.js";
 
 
 // Feature toggle for AI Call Analysis & Transcription
@@ -2257,29 +2259,88 @@ export const handleMissedCall = async (req, res) => {
 
             dispatchedMessageText = welcomeText;
 
-            try {
-              await sendMessageFromCRM(
-                lead._id,
-                welcomeText,
-                senderName,
-                {
+            // --------------------------------------------------------
+            // Check for official Meta Cloud API Coexistence account
+            // --------------------------------------------------------
+            let waAccount = null;
+            if (orgId) {
+              if (req.user?.role === "sales person") {
+                waAccount = await WAAccount.findOne({
                   organizationId: orgId,
-                  tenantModels: req.tenantModels,
-                  sessionId: targetSessionId,
-                }
-              );
-              whatsappSent = true;
-            } catch (sessionErr) {
-              // Strictly do NOT fall back to the Sales Manager / organization line if this call belongs to a Sales Rep!
-              if (isRepOwnedMissedCall || (targetSessionId && targetSessionId.includes("_user_"))) {
-                console.warn(
-                  `[Missed Call] Rep personal session ${targetSessionId} failed/offline: ${sessionErr.message}. Strictly preventing fallback to manager line org_${orgId}.`
-                );
-                whatsappError = sessionErr.message;
-                whatsappSent = false;
-              } else {
-                throw sessionErr;
+                  userId: req.user._id,
+                  status: { $in: ["connected", "syncing"] },
+                });
               }
+              if (!waAccount) {
+                waAccount = await WAAccount.findOne({
+                  organizationId: orgId,
+                  userId: null,
+                  status: { $in: ["connected", "syncing"] },
+                });
+              }
+            }
+
+            if (waAccount && waAccount.accessTokenEncrypted) {
+              try {
+                const accessToken = decryptApiKey(waAccount.accessTokenEncrypted);
+                const templateName = isSameNumberResult
+                  ? "missed_call_same_number"
+                  : "missed_call_different_number";
+
+                const components = [
+                  {
+                    type: "body",
+                    parameters: isSameNumberResult
+                      ? [
+                          { type: "text", text: callerName || "there" },
+                          { type: "text", text: req.organization?.name || "Our Team" },
+                          { type: "text", text: service || "General Enquiry" },
+                        ]
+                      : [
+                          { type: "text", text: callerName || "there" },
+                          { type: "text", text: String(number).trim() },
+                          { type: "text", text: req.organization?.name || "Our Team" },
+                          { type: "text", text: service || "General Enquiry" },
+                        ],
+                  },
+                ];
+
+                const sendRes = await sendTemplateMessage({
+                  phoneNumberId: waAccount.phoneNumberId,
+                  accessToken,
+                  toPhone: cleanDigits,
+                  templateName,
+                  languageCode: "en_US",
+                  components,
+                });
+
+                await MessageModel.create({
+                  messageId: sendRes.metaMessageId || `missed_call_${Date.now()}`,
+                  wamid: sendRes.metaMessageId || null,
+                  leadId: lead._id,
+                  sender: senderName,
+                  senderName,
+                  direction: "outgoing",
+                  messageType: "text",
+                  text: welcomeText,
+                  timestamp: new Date(),
+                  source: "cloud_api",
+                  status: "sent",
+                  salesRepId: waAccount.userId || (req.user?.role === "sales person" ? req.user._id : null),
+                });
+
+                whatsappSent = true;
+                console.log(`[Missed Call] Dispatched Meta Cloud API template '${templateName}' to ${cleanDigits}`);
+              } catch (cloudErr) {
+                console.warn(
+                  `[Missed Call] Cloud API template failed: ${cloudErr.message}`
+                );
+                whatsappError = cloudErr.message;
+                whatsappSent = false;
+              }
+            } else {
+              whatsappError = "No active WhatsApp Cloud API connection found for this organization.";
+              whatsappSent = false;
             }
           }
         }
