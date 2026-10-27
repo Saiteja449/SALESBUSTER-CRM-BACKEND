@@ -35,48 +35,12 @@ export const uploadApk = async (req, res) => {
     const { version, versionCode, minSupportedVersion, releaseNotes } = req.body;
     const { AppRelease } = getMasterModels();
 
-    // 1. Find all previous APK records in DB
-    const previousReleases = await AppRelease.find();
-
-    // 2. Automatically delete the previous APK file(s) from disk
-    for (const prev of previousReleases) {
-      if (prev.filePath && fs.existsSync(prev.filePath)) {
-        try {
-          fs.unlinkSync(prev.filePath);
-          console.log(`[APK Release] Deleted previous APK file: ${prev.filePath}`);
-        } catch (unlinkErr) {
-          console.warn(`[APK Release] Could not delete old file ${prev.filePath}:`, unlinkErr.message);
-        }
-      }
-    }
-
-    // Also clean up any older orphaned .apk files in uploads/apk/ except the newly uploaded file
-    try {
-      if (fs.existsSync(apkStorageDir)) {
-        const files = fs.readdirSync(apkStorageDir);
-        for (const f of files) {
-          if (f !== req.file.filename && f.toLowerCase().endsWith(".apk")) {
-            const orphanPath = path.join(apkStorageDir, f);
-            try {
-              fs.unlinkSync(orphanPath);
-              console.log(`[APK Release] Purged orphaned APK file: ${orphanPath}`);
-            } catch (e) {}
-          }
-        }
-      }
-    } catch (cleanupErr) {
-      console.warn("[APK Release] Orphan directory scan warning:", cleanupErr.message);
-    }
-
-    // 3. Purge existing records from DB so only 1 active release is stored
-    await AppRelease.deleteMany({});
-
-    // 4. Save new APK release record
     const relativeUrl = `/uploads/apk/${req.file.filename}`;
     const baseUrl = `${req.protocol}://${req.get("host")}`;
 
     const parsedVersionCode = versionCode ? parseInt(versionCode, 10) : 1;
 
+    // 1. Create and persist new APK release record first
     const newRelease = await AppRelease.create({
       fileName: req.file.filename,
       originalName: req.file.originalname || "salesbuster-crm.apk",
@@ -91,6 +55,41 @@ export const uploadApk = async (req, res) => {
       uploadedBy: req.user?._id || null,
       uploadedByName: req.user?.name || "Super Admin",
     });
+
+    // 2. Only after new release is successfully saved, clean up previous releases
+    try {
+      const previousReleases = await AppRelease.find({ _id: { $ne: newRelease._id } });
+
+      for (const prev of previousReleases) {
+        if (prev.filePath && prev.filePath !== newRelease.filePath && fs.existsSync(prev.filePath)) {
+          try {
+            fs.unlinkSync(prev.filePath);
+            console.log(`[APK Release] Deleted previous APK file: ${prev.filePath}`);
+          } catch (unlinkErr) {
+            console.warn(`[APK Release] Could not delete old file ${prev.filePath}:`, unlinkErr.message);
+          }
+        }
+      }
+
+      // Clean up orphaned .apk files in uploads/apk/ except the newly uploaded file
+      if (fs.existsSync(apkStorageDir)) {
+        const files = fs.readdirSync(apkStorageDir);
+        for (const f of files) {
+          if (f !== req.file.filename && f.toLowerCase().endsWith(".apk")) {
+            const orphanPath = path.join(apkStorageDir, f);
+            try {
+              fs.unlinkSync(orphanPath);
+              console.log(`[APK Release] Purged orphaned APK file: ${orphanPath}`);
+            } catch (e) {}
+          }
+        }
+      }
+
+      // Purge previous DB records so only new active release is stored
+      await AppRelease.deleteMany({ _id: { $ne: newRelease._id } });
+    } catch (cleanupErr) {
+      console.warn("[APK Release] Post-save cleanup warning (new release remains active):", cleanupErr.message);
+    }
 
     res.status(201).json({
       success: true,
