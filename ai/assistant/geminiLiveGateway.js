@@ -226,7 +226,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
 
     const liveModel =
       process.env.AI_ASSISTANT_LIVE_MODEL ||
-      "gemini-2.5-flash-native-audio-preview-12-2025";
+      "gemini-3.8-live";
 
     console.log(`[Gemini Live Gateway] Connecting user ${this.user?.id} to model ${liveModel} (Voice: ${this.voiceName})`);
 
