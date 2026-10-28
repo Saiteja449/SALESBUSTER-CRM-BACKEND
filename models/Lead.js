@@ -37,6 +37,7 @@ const leadSchema = new mongoose.Schema(
         "Manual Entry",
         "Mobile App",
         "Excel Import",
+        // "Target Intelligence",
       ],
       default: "Manual Entry",
     },

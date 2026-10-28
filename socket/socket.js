@@ -102,10 +102,15 @@ export const handleJoinOrganization = (socket, orgId) => {
   if (!orgId || !socket?.user) return;
   const cleanOrgId = String(orgId).replace(/^org_/, "").trim();
   const userOrgId = String(socket.user.organizationId || "").replace(/^org_/, "").trim();
-  const userRole = socket.user.role;
+  const userRole = String(socket.user.role || "").toLowerCase().trim();
 
-// Cross-tenant protection: Super admin or matching organization only
-  if (userRole === "super_admin" || (cleanOrgId && userOrgId === cleanOrgId)) {
+  const isSuperAdmin =
+    userRole === "super_admin" ||
+    userRole === "super admin" ||
+    userRole === "owner";
+
+  // Cross-tenant protection: Super admin or matching organization only
+  if (isSuperAdmin || (cleanOrgId && userOrgId === cleanOrgId)) {
     const roomName = `org_${cleanOrgId}`;
     socket.join(roomName);
 
@@ -117,9 +122,12 @@ export const handleJoinOrganization = (socket, orgId) => {
 
     // Join admin leadership room for authorized managers and super admins
     const isLeadership =
-      userRole === "super_admin" ||
+      isSuperAdmin ||
       userRole === "sales manager" ||
-      socket.user.isOrgOwner;
+      userRole === "sales_manager" ||
+      userRole === "admin" ||
+      Boolean(socket.user.isOrgOwner) ||
+      Boolean(socket.user.isManager);
     if (isLeadership) {
       socket.join(`org_${cleanOrgId}_admins`);
     }
@@ -143,136 +151,164 @@ export const initSocket = (server) => {
     },
   });
 
-  // Apply authentication middleware
-  io.use(socketAuthMiddleware);
+  const setupNamespace = (nsp) => {
+    // Apply authentication middleware
+    nsp.use(socketAuthMiddleware);
 
-  io.on("connection", (socket) => {
-    const userId = (socket.user?.id || socket.user?._id || "").toString();
-    if (userId) {
-      socket.join(`user_${userId}`);
-    }
-    const userRole = socket.user?.role;
-    const userOrgId = String(socket.user?.organizationId || "").replace(/^org_/, "").trim();
-    if (userOrgId && (userRole === "super_admin" || userRole === "sales manager" || socket.user?.isOrgOwner)) {
-      socket.join(`org_${userOrgId}_admins`);
-    }
-
-    console.log(`Socket.IO client connected: ${socket.id} (user: ${userId})`);
-
-    socket.on("join_lead_chat", (leadId) => handleJoinLeadChat(socket, leadId));
-
-    socket.on("leave_lead_chat", (leadId) => {
-      if (leadId) {
-        socket.leave(leadId);
-        console.log(`Socket ${socket.id} left room: ${leadId}`);
+    nsp.on("connection", (socket) => {
+      const userId = (socket.user?.id || socket.user?._id || "").toString();
+      if (userId) {
+        socket.join(`user_${userId}`);
       }
-    });
+      const userRole = String(socket.user?.role || "").toLowerCase().trim();
+      const userOrgId = String(socket.user?.organizationId || "").replace(/^org_/, "").trim();
+      const isLeadership =
+        userRole === "super_admin" ||
+        userRole === "super admin" ||
+        userRole === "sales manager" ||
+        userRole === "sales_manager" ||
+        userRole === "admin" ||
+        userRole === "owner" ||
+        Boolean(socket.user?.isOrgOwner) ||
+        Boolean(socket.user?.isManager);
 
-    socket.on("join_organization", (orgId) => handleJoinOrganization(socket, orgId));
-
-    socket.on("leave_organization", (orgId) => {
-      if (orgId) {
-        const cleanOrgId = String(orgId).replace(/^org_/, "").trim();
-        const roomName = `org_${cleanOrgId}`;
-        socket.leave(roomName);
-        console.log(`Socket ${socket.id} left organization room: ${roomName}`);
+      if (userOrgId && isLeadership) {
+        socket.join(`org_${userOrgId}_admins`);
       }
-    });
 
-    // =========================================================================
-    // BI ANALYST - GEMINI MULTIMODAL LIVE REAL-TIME VOICE CHAT
-    // =========================================================================
-    socket.on("bi_voice_start", async ({ voiceName = "Aoede" } = {}) => {
-      try {
-        const userRole = socket.user?.role;
-        const isAuthorized =
-          userRole === "super_admin" ||
-          userRole === "sales manager" ||
-          socket.user?.isOrgOwner;
+      console.log(
+        `Socket.IO client connected on namespace '${socket.nsp.name}': ${socket.id} (user: ${userId})`
+      );
 
-        if (!isAuthorized) {
-          socket.emit("bi_voice_error", {
-            message: "Unauthorized. Voice BI Analyst is restricted to Sales Managers.",
-          });
-          return;
+      socket.on("join_lead_chat", (leadId) => handleJoinLeadChat(socket, leadId));
+
+      socket.on("leave_lead_chat", (leadId) => {
+        if (leadId) {
+          socket.leave(leadId);
+          console.log(`Socket ${socket.id} left room: ${leadId}`);
         }
+      });
 
-        // Close any pre-existing session on this socket
+      socket.on("join_organization", (orgId) => handleJoinOrganization(socket, orgId));
+
+      socket.on("leave_organization", (orgId) => {
+        if (orgId) {
+          const cleanOrgId = String(orgId).replace(/^org_/, "").trim();
+          const roomName = `org_${cleanOrgId}`;
+          socket.leave(roomName);
+          console.log(`Socket ${socket.id} left organization room: ${roomName}`);
+        }
+      });
+
+      // =========================================================================
+      // BI ANALYST - GEMINI MULTIMODAL LIVE REAL-TIME VOICE CHAT
+      // =========================================================================
+      socket.on("bi_voice_start", async ({ voiceName = "Aoede" } = {}) => {
+        try {
+          const roleNormalized = String(socket.user?.role || "").toLowerCase().trim();
+          const isAuthorized =
+            roleNormalized === "super_admin" ||
+            roleNormalized === "super admin" ||
+            roleNormalized === "sales manager" ||
+            roleNormalized === "sales_manager" ||
+            roleNormalized === "admin" ||
+            roleNormalized === "owner" ||
+            Boolean(socket.user?.isOrgOwner) ||
+            Boolean(socket.user?.isManager);
+
+          if (!isAuthorized) {
+            socket.emit("bi_voice_error", {
+              message: "Unauthorized. Voice BI Analyst is restricted to Sales Managers.",
+            });
+            return;
+          }
+
+          // Close any pre-existing session on this socket
+          if (socket.geminiLiveSession) {
+            socket.geminiLiveSession.close();
+            socket.geminiLiveSession = null;
+          }
+
+          const tenantDbName = socket.user?.tenantDbName;
+          const tenantModels = tenantDbName ? getTenantModels(tenantDbName) : null;
+          if (!tenantModels) {
+            socket.emit("bi_voice_error", {
+              message: "Tenant database context could not be resolved.",
+            });
+            return;
+          }
+
+          const { Organization: MasterOrg } = getMasterModels();
+          const orgId = socket.user?.organizationId;
+          const organization = orgId ? await MasterOrg.findById(orgId).lean() : null;
+
+          const isSuperAdmin =
+            roleNormalized === "super_admin" ||
+            roleNormalized === "super admin" ||
+            roleNormalized === "owner";
+
+          if (!isSuperAdmin && !Boolean(organization?.addons?.biAnalyst)) {
+            socket.emit("bi_voice_error", {
+              message:
+                "The BI Analyst add-on is not active for your organization. Please contact your administrator to enable this feature.",
+              addonRequired: "biAnalyst",
+            });
+            return;
+          }
+
+          const quotaCheck = await checkAiQuotaAvailable(organization || orgId, "biAnalyst", 1);
+          if (!quotaCheck.allowed) {
+            socket.emit("bi_voice_error", {
+              message: quotaCheck.reason,
+              quotaExceeded: true,
+            });
+            return;
+          }
+
+          const liveSession = new GeminiLiveSessionManager({
+            socket,
+            user: socket.user,
+            organization,
+            tenantModels,
+            voiceName,
+          });
+
+          await liveSession.start();
+          socket.geminiLiveSession = liveSession;
+        } catch (err) {
+          console.error(`[Socket] Error starting BI voice session for socket ${socket.id}:`, err);
+          socket.emit("bi_voice_error", {
+            message: err.message || "Failed to initialize Gemini Live voice session.",
+          });
+        }
+      });
+
+      socket.on("bi_voice_audio_in", (base64Chunk) => {
+        if (socket.geminiLiveSession) {
+          socket.geminiLiveSession.sendAudioChunk(base64Chunk);
+        }
+      });
+
+      socket.on("bi_voice_stop", () => {
         if (socket.geminiLiveSession) {
           socket.geminiLiveSession.close();
           socket.geminiLiveSession = null;
         }
+      });
 
-        const tenantDbName = socket.user?.tenantDbName;
-        const tenantModels = tenantDbName ? getTenantModels(tenantDbName) : null;
-        if (!tenantModels) {
-          socket.emit("bi_voice_error", {
-            message: "Tenant database context could not be resolved.",
-          });
-          return;
+      socket.on("disconnect", () => {
+        if (socket.geminiLiveSession) {
+          socket.geminiLiveSession.close();
+          socket.geminiLiveSession = null;
         }
-
-        const { Organization: MasterOrg } = getMasterModels();
-        const orgId = socket.user?.organizationId;
-        const organization = orgId ? await MasterOrg.findById(orgId).lean() : null;
-
-        const isSuperAdmin = userRole === "super_admin" || userRole === "Super Admin";
-        if (!isSuperAdmin && !Boolean(organization?.addons?.biAnalyst)) {
-          socket.emit("bi_voice_error", {
-            message: "The BI Analyst add-on is not active for your organization. Please contact your administrator to enable this feature.",
-            addonRequired: "biAnalyst",
-          });
-          return;
-        }
-
-        const quotaCheck = await checkAiQuotaAvailable(organization || orgId, "biAnalyst", 1);
-        if (!quotaCheck.allowed) {
-          socket.emit("bi_voice_error", {
-            message: quotaCheck.reason,
-            quotaExceeded: true,
-          });
-          return;
-        }
-
-        const liveSession = new GeminiLiveSessionManager({
-          socket,
-          user: socket.user,
-          organization,
-          tenantModels,
-          voiceName,
-        });
-
-        await liveSession.start();
-        socket.geminiLiveSession = liveSession;
-      } catch (err) {
-        console.error(`[Socket] Error starting BI voice session for socket ${socket.id}:`, err);
-        socket.emit("bi_voice_error", {
-          message: err.message || "Failed to initialize Gemini Live voice session.",
-        });
-      }
+        console.log(`Socket.IO client disconnected: ${socket.id}`);
+      });
     });
+  };
 
-    socket.on("bi_voice_audio_in", (base64Chunk) => {
-      if (socket.geminiLiveSession) {
-        socket.geminiLiveSession.sendAudioChunk(base64Chunk);
-      }
-    });
-
-    socket.on("bi_voice_stop", () => {
-      if (socket.geminiLiveSession) {
-        socket.geminiLiveSession.close();
-        socket.geminiLiveSession = null;
-      }
-    });
-
-    socket.on("disconnect", () => {
-      if (socket.geminiLiveSession) {
-        socket.geminiLiveSession.close();
-        socket.geminiLiveSession = null;
-      }
-      console.log(`Socket.IO client disconnected: ${socket.id}`);
-    });
-  });
+  // Register on both root namespace ("/") and "/api" namespace to guarantee compatibility
+  setupNamespace(io.of("/"));
+  setupNamespace(io.of("/api"));
 
   return io;
 };

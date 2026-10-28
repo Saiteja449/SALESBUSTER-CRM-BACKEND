@@ -205,6 +205,13 @@ const organizationSchema = new mongoose.Schema(
         default: false,
         index: true,
       },
+      /* Target Intelligence feature commented out
+      targetIntelligence: {
+        type: Boolean,
+        default: false,
+        index: true,
+      },
+      */
     },
     aiSettings: {
       geminiApiKey: {
