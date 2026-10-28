@@ -4,6 +4,7 @@ import { getISTDateBoundaries } from "./dateUtils.js";
 import { executeToolCall } from "./toolRunner.js";
 import { decryptApiKey } from "../../utils/encryption.js";
 import { reserveAiQuota } from "../../services/aiUsageService.js";
+import { VoiceTelemetry } from "./voiceTelemetry.js";
 
 /**
  * Standard Function Declarations for Gemini Live API
@@ -125,8 +126,19 @@ export class GeminiLiveSessionManager {
     this.session = null;
     this.isActive = false;
     this.toolsByName = {};
-    this.isSpeakingEmitted = false; // Tracks whether 'speaking' status was emitted for the current turn
-    this.isTurnReserved = false; // Tracks whether quota has been reserved for the active voice query turn
+    this.isSpeakingEmitted = false; // Tracks whether 'speaking' status was emitted for current turn
+    this.isTurnReserved = false; // Tracks whether quota has been reserved for active turn
+    this.currentTurnId = null;
+    this.isReadyAcknowledged = false;
+    this.startupStartTime = null;
+
+    // Correlated Timing Telemetry
+    this.telemetry = new VoiceTelemetry({
+      socketId: socket?.id,
+      orgId: organization?._id,
+      userId: user?.id || user?._id,
+      provider: "gemini",
+    });
 
     // 1. Build Authenticated CRM Tools Suite
     const { toolsByName } = buildAssistantTools({
@@ -237,25 +249,48 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       ],
     };
 
+    this.startupStartTime = Date.now();
+    this.telemetry.logEvent("session_startup_initiated", { model: liveModel, voiceName: this.voiceName });
+
     try {
       this.session = await ai.live.connect({
         model: liveModel,
         config,
         callbacks: {
           onopen: () => {
+            const startupMs = Date.now() - (this.startupStartTime || Date.now());
             this.isActive = true;
-            this.socket.emit("bi_voice_status", { state: "connected", model: liveModel });
-            console.log(`[Gemini Live Gateway] Live session opened for socket ${this.socket.id}`);
+            this.isReadyAcknowledged = true;
+            this.telemetry.logEvent("session_ready", { startupMs, model: liveModel });
+
+            // 1. Explicit Session-Ready Acknowledgement (Gates Audio Streaming on Frontend)
+            this.socket.emit("bi_voice_ready", {
+              sessionId: this.telemetry.sessionId,
+              startupMs,
+              model: liveModel,
+              provider: "gemini",
+            });
+
+            // 2. Status update for backwards compatibility
+            this.socket.emit("bi_voice_status", {
+              state: "connected",
+              model: liveModel,
+              sessionId: this.telemetry.sessionId,
+              startupMs,
+            });
+            console.log(`[Gemini Live Gateway] Live session opened in ${startupMs}ms for socket ${this.socket.id}`);
           },
           onmessage: async (serverMsg) => {
             await this.handleServerMessage(serverMsg);
           },
           onerror: (err) => {
+            this.telemetry.logEvent("session_error", { error: err?.message || "Gemini Live API error" });
             console.error(`[Gemini Live Gateway] Live session error for socket ${this.socket.id}:`, err);
             this.socket.emit("bi_voice_error", { message: err?.message || "Gemini Live API error" });
           },
           onclose: (closeEvt) => {
             this.isActive = false;
+            this.telemetry.logEvent("session_closed");
             this.socket.emit("bi_voice_status", { state: "closed" });
             console.log(`[Gemini Live Gateway] Live session closed for socket ${this.socket.id}`);
           },
@@ -264,10 +299,28 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
 
       this.isActive = true;
     } catch (err) {
+      this.telemetry.logEvent("session_startup_failed", { error: err.message });
       console.error("[Gemini Live Gateway] Failed to connect to Gemini Live API:", err);
       this.socket.emit("bi_voice_error", { message: err.message || "Failed to start Gemini Live voice session" });
       throw err;
     }
+  }
+
+  /**
+   * Friendly label generator for CRM tools in UI
+   */
+  getFriendlyToolLabel(toolName) {
+    const labels = {
+      get_dashboard_kpis: "Calculating CRM dashboard KPIs",
+      get_salesperson_performance: "Analyzing sales rep leaderboard",
+      search_leads: "Searching CRM leads",
+      lookup_phone_number: "Looking up contact in CRM",
+      get_followup_status: "Checking pending follow-ups",
+      get_whatsapp_analytics: "Inspecting WhatsApp chat status",
+      get_org_integrations_and_config: "Verifying system configuration",
+      search_crm_documentation_and_features: "Searching documentation",
+    };
+    return labels[toolName] || `Querying CRM tool (${toolName})`;
   }
 
   /**
@@ -276,36 +329,77 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
   async handleServerMessage(serverMsg) {
     if (!serverMsg) return;
 
-    // 1. Tool Calls from Gemini mid-speech
+    // Track first provider response for the current turn
+    if (this.currentTurnId) {
+      this.telemetry.recordFirstProviderResponse(this.currentTurnId);
+    }
+
+    // 1. Tool Calls from Gemini mid-speech (CONCURRENT EXECUTION)
     if (serverMsg.toolCall?.functionCalls?.length > 0) {
       const hasQuota = await this.ensureTurnQuota();
       if (!hasQuota) return;
 
       const functionCalls = serverMsg.toolCall.functionCalls;
-      const functionResponses = [];
+      const isParallel = functionCalls.length > 1;
+      const firstToolName = functionCalls[0].name;
+      const friendlyLabel = isParallel
+        ? `Running ${functionCalls.length} CRM queries concurrently`
+        : this.getFriendlyToolLabel(firstToolName);
 
-      for (const fc of functionCalls) {
-        console.log(`[Gemini Live Gateway] Executing tool '${fc.name}' for socket ${this.socket.id}`);
-        this.socket.emit("bi_voice_status", { state: "tool_running", toolName: fc.name });
+      this.socket.emit("bi_voice_status", {
+        state: "tool_running",
+        toolName: firstToolName,
+        friendlyLabel,
+        toolNames: functionCalls.map((fc) => fc.name),
+        count: functionCalls.length,
+        concurrent: isParallel,
+      });
 
-        const result = await executeToolCall({
-          toolCall: { id: fc.id, name: fc.name, args: fc.args || {} },
-          toolsByName: this.toolsByName,
-          timeoutMs: 6500,
-        });
+      console.log(
+        `[Gemini Live Gateway] Executing ${functionCalls.length} tool(s) ${isParallel ? "CONCURRENTLY" : ""} for socket ${this.socket.id}`
+      );
 
-        functionResponses.push({
-          id: fc.id,
-          name: fc.name,
-          response: { output: result.output },
-        });
-      }
+      const toolBatchStart = Date.now();
+
+      // Execute all tool calls concurrently while strictly preserving tenant isolation and result ordering
+      const functionResponses = await Promise.all(
+        functionCalls.map(async (fc) => {
+          const fcStart = Date.now();
+          const result = await executeToolCall({
+            toolCall: { id: fc.id, name: fc.name, args: fc.args || {} },
+            toolsByName: this.toolsByName,
+            timeoutMs: 6500,
+          });
+          const fcDurationMs = Date.now() - fcStart;
+
+          this.telemetry.recordToolExecution({
+            turnId: this.currentTurnId,
+            toolName: fc.name,
+            toolCallId: fc.id,
+            durationMs: fcDurationMs,
+            ok: result.ok,
+            concurrent: isParallel,
+          });
+
+          return {
+            id: fc.id,
+            name: fc.name,
+            response: { output: result.output },
+          };
+        })
+      );
+
+      const totalBatchDurationMs = Date.now() - toolBatchStart;
 
       // Return tool results back to Gemini Live API
       try {
         if (this.session && this.isActive) {
           this.session.sendToolResponse({ functionResponses });
-          this.socket.emit("bi_voice_status", { state: "tool_complete" });
+          this.socket.emit("bi_voice_status", {
+            state: "tool_complete",
+            durationMs: totalBatchDurationMs,
+            toolNames: functionCalls.map((fc) => fc.name),
+          });
         }
       } catch (toolErr) {
         console.error("[Gemini Live Gateway] Error returning tool response to Gemini:", toolErr);
@@ -319,6 +413,10 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       // Check for native user barge-in / interruption
       if (content.interrupted) {
         console.log(`[Gemini Live Gateway] Model interrupted by user speech on socket ${this.socket.id}`);
+        if (this.currentTurnId) {
+          this.telemetry.logEvent("turn_interrupted", { turnId: this.currentTurnId });
+          this.currentTurnId = null;
+        }
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
         this.socket.emit("bi_voice_interrupted");
@@ -332,16 +430,15 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         for (const part of content.modelTurn.parts) {
           // Audio chunk (24kHz PCM)
           if (part.inlineData?.data) {
-            // Emit 'speaking' exactly once per turn, right before the first audio chunk.
-            // This ensures the frontend status updates at the same moment audio is enqueued,
-            // eliminating the race condition where the badge showed 'Speaking' before any sound.
             if (!this.isSpeakingEmitted) {
               this.isSpeakingEmitted = true;
+              this.telemetry.recordFirstAudio(this.currentTurnId);
               this.socket.emit("bi_voice_status", { state: "speaking" });
             }
             this.socket.emit("bi_voice_audio_out", {
               mimeType: part.inlineData.mimeType || "audio/pcm;rate=24000",
               data: part.inlineData.data, // base64 string
+              turnId: this.currentTurnId,
             });
           }
           // Real-time text subtitle
@@ -356,6 +453,10 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
 
       // Turn complete flag — reset speaking and quota reservation trackers for the next turn
       if (content.turnComplete) {
+        if (this.currentTurnId) {
+          this.telemetry.endTurn(this.currentTurnId);
+          this.currentTurnId = null;
+        }
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
         this.socket.emit("bi_voice_turn_complete");
@@ -368,6 +469,12 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    */
   sendAudioChunk(base64Chunk) {
     if (!this.session || !this.isActive || !base64Chunk) return;
+
+    if (!this.currentTurnId) {
+      this.currentTurnId = this.telemetry.startTurn();
+      this.socket.emit("bi_voice_status", { state: "processing_audio_in" });
+    }
+
     try {
       this.session.sendRealtimeInput({
         media: {
@@ -385,6 +492,10 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    */
   close() {
     this.isActive = false;
+    if (this.currentTurnId) {
+      this.telemetry.endTurn(this.currentTurnId);
+      this.currentTurnId = null;
+    }
     if (this.session) {
       try {
         this.session.close();

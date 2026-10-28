@@ -272,10 +272,14 @@ export const initSocket = (server) => {
             tenantModels,
             voiceName,
           });
+          socket.geminiLiveSession = liveSession;
 
           await liveSession.start();
-          socket.geminiLiveSession = liveSession;
         } catch (err) {
+          if (socket.geminiLiveSession) {
+            socket.geminiLiveSession.close();
+            socket.geminiLiveSession = null;
+          }
           console.error(`[Socket] Error starting BI voice session for socket ${socket.id}:`, err);
           socket.emit("bi_voice_error", {
             message: err.message || "Failed to initialize Gemini Live voice session.",
@@ -284,7 +288,7 @@ export const initSocket = (server) => {
       });
 
       socket.on("bi_voice_audio_in", (base64Chunk) => {
-        if (socket.geminiLiveSession) {
+        if (socket.geminiLiveSession && socket.geminiLiveSession.isActive) {
           socket.geminiLiveSession.sendAudioChunk(base64Chunk);
         }
       });
