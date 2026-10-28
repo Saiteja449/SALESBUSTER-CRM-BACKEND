@@ -216,12 +216,14 @@ router.post("/ai/toggle", toggleAI);
 router.post("/test-ai", requireManagerOrOwner, testAI);
 router.get("/test-ai", requireManagerOrOwner, getTestAIHistory);
 
-// Sales Manager In-App Live Voice Recording Capture & Automated WhatsApp Dispatch
+// Legacy Baileys socket dispatch deprecated - replaced by Event-based device WhatsApp architecture (/api/events)
+/*
 router.post(
   "/manager/live-voice-send",
   requireManagerOrOwner,
   voiceMulter.single("audio"),
   captureAndSendLiveVoiceWhatsApp
 );
+*/
 
 export default router;

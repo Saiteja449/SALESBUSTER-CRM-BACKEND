@@ -20,6 +20,8 @@ import WhatsAppCampaign from "../models/WhatsAppCampaign.js";
 import WhatsAppCampaignRecipient from "../models/WhatsAppCampaignRecipient.js";
 import WhatsAppOptOut from "../models/WhatsAppOptOut.js";
 import AIAssistantChat from "../models/AIAssistantChat.js";
+import Event from "../models/Event.js";
+import EventContact from "../models/EventContact.js";
 import Organization, { organizationSchema } from "../models/Organization.js";
 import AuthUser, { authUserSchema } from "../models/AuthUser.js";
 import AppRelease, { appReleaseSchema } from "../models/AppRelease.js";
@@ -105,6 +107,11 @@ export const getTenantModels = (tenantDbName) => {
     AIAssistantChat:
       db.models.AIAssistantChat ||
       db.model("AIAssistantChat", AIAssistantChat.schema),
+    Event:
+      db.models.Event || db.model("Event", Event.schema),
+    EventContact:
+      db.models.EventContact ||
+      db.model("EventContact", EventContact.schema),
     db,
   };
 };
