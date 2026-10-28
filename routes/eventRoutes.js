@@ -8,12 +8,12 @@ import {
   createEventContact,
   updateContactStatus,
 } from "../controllers/eventController.js";
-import { requireAuth } from "../middleware/authMiddleware.js";
+import { protect } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
 // All event routes are protected by user authentication
-router.use(requireAuth);
+router.use(protect);
 
 // 1. AI Real-Time Transcript Summarization
 router.post("/summarize-text", summarizeTranscript);

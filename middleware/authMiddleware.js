@@ -277,3 +277,6 @@ export const requireSuperAdmin = (req, res, next) => {
 
   return verifySuperAdmin(req, res, next);
 };
+
+// Aliases for compatibility
+export const requireAuth = protect;
