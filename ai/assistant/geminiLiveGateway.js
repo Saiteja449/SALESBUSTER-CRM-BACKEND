@@ -126,11 +126,12 @@ export class GeminiLiveSessionManager {
     this.session = null;
     this.isActive = false;
     this.toolsByName = {};
-    this.isSpeakingEmitted = false; // Tracks whether 'speaking' status was emitted for current turn
-    this.isTurnReserved = false; // Tracks whether quota has been reserved for active turn
+    this.isSpeakingEmitted = false;
+    this.isTurnReserved = false;
     this.currentTurnId = null;
     this.isReadyAcknowledged = false;
     this.startupStartTime = null;
+    this.pendingAudioQueue = [];
 
     // Correlated Timing Telemetry
     this.telemetry = new VoiceTelemetry({
@@ -239,6 +240,8 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           },
         },
       },
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
       systemInstruction: {
         parts: [{ text: systemPrompt }],
       },
@@ -253,32 +256,13 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
     this.telemetry.logEvent("session_startup_initiated", { model: liveModel, voiceName: this.voiceName });
 
     try {
+      // Connect to Gemini Live WebSocket. The returned promise resolves ONLY after setupComplete is verified.
       this.session = await ai.live.connect({
         model: liveModel,
         config,
         callbacks: {
           onopen: () => {
-            const startupMs = Date.now() - (this.startupStartTime || Date.now());
-            this.isActive = true;
-            this.isReadyAcknowledged = true;
-            this.telemetry.logEvent("session_ready", { startupMs, model: liveModel });
-
-            // 1. Explicit Session-Ready Acknowledgement (Gates Audio Streaming on Frontend)
-            this.socket.emit("bi_voice_ready", {
-              sessionId: this.telemetry.sessionId,
-              startupMs,
-              model: liveModel,
-              provider: "gemini",
-            });
-
-            // 2. Status update for backwards compatibility
-            this.socket.emit("bi_voice_status", {
-              state: "connected",
-              model: liveModel,
-              sessionId: this.telemetry.sessionId,
-              startupMs,
-            });
-            console.log(`[Gemini Live Gateway] Live session opened in ${startupMs}ms for socket ${this.socket.id}`);
+            console.log(`[Gemini Live Gateway] WebSocket transport opened for socket ${this.socket.id}`);
           },
           onmessage: async (serverMsg) => {
             await this.handleServerMessage(serverMsg);
@@ -297,7 +281,44 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         },
       });
 
+      // Session is now 100% established and ready to process audio input
       this.isActive = true;
+      this.isReadyAcknowledged = true;
+      const startupMs = Date.now() - (this.startupStartTime || Date.now());
+      this.telemetry.logEvent("session_ready", { startupMs, model: liveModel });
+
+      // Flush any microphone chunks buffered during connection handshake
+      if (this.pendingAudioQueue.length > 0) {
+        console.log(`[Gemini Live Gateway] Flushing ${this.pendingAudioQueue.length} buffered audio chunk(s) to Gemini`);
+        while (this.pendingAudioQueue.length > 0) {
+          const chunk = this.pendingAudioQueue.shift();
+          try {
+            this.session.sendRealtimeInput({
+              media: {
+                mimeType: "audio/pcm;rate=16000",
+                data: chunk,
+              },
+            });
+          } catch (e) {}
+        }
+      }
+
+      // Explicit Session-Ready Acknowledgement (Gates Audio Streaming on Frontend & Mobile)
+      this.socket.emit("bi_voice_ready", {
+        sessionId: this.telemetry.sessionId,
+        startupMs,
+        model: liveModel,
+        provider: "gemini",
+      });
+
+      this.socket.emit("bi_voice_status", {
+        state: "connected",
+        model: liveModel,
+        sessionId: this.telemetry.sessionId,
+        startupMs,
+      });
+
+      console.log(`[Gemini Live Gateway] Live session fully READY in ${startupMs}ms for socket ${this.socket.id}`);
     } catch (err) {
       this.telemetry.logEvent("session_startup_failed", { error: err.message });
       console.error("[Gemini Live Gateway] Failed to connect to Gemini Live API:", err);
@@ -329,13 +350,12 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
   async handleServerMessage(serverMsg) {
     if (!serverMsg) return;
 
-    // Track first provider response for the current turn
-    if (this.currentTurnId) {
-      this.telemetry.recordFirstProviderResponse(this.currentTurnId);
-    }
-
     // 1. Tool Calls from Gemini mid-speech (CONCURRENT EXECUTION)
     if (serverMsg.toolCall?.functionCalls?.length > 0) {
+      if (this.currentTurnId) {
+        this.telemetry.recordFirstProviderResponse(this.currentTurnId);
+      }
+
       const hasQuota = await this.ensureTurnQuota();
       if (!hasQuota) return;
 
@@ -420,10 +440,15 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
         this.socket.emit("bi_voice_interrupted");
+        this.socket.emit("bi_voice_status", { state: "listening" });
       }
 
       // Process model turn parts
       if (content.modelTurn?.parts) {
+        if (this.currentTurnId) {
+          this.telemetry.recordFirstProviderResponse(this.currentTurnId);
+        }
+
         const hasQuota = await this.ensureTurnQuota();
         if (!hasQuota) return;
 
@@ -451,6 +476,26 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         }
       }
 
+      // Real-time user speech transcription (supported by gemini-3.8-live)
+      const userText = content.inputTranscription?.text || content.interimInputTranscription?.text;
+      if (userText) {
+        this.socket.emit("bi_voice_transcript", {
+          role: "user",
+          text: userText,
+        });
+      }
+
+      // Real-time text subtitle from outputTranscription (native channel for gemini-3.8-live)
+      if (content.outputTranscription?.text) {
+        if (this.currentTurnId) {
+          this.telemetry.recordFirstProviderResponse(this.currentTurnId);
+        }
+        this.socket.emit("bi_voice_transcript", {
+          role: "assistant",
+          text: content.outputTranscription.text,
+        });
+      }
+
       // Turn complete flag — reset speaking and quota reservation trackers for the next turn
       if (content.turnComplete) {
         if (this.currentTurnId) {
@@ -460,6 +505,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
         this.socket.emit("bi_voice_turn_complete");
+        this.socket.emit("bi_voice_status", { state: "listening" });
       }
     }
   }
@@ -468,7 +514,28 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    * Receives incoming PCM 16kHz audio chunk from user microphone and sends to Gemini
    */
   sendAudioChunk(base64Chunk) {
-    if (!this.session || !this.isActive || !base64Chunk) return;
+    if (!base64Chunk) return;
+
+    // Buffer chunks if session connection is still resolving
+    if (!this.session || !this.isActive) {
+      if (this.pendingAudioQueue.length < 100) {
+        this.pendingAudioQueue.push(base64Chunk);
+      }
+      return;
+    }
+
+    // Flush any pending queue
+    while (this.pendingAudioQueue.length > 0) {
+      const buffered = this.pendingAudioQueue.shift();
+      try {
+        this.session.sendRealtimeInput({
+          media: {
+            mimeType: "audio/pcm;rate=16000",
+            data: buffered,
+          },
+        });
+      } catch (e) {}
+    }
 
     if (!this.currentTurnId) {
       this.currentTurnId = this.telemetry.startTurn();
@@ -491,6 +558,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    */
   close() {
     this.isActive = false;
+    this.pendingAudioQueue = [];
     if (this.currentTurnId) {
       this.telemetry.endTurn(this.currentTurnId);
       this.currentTurnId = null;
