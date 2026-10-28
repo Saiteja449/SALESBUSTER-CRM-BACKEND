@@ -472,7 +472,6 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
 
     if (!this.currentTurnId) {
       this.currentTurnId = this.telemetry.startTurn();
-      this.socket.emit("bi_voice_status", { state: "processing_audio_in" });
     }
 
     try {
