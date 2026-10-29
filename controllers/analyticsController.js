@@ -58,6 +58,10 @@ export const logCall = async (req, res) => {
         phone,
         salespersonId,
         salespersonName: salesperson,
+        callType,
+        status,
+        duration,
+        calledAt: new Date(),
       });
 
       // If an explicit leadId was provided without phone and no lead was found, abort and report 404
@@ -77,6 +81,7 @@ export const logCall = async (req, res) => {
               leadId: updatedLead._id.toString(),
               callCount: updatedLead.callCount,
               repCallCounts: updatedLead.repCallCounts,
+              callHistory: updatedLead.callHistory,
               lastCallAt: updatedLead.lastCallAt,
             };
             io.to(`org_${orgId}`).emit("lead_call_updated", payload);
@@ -135,6 +140,7 @@ export const logCall = async (req, res) => {
             id: updatedLead._id,
             callCount: updatedLead.callCount,
             repCallCounts: updatedLead.repCallCounts,
+            callHistory: updatedLead.callHistory,
             lastCallAt: updatedLead.lastCallAt,
           }
         : null,

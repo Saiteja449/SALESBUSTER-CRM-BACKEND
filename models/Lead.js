@@ -236,6 +236,47 @@ const leadSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    callHistory: [
+      {
+        salespersonId: {
+          type: mongoose.Schema.Types.Mixed,
+          ref: "User",
+          default: null,
+        },
+        salespersonName: {
+          type: String,
+          default: "",
+        },
+        callType: {
+          type: String,
+          default: "outgoing",
+        },
+        status: {
+          type: String,
+          default: "connected",
+        },
+        duration: {
+          type: Number,
+          default: 0,
+        },
+        calledAt: {
+          type: Date,
+          default: Date.now,
+        },
+        recordingUrl: {
+          type: String,
+          default: null,
+        },
+        recordingName: {
+          type: String,
+          default: null,
+        },
+        recordingId: {
+          type: mongoose.Schema.Types.ObjectId,
+          default: null,
+        },
+      },
+    ],
     recordings: [
       {
         name: String,

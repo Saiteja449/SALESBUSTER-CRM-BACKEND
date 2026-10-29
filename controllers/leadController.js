@@ -1012,6 +1012,8 @@ export const updateLead = async (req, res) => {
         salespersonId: uploaderId,
         salespersonName: uploaderName,
         recordingObj,
+        duration: recordingObj.duration || 0,
+        calledAt: new Date(),
       });
 
       if (atomicallyUpdatedLead) {
@@ -1514,6 +1516,8 @@ export const uploadRecordingForLead = async (req, res) => {
       salespersonId: uploaderId,
       salespersonName: uploaderName,
       recordingObj,
+      duration: recordingObj.duration || 0,
+      calledAt: new Date(),
     });
 
     if (!updatedLead) {
