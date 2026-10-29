@@ -132,7 +132,7 @@ export const getModelsForSession = async (sessionId) => {
         return getTenantModels(org.tenantDbName);
       }
     } catch (err) {
-      console.error(`[WhatsApp] Failed to resolve tenantDbName for org ${sessionData.organizationId}:`, err);
+      // console.error(`[WhatsApp] Failed to resolve tenantDbName for org ${sessionData.organizationId}:`, err);
     }
   }
   // Try to parse orgId from standard naming convention "org_<orgId>" (e.g. org_<orgId> or org_<orgId>_device_2)
@@ -151,7 +151,7 @@ export const getModelsForSession = async (sessionId) => {
         return getTenantModels(org.tenantDbName);
       }
     } catch (err) {
-      console.error(`[WhatsApp] Failed to resolve tenant models from sessionId ${sessionId}:`, err);
+      // console.error(`[WhatsApp] Failed to resolve tenant models from sessionId ${sessionId}:`, err);
     }
   }
   // Fallback to base static models
@@ -355,7 +355,7 @@ export const connectWhatsApp = async (param1, param2, param3) => {
             // Format as ABCD-1234
             const formatted = code?.match(/.{1,4}/g)?.join("-") || code || "";
 
-            console.log(`[WhatsApp] Pairing code for ${sessionId}: ${formatted}`);
+            // console.log(`[WhatsApp] Pairing code for ${sessionId}: ${formatted}`);
             logWhatsAppEvent(`Session: ${sessionId} | PAIRING CODE ISSUED | Phone: ${pairingPhone} | Code: ${formatted}`);
 
             if (sessions[sessionId]) {
@@ -380,7 +380,7 @@ export const connectWhatsApp = async (param1, param2, param3) => {
               }
             }
           } catch (pairingErr) {
-            console.error(`[WhatsApp] Failed to request pairing code for ${sessionId}:`, pairingErr.message);
+            // console.error(`[WhatsApp] Failed to request pairing code for ${sessionId}:`, pairingErr.message);
             logWhatsAppEvent(`Session: ${sessionId} | PAIRING CODE FAILED | ${pairingErr.message}`);
             updateSessionStatus(sessionId, "disconnected");
           }
@@ -393,7 +393,7 @@ export const connectWhatsApp = async (param1, param2, param3) => {
       sock.ev.on("connection.update", async (update) => {
         // Stale socket guard: ignore events from old/destroyed sockets if a newer socket has been assigned
         if (sessions[sessionId]?.sock !== sock) {
-          console.log(`[WhatsApp] Ignoring connection.update event from stale socket for ${sessionId}.`);
+          // console.log(`[WhatsApp] Ignoring connection.update event from stale socket for ${sessionId}.`);
           return;
         }
 
@@ -445,13 +445,13 @@ export const connectWhatsApp = async (param1, param2, param3) => {
           // If the session was waiting for a QR scan or the QR expired, DO NOT auto-reconnect.
           // Wait for the user to explicitly click "Connect / Show QR" in the frontend.
           if (isQrExpired || wasInQrState) {
-            console.log(`[WhatsApp] QR code session closed for ${sessionId}. Stopping auto-reconnect loop until user requests new QR.`);
+            // console.log(`[WhatsApp] QR code session closed for ${sessionId}. Stopping auto-reconnect loop until user requests new QR.`);
             return;
           }
 
           if (isLoggedOut) {
             console.log(
-              `[WhatsApp] WhatsApp session ${sessionId} logged out on mobile device. Cleaning up credentials...`,
+              // `[WhatsApp] WhatsApp session ${sessionId} logged out on mobile device. Cleaning up credentials...`,
             );
             logoutWhatsApp(sessionId).catch((err) =>
               console.error("Error during logout:", err),
@@ -466,16 +466,16 @@ export const connectWhatsApp = async (param1, param2, param3) => {
             const AuthModel = models?.WhatsAppAuthState || (await import("../models/WhatsAppAuthState.js")).default;
             const hasCreds = await AuthModel.findOne({ sessionId, type: "creds" });
             if (!hasCreds) {
-              console.log(`[WhatsApp] Session ${sessionId} has no saved credentials. Skipping auto-reconnect to prevent QR generation loops.`);
+              // console.log(`[WhatsApp] Session ${sessionId} has no saved credentials. Skipping auto-reconnect to prevent QR generation loops.`);
               return;
             }
           } catch (credsErr) {
-            console.error(`[WhatsApp] Error verifying credentials before reconnect for ${sessionId}:`, credsErr);
+            // console.error(`[WhatsApp] Error verifying credentials before reconnect for ${sessionId}:`, credsErr);
             return;
           }
 
           // Schedule delayed reconnect for already-paired sessions using the shared reconnect timer
-          console.log(`[WhatsApp] Scheduling reconnect for paired session ${sessionId} in ${RECONNECT_DELAY_MS / 1000}s... (Status: ${statusCode})`);
+          // console.log(`[WhatsApp] Scheduling reconnect for paired session ${sessionId} in ${RECONNECT_DELAY_MS / 1000}s... (Status: ${statusCode})`);
           scheduleReconnect(sessionId, RECONNECT_DELAY_MS);
         } else if (connection === "open") {
           // Clear any scheduled reconnect timer upon successful connection
@@ -496,7 +496,7 @@ export const connectWhatsApp = async (param1, param2, param3) => {
           if (sessionId.includes("_user_")) {
             const userMatch = sessionId.match(/_user_([a-fA-F0-9]{24})$/);
             if (!userMatch) {
-              console.warn(`[WhatsApp] Invalid rep sessionId format: ${sessionId}`);
+              // console.warn(`[WhatsApp] Invalid rep sessionId format: ${sessionId}`);
               try { sock.end(); } catch (e) {}
               return;
             }
@@ -515,13 +515,13 @@ export const connectWhatsApp = async (param1, param2, param3) => {
                 { upsert: true }
               );
               console.log(
-                `[WhatsApp] Rep session linked successfully for ${sessionId}. Rep User ID: ${repUserId}`
+                // `[WhatsApp] Rep session linked successfully for ${sessionId}. Rep User ID: ${repUserId}`
               );
             } catch (persistErr) {
-              console.error(
-                `[WhatsApp] Failed to persist userId to session record for ${sessionId}:`,
-                persistErr
-              );
+              // console.error(
+              //   // `[WhatsApp] Failed to persist userId to session record for ${sessionId}:`,
+              //   persistErr
+              // );
             }
           }
           // =========================================================
@@ -594,7 +594,7 @@ export const connectWhatsApp = async (param1, param2, param3) => {
   const lockPromise = currentLock
     .then(executeConnect)
     .catch((err) => {
-      console.error(`[WhatsApp] Error in connectWhatsApp lock execution for ${sessionId}:`, err);
+      // console.error(`[WhatsApp] Error in connectWhatsApp lock execution for ${sessionId}:`, err);
     })
     .finally(() => {
       // Clean up lock if we are the last in the chain
@@ -874,7 +874,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
             if (sessions[sessionId]) sessions[sessionId].organizationId = orgId;
           }
         } catch (err) {
-          console.warn(`[WhatsApp] Failed to resolve org by dbName:`, err.message);
+          // console.warn(`[WhatsApp] Failed to resolve org by dbName:`, err.message);
         }
       }
     }
@@ -890,7 +890,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
           orgServices = orgDoc.aiSettings.services.filter((s) => s.isActive !== false);
         }
       } catch (err) {
-        console.warn(`[WhatsApp] Could not fetch org services for orgId ${orgId}:`, err.message);
+        // console.warn(`[WhatsApp] Could not fetch org services for orgId ${orgId}:`, err.message);
       }
     }
 
@@ -965,9 +965,9 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
       });
 
       if (nonLeadConv) {
-        console.log(
-          `[WhatsApp] Message from non-lead prospect ${phone}. Skipping lead creation and AI auto-response.`
-        );
+        // console.log(
+        //   // `[WhatsApp] Message from non-lead prospect ${phone}. Skipping lead creation and AI auto-response.`
+        // );
 
         const incomingRecord = await MessageModel.create({
           leadId: nonLeadConv._id,
@@ -1191,7 +1191,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
         io.to(`org_${orgId}`).emit("conversation_updated", convMetaPayload);
       } else {
         console.warn(
-          `[WhatsApp] Skipping un-scoped conversation_updated emit: no orgId for lead ${lead._id}`
+          // `[WhatsApp] Skipping un-scoped conversation_updated emit: no orgId for lead ${lead._id}`
         );
       }
 
@@ -1861,7 +1861,7 @@ export const sendMessageFromCRM = async (
           : null;
 
         if (hasCreds) {
-          console.log(`[WhatsApp] Auto-reconnecting session ${targetSessionId} triggered by CRM manual send...`);
+          // console.log(`[WhatsApp] Auto-reconnecting session ${targetSessionId} triggered by CRM manual send...`);
           connectWhatsApp({
             sessionId: targetSessionId,
             organizationId,
@@ -1993,9 +1993,9 @@ export const sendMessageFromCRM = async (
     if (targetOrg) {
       io.to(`org_${targetOrg}`).emit("conversation_updated", updatePayload);
     } else {
-      console.warn(
-        `[WhatsApp] Skipping un-scoped conversation_updated emit: no organizationId for record ${conversationRecordId}`
-      );
+      // console.warn(
+      //   `[WhatsApp] Skipping un-scoped conversation_updated emit: no organizationId for record ${conversationRecordId}`
+      // );
     }
   }
 
@@ -2053,7 +2053,7 @@ export const sendDocumentMessageFromCRM = async (
           : null;
 
         if (hasCreds) {
-          console.log(`[WhatsApp] Auto-reconnecting session ${targetSessionId} triggered by CRM document send...`);
+          // console.log(`[WhatsApp] Auto-reconnecting session ${targetSessionId} triggered by CRM document send...`);
           connectWhatsApp({
             sessionId: targetSessionId,
             organizationId,
@@ -2812,9 +2812,9 @@ export const initAllOrganizationWhatsAppConnections = async () => {
             type: "creds",
           });
           if (userSessionCreds && userSessionCreds.length > 0) {
-            console.log(
-              `[WhatsApp] Found ${userSessionCreds.length} rep session credential(s) for org "${org.name}". Auto-connecting...`
-            );
+            // console.log(
+            //   `[WhatsApp] Found ${userSessionCreds.length} rep session credential(s) for org "${org.name}". Auto-connecting...`
+            // );
             for (const cred of userSessionCreds) {
               connectWhatsApp({
                 sessionId: cred.sessionId,
@@ -2826,11 +2826,11 @@ export const initAllOrganizationWhatsAppConnections = async () => {
             }
           }
         } catch (repSessionErr) {
-          console.error(`[WhatsApp] Error checking rep sessions for org ${org.name}:`, repSessionErr);
+          // console.error(`[WhatsApp] Error checking rep sessions for org ${org.name}:`, repSessionErr);
         }
 
       } catch (orgErr) {
-        console.error(`[WhatsApp] Error initializing connection for org ${org.name}:`, orgErr);
+        // console.error(`[WhatsApp] Error initializing connection for org ${org.name}:`, orgErr);
       }
     }
 
@@ -2839,16 +2839,16 @@ export const initAllOrganizationWhatsAppConnections = async () => {
       const WhatsAppAuthStateModel = (await import("../models/WhatsAppAuthState.js")).default;
       const legacyCreds = await WhatsAppAuthStateModel.findOne({ sessionId: "device_1", type: "creds" });
       if (legacyCreds && !sessions["device_1"]) {
-        console.log("[WhatsApp] Found legacy credentials for device_1. Auto-connecting...");
+        // console.log("[WhatsApp] Found legacy credentials for device_1. Auto-connecting...");
         connectWhatsApp("device_1").catch((err) =>
           console.error("[WhatsApp] Failed to auto-connect legacy device_1:", err)
         );
       }
     } catch (legacyErr) {
-      console.error("[WhatsApp] Error checking legacy session:", legacyErr);
+      // console.error("[WhatsApp] Error checking legacy session:", legacyErr);
     }
   } catch (err) {
-    console.error("[WhatsApp] Failed to initialize organization WhatsApp connections:", err);
+    // console.error("[WhatsApp] Failed to initialize organization WhatsApp connections:", err);
   }
 };
 

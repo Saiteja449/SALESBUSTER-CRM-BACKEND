@@ -132,6 +132,9 @@ export class GeminiLiveSessionManager {
     this.isReadyAcknowledged = false;
     this.startupStartTime = null;
     this.pendingAudioQueue = [];
+    this.audioChunksInCount = 0;
+    this.audioChunksOutCount = 0;
+    this.audioBytesOutCount = 0;
 
     // Correlated Timing Telemetry
     this.telemetry = new VoiceTelemetry({
@@ -350,6 +353,14 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
   async handleServerMessage(serverMsg) {
     if (!serverMsg) return;
 
+    if (serverMsg.setupComplete) {
+      console.log(`[LiveVoice Setup] setupComplete received from Gemini Live API for socket ${this.socket.id}`);
+    }
+
+    if (serverMsg.goAway) {
+      console.warn(`[LiveVoice Warning] Gemini sent goAway notice! timeLeft:`, serverMsg.goAway.timeLeft);
+    }
+
     // 1. Tool Calls from Gemini mid-speech (CONCURRENT EXECUTION)
     if (serverMsg.toolCall?.functionCalls?.length > 0) {
       if (this.currentTurnId) {
@@ -376,7 +387,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       });
 
       console.log(
-        `[Gemini Live Gateway] Executing ${functionCalls.length} tool(s) ${isParallel ? "CONCURRENTLY" : ""} for socket ${this.socket.id}`
+        `[LiveVoice ToolCall] Gemini requested ${functionCalls.length} tool(s) ${isParallel ? "CONCURRENTLY" : ""} for socket ${this.socket.id}: ${functionCalls.map((fc) => fc.name).join(", ")}`
       );
 
       const toolBatchStart = Date.now();
@@ -385,12 +396,14 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       const functionResponses = await Promise.all(
         functionCalls.map(async (fc) => {
           const fcStart = Date.now();
+          console.log(`[LiveVoice ToolCall] Starting execution: ${fc.name} (args: ${JSON.stringify(fc.args || {})})`);
           const result = await executeToolCall({
             toolCall: { id: fc.id, name: fc.name, args: fc.args || {} },
             toolsByName: this.toolsByName,
             timeoutMs: 6500,
           });
           const fcDurationMs = Date.now() - fcStart;
+          console.log(`[LiveVoice ToolCall] Finished ${fc.name} in ${fcDurationMs}ms (ok: ${result.ok})`);
 
           this.telemetry.recordToolExecution({
             turnId: this.currentTurnId,
@@ -410,6 +423,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       );
 
       const totalBatchDurationMs = Date.now() - toolBatchStart;
+      console.log(`[LiveVoice ToolComplete] Batch finished in ${totalBatchDurationMs}ms -> returning tool responses to Gemini`);
 
       // Return tool results back to Gemini Live API
       try {
@@ -422,7 +436,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           });
         }
       } catch (toolErr) {
-        console.error("[Gemini Live Gateway] Error returning tool response to Gemini:", toolErr);
+        console.error("[LiveVoice ToolError] Error returning tool response to Gemini:", toolErr);
       }
       return;
     }
@@ -432,7 +446,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
     if (content) {
       // Check for native user barge-in / interruption
       if (content.interrupted) {
-        console.log(`[Gemini Live Gateway] Model interrupted by user speech on socket ${this.socket.id}`);
+        console.log(`[LiveVoice Interruption] User barged in / interrupted speech on socket ${this.socket.id}`);
         if (this.currentTurnId) {
           this.telemetry.logEvent("turn_interrupted", { turnId: this.currentTurnId });
           this.currentTurnId = null;
@@ -455,11 +469,18 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         for (const part of content.modelTurn.parts) {
           // Audio chunk (24kHz PCM)
           if (part.inlineData?.data) {
+            this.audioChunksOutCount++;
+            this.audioBytesOutCount += part.inlineData.data.length;
+
             if (!this.isSpeakingEmitted) {
               this.isSpeakingEmitted = true;
               this.telemetry.recordFirstAudio(this.currentTurnId);
               this.socket.emit("bi_voice_status", { state: "speaking" });
+              console.log(
+                `[LiveVoice AudioOut] >>> FIRST voice audio emitted for turn ${this.currentTurnId || "unknown"} (chunk #${this.audioChunksOutCount}, ${part.inlineData.data.length} chars base64)`
+              );
             }
+
             this.socket.emit("bi_voice_audio_out", {
               mimeType: part.inlineData.mimeType || "audio/pcm;rate=24000",
               data: part.inlineData.data, // base64 string
@@ -468,6 +489,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           }
           // Real-time text subtitle
           if (part.text) {
+            console.log(`[LiveVoice TextPart] "${part.text.slice(0, 80)}"`);
             this.socket.emit("bi_voice_transcript", {
               role: "assistant",
               text: part.text,
@@ -479,6 +501,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       // Real-time user speech transcription (supported by gemini-3.8-live)
       const userText = content.inputTranscription?.text || content.interimInputTranscription?.text;
       if (userText) {
+        console.log(`[LiveVoice Transcription] User speech recognized: "${userText}"`);
         this.socket.emit("bi_voice_transcript", {
           role: "user",
           text: userText,
@@ -490,6 +513,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         if (this.currentTurnId) {
           this.telemetry.recordFirstProviderResponse(this.currentTurnId);
         }
+        console.log(`[LiveVoice Transcription] Assistant subtitle: "${content.outputTranscription.text}"`);
         this.socket.emit("bi_voice_transcript", {
           role: "assistant",
           text: content.outputTranscription.text,
@@ -498,10 +522,16 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
 
       // Turn complete flag — reset speaking and quota reservation trackers for the next turn
       if (content.turnComplete) {
+        console.log(
+          `[LiveVoice TurnComplete] Turn ${this.currentTurnId || "unknown"} finished! User mic chunks in: ${this.audioChunksInCount}, Assistant audio chunks out: ${this.audioChunksOutCount} (${this.audioBytesOutCount} bytes). Emitted 'listening'.`
+        );
         if (this.currentTurnId) {
           this.telemetry.endTurn(this.currentTurnId);
           this.currentTurnId = null;
         }
+        this.audioChunksInCount = 0;
+        this.audioChunksOutCount = 0;
+        this.audioBytesOutCount = 0;
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
         this.socket.emit("bi_voice_turn_complete");
@@ -520,25 +550,43 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
     if (!this.session || !this.isActive) {
       if (this.pendingAudioQueue.length < 100) {
         this.pendingAudioQueue.push(base64Chunk);
+        if (this.pendingAudioQueue.length === 1 || this.pendingAudioQueue.length % 25 === 0) {
+          console.log(`[LiveVoice AudioIn] Buffering pre-connect mic chunk (buffered count: ${this.pendingAudioQueue.length}) for socket ${this.socket?.id}`);
+        }
       }
       return;
     }
 
     // Flush any pending queue
-    while (this.pendingAudioQueue.length > 0) {
-      const buffered = this.pendingAudioQueue.shift();
-      try {
-        this.session.sendRealtimeInput({
-          media: {
-            mimeType: "audio/pcm;rate=16000",
-            data: buffered,
-          },
-        });
-      } catch (e) {}
+    if (this.pendingAudioQueue.length > 0) {
+      console.log(`[LiveVoice AudioIn] Flushing ${this.pendingAudioQueue.length} pre-buffered chunks to Gemini Live`);
+      while (this.pendingAudioQueue.length > 0) {
+        const buffered = this.pendingAudioQueue.shift();
+        try {
+          this.session.sendRealtimeInput({
+            media: {
+              mimeType: "audio/pcm;rate=16000",
+              data: buffered,
+            },
+          });
+        } catch (e) {}
+      }
     }
 
     if (!this.currentTurnId) {
       this.currentTurnId = this.telemetry.startTurn();
+      this.audioChunksInCount = 0;
+      this.audioChunksOutCount = 0;
+      this.audioBytesOutCount = 0;
+      console.log(`[LiveVoice Turn] New turn ${this.currentTurnId} initiated by user mic audio`);
+    }
+
+    this.audioChunksInCount++;
+    if (this.audioChunksInCount === 1) {
+      console.log(`[LiveVoice AudioIn] First mic chunk (${base64Chunk.length} chars) sent to Gemini for turn ${this.currentTurnId}`);
+    } else if (this.audioChunksInCount % 50 === 0) {
+      const estimatedSec = (this.audioChunksInCount * 0.032).toFixed(1);
+      console.log(`[LiveVoice AudioIn] Streamed ${this.audioChunksInCount} chunks (~${estimatedSec}s audio) for turn ${this.currentTurnId}`);
     }
 
     try {
@@ -549,7 +597,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         },
       });
     } catch (err) {
-      console.warn("[Gemini Live Gateway] Error sending audio chunk to Gemini:", err.message);
+      console.warn("[LiveVoice AudioIn] Error sending audio chunk to Gemini:", err.message);
     }
   }
 
@@ -559,6 +607,9 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
   close() {
     this.isActive = false;
     this.pendingAudioQueue = [];
+    this.audioChunksInCount = 0;
+    this.audioChunksOutCount = 0;
+    this.audioBytesOutCount = 0;
     if (this.currentTurnId) {
       this.telemetry.endTurn(this.currentTurnId);
       this.currentTurnId = null;

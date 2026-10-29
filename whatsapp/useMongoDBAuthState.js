@@ -12,7 +12,7 @@ const enqueueWrite = (sessionId, writeFn) => {
   const nextQueue = currentQueue
     .then(() => writeFn())
     .catch((err) => {
-      console.error(`[WhatsApp] Write queue error for ${sessionId}:`, err);
+      // console.error(`[WhatsApp] Write queue error for ${sessionId}:`, err);
     });
   writeQueues.set(sessionId, nextQueue);
   return nextQueue;
@@ -36,7 +36,7 @@ export const useMongoDBAuthState = async (sessionId, AuthStateModel = WhatsAppAu
           { upsert: true, returnDocument: 'after' }
         );
       } catch (error) {
-        console.error(`[WhatsApp] Failed to write auth data for ${keyId}:`, error);
+        // console.error(`[WhatsApp] Failed to write auth data for ${keyId}:`, error);
       }
     });
   };
@@ -52,7 +52,7 @@ export const useMongoDBAuthState = async (sessionId, AuthStateModel = WhatsAppAu
         return JSON.parse(doc.data, BufferJSON.reviver);
       }
     } catch (error) {
-      console.error(`[WhatsApp] Failed to read auth data for ${keyId}:`, error);
+      // console.error(`[WhatsApp] Failed to read auth data for ${keyId}:`, error);
     }
     return null;
   };
@@ -66,7 +66,7 @@ export const useMongoDBAuthState = async (sessionId, AuthStateModel = WhatsAppAu
           keyId,
         });
       } catch (error) {
-        console.error(`[WhatsApp] Failed to remove auth data for ${keyId}:`, error);
+        // console.error(`[WhatsApp] Failed to remove auth data for ${keyId}:`, error);
       }
     });
   };

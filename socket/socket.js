@@ -205,6 +205,7 @@ export const initSocket = (server) => {
       // =========================================================================
       socket.on("bi_voice_start", async ({ voiceName = "Aoede" } = {}) => {
         try {
+          console.log(`[Socket Voice] bi_voice_start requested by user ${socket.user?.id || socket.user?._id} (${socket.user?.name}), role: "${socket.user?.role}", voice: "${voiceName}" on socket ${socket.id}`);
           const roleNormalized = String(socket.user?.role || "").toLowerCase().trim();
           const isAuthorized =
             roleNormalized === "super_admin" ||
@@ -217,6 +218,7 @@ export const initSocket = (server) => {
             Boolean(socket.user?.isManager);
 
           if (!isAuthorized) {
+            console.warn(`[Socket Voice] Access denied: User ${socket.user?.id} with role "${socket.user?.role}" is not authorized for Voice BI Analyst`);
             socket.emit("bi_voice_error", {
               message: "Unauthorized. Voice BI Analyst is restricted to Sales Managers.",
             });
@@ -225,6 +227,7 @@ export const initSocket = (server) => {
 
           // Close any pre-existing session on this socket
           if (socket.geminiLiveSession) {
+            console.log(`[Socket Voice] Closing existing session on socket ${socket.id} before starting new one`);
             socket.geminiLiveSession.close();
             socket.geminiLiveSession = null;
           }
@@ -232,6 +235,7 @@ export const initSocket = (server) => {
           const tenantDbName = socket.user?.tenantDbName;
           const tenantModels = tenantDbName ? getTenantModels(tenantDbName) : null;
           if (!tenantModels) {
+            console.error(`[Socket Voice] Failed to resolve tenant database for tenantDbName: "${tenantDbName}"`);
             socket.emit("bi_voice_error", {
               message: "Tenant database context could not be resolved.",
             });
@@ -248,6 +252,7 @@ export const initSocket = (server) => {
             roleNormalized === "owner";
 
           if (!isSuperAdmin && !Boolean(organization?.addons?.biAnalyst)) {
+            console.warn(`[Socket Voice] BI Analyst add-on not active for org ${orgId}`);
             socket.emit("bi_voice_error", {
               message:
                 "The BI Analyst add-on is not active for your organization. Please contact your administrator to enable this feature.",
@@ -258,6 +263,7 @@ export const initSocket = (server) => {
 
           const quotaCheck = await checkAiQuotaAvailable(organization || orgId, "biAnalyst", 1);
           if (!quotaCheck.allowed) {
+            console.warn(`[Socket Voice] Quota check blocked session start for org ${orgId}: ${quotaCheck.reason}`);
             socket.emit("bi_voice_error", {
               message: quotaCheck.reason,
               quotaExceeded: true,
@@ -280,7 +286,7 @@ export const initSocket = (server) => {
             socket.geminiLiveSession.close();
             socket.geminiLiveSession = null;
           }
-          console.error(`[Socket] Error starting BI voice session for socket ${socket.id}:`, err);
+          console.error(`[Socket Voice] Error starting BI voice session for socket ${socket.id}:`, err);
           socket.emit("bi_voice_error", {
             message: err.message || "Failed to initialize Gemini Live voice session.",
           });
@@ -288,12 +294,18 @@ export const initSocket = (server) => {
       });
 
       socket.on("bi_voice_audio_in", (base64Chunk) => {
-        if (socket.geminiLiveSession && socket.geminiLiveSession.isActive) {
+        if (socket.geminiLiveSession) {
           socket.geminiLiveSession.sendAudioChunk(base64Chunk);
+        } else {
+          if (!socket._hasWarnedNoSession) {
+            socket._hasWarnedNoSession = true;
+            console.warn(`[Socket Voice] bi_voice_audio_in received but no geminiLiveSession on socket ${socket.id}`);
+          }
         }
       });
 
       socket.on("bi_voice_stop", () => {
+        console.log(`[Socket Voice] bi_voice_stop received for socket ${socket.id}`);
         if (socket.geminiLiveSession) {
           socket.geminiLiveSession.close();
           socket.geminiLiveSession = null;
@@ -302,6 +314,7 @@ export const initSocket = (server) => {
 
       socket.on("disconnect", () => {
         if (socket.geminiLiveSession) {
+          console.log(`[Socket Voice] Client disconnected (${socket.id}). Closing active voice session.`);
           socket.geminiLiveSession.close();
           socket.geminiLiveSession = null;
         }

@@ -268,7 +268,7 @@ export const getStatus = async (req, res) => {
 
     // If DB says connected but in-memory socket is missing, auto-heal connection in background
     if (primaryDb?.status === "connected" && primaryMem?.status !== "connected" && primaryMem?.status !== "connecting") {
-      console.log(`[WhatsApp] getStatus detected disconnected memory state for ${primarySessionId}. Triggering auto-heal...`);
+      // console.log(`[WhatsApp] getStatus detected disconnected memory state for ${primarySessionId}. Triggering auto-heal...`);
       connectWhatsApp({
         sessionId: primarySessionId,
         organizationId: orgId,
@@ -308,7 +308,7 @@ export const getStatus = async (req, res) => {
       const secondaryDb = dbSessions.find((d) => d.sessionId === secondarySessionId);
 
       if (secondaryDb?.status === "connected" && secondaryMem?.status !== "connected" && secondaryMem?.status !== "connecting") {
-        console.log(`[WhatsApp] getStatus detected disconnected memory state for ${secondarySessionId}. Triggering auto-heal...`);
+        // console.log(`[WhatsApp] getStatus detected disconnected memory state for ${secondarySessionId}. Triggering auto-heal...`);
         connectWhatsApp({
           sessionId: secondarySessionId,
           organizationId: orgId,
@@ -1480,7 +1480,7 @@ export const summarizeConversation = async (req, res) => {
 
     res.status(200).json({ success: true, data: summary });
   } catch (error) {
-    console.error("[WhatsApp] summarizeConversation error:", error.message);
+    // console.error("[WhatsApp] summarizeConversation error:", error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -1550,7 +1550,7 @@ export const getTeamWhatsAppStatuses = async (req, res) => {
 
     res.status(200).json({ success: true, data: result });
   } catch (error) {
-    console.error("[WhatsApp] getTeamWhatsAppStatuses error:", error.message);
+    // console.error("[WhatsApp] getTeamWhatsAppStatuses error:", error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -1652,7 +1652,7 @@ export const requestPairingCode = async (req, res) => {
       sessionId: targetSessionId,
     });
   } catch (error) {
-    console.error("[WhatsApp] requestPairingCode error:", error.message);
+    // console.error("[WhatsApp] requestPairingCode error:", error.message);
     res.status(500).json({ message: error.message });
   }
 };
