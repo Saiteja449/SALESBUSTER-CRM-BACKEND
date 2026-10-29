@@ -297,7 +297,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           const chunk = this.pendingAudioQueue.shift();
           try {
             this.session.sendRealtimeInput({
-              media: {
+              audio: {
                 mimeType: "audio/pcm;rate=16000",
                 data: chunk,
               },
@@ -564,7 +564,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         const buffered = this.pendingAudioQueue.shift();
         try {
           this.session.sendRealtimeInput({
-            media: {
+            audio: {
               mimeType: "audio/pcm;rate=16000",
               data: buffered,
             },
@@ -591,7 +591,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
 
     try {
       this.session.sendRealtimeInput({
-        media: {
+        audio: {
           mimeType: "audio/pcm;rate=16000",
           data: base64Chunk,
         },
