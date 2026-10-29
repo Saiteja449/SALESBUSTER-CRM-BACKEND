@@ -342,5 +342,54 @@ describe("Event & EventContact Architecture Unit Tests", () => {
     assert.equal(emittedData.eventName, "Bangalore Tech Summit 2026");
     assert.ok(emittedData.messageText.includes("Bangalore Tech Summit 2026"));
   });
+
+  it("trigger_contact_review withholds popup trigger if name, phone, or company is incomplete", async () => {
+    let emittedEvent = null;
+
+    const mockSocket = {
+      id: "socket_test_incomplete",
+      emit: (evt) => {
+        emittedEvent = evt;
+      },
+    };
+
+    const tool = createEventCaptureTool({
+      socket: mockSocket,
+      eventId: "event_tech_2026",
+      eventName: "Bangalore Tech Summit 2026",
+      user: { name: "Ananya Rep" },
+      organization: { name: "SalesBuster" },
+    });
+
+    // 1. Missing 10-digit phone (only 6 digits)
+    const res1Str = await tool.execute({
+      name: "Suresh Raina",
+      phone: "123456",
+      companyName: "Raina Sports",
+    });
+    const res1 = JSON.parse(res1Str);
+    assert.equal(res1.ok, false);
+    assert.equal(emittedEvent, null);
+
+    // 2. Missing company
+    const res2Str = await tool.execute({
+      name: "Suresh Raina",
+      phone: "9876543210",
+      companyName: "",
+    });
+    const res2 = JSON.parse(res2Str);
+    assert.equal(res2.ok, false);
+    assert.equal(emittedEvent, null);
+
+    // 3. Missing name
+    const res3Str = await tool.execute({
+      name: "",
+      phone: "9876543210",
+      companyName: "Raina Sports",
+    });
+    const res3 = JSON.parse(res3Str);
+    assert.equal(res3.ok, false);
+    assert.equal(emittedEvent, null);
+  });
 });
 

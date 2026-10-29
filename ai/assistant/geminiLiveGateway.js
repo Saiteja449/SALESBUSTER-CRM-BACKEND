@@ -242,16 +242,19 @@ CRITICAL OPERATIONAL RULES:
 2. MULTILINGUAL RECOGNITION:
    - Understand English, Hindi, Telugu, Tamil, Marathi, and Hinglish code-switching naturally spoken in Indian business events.
 3. REAL-TIME CAPTURE TRIGGER:
-   - AS SOON AS you hear the attendee's Name, OR a 10-digit mobile number, OR company name, OR discussion topic:
-     IMMEDIATELY execute the tool 'trigger_contact_review'.
+   - ONLY execute the tool 'trigger_contact_review' when ALL THREE core contact details have been completely and clearly spoken:
+     1. Attendee's full Name.
+     2. A complete 10-digit mobile phone number (digits only, e.g. "9876543210").
+     3. Company / Business name.
+   - DO NOT trigger the tool when only one or two details are spoken (e.g. do NOT trigger on Name alone, or if the phone number has fewer than 10 digits). Wait patiently until the conversation has revealed the Name, 10-digit Phone, and Company.
    - Extract:
      * name: Person's full name.
-     * phone: 10-digit Indian mobile number (digits only, e.g. "9876543210"). If not mentioned, return empty string.
-     * companyName: Company/business name. If not mentioned, return empty string.
+     * phone: Exactly 10-digit Indian mobile number (e.g. "9876543210").
+     * companyName: Company/business name.
      * summary: 1-2 sentence discussion summary or requirement.
      * suggestedMessage: A warm, personalized WhatsApp follow-up greeting from ${managerName} (${orgName}) referencing ${currentEvent}.
 4. STRICT ZERO HALLUCINATION:
-   - If phone number was NOT spoken, leave phone empty. Never invent phone numbers.`;
+   - If any required detail (Name, full 10-digit Phone, or Company) has NOT been spoken yet by the attendee, DO NOT call 'trigger_contact_review'. Never invent or guess phone numbers or companies.`;
 
       functionDeclarations = [EVENT_CAPTURE_TOOL_DECLARATION, ...CRM_LIVE_FUNCTION_DECLARATIONS];
     } else {

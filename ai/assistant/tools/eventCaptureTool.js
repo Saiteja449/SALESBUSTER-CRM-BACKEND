@@ -6,21 +6,21 @@
 export const EVENT_CAPTURE_TOOL_DECLARATION = {
   name: "trigger_contact_review",
   description:
-    "Triggers the mobile review popup with pre-filled fields as soon as attendee contact details (name, 10-digit phone number, company, or topic) are identified from the live conversation.",
+    "Triggers the mobile review popup ONLY after all key attendee contact details are completely captured: full name, complete 10-digit mobile phone number, and company name.",
   parameters: {
     type: "OBJECT",
     properties: {
       name: {
         type: "STRING",
-        description: "Customer or attendee full name. Leave empty string if not mentioned.",
+        description: "Customer or attendee full name. Mandatory.",
       },
       phone: {
         type: "STRING",
-        description: "10-digit mobile number spoken. Extract only digits. Leave empty string if not spoken.",
+        description: "10-digit mobile number spoken. Extract only digits. Mandatory. Must be a complete 10-digit number.",
       },
       companyName: {
         type: "STRING",
-        description: "Company, organization, or business name mentioned. Leave empty string if not mentioned.",
+        description: "Company, organization, or business name mentioned. Mandatory.",
       },
       summary: {
         type: "STRING",
@@ -32,8 +32,7 @@ export const EVENT_CAPTURE_TOOL_DECLARATION = {
           "Personalized, professional WhatsApp greeting message ready to send from the sales rep to this contact.",
       },
     },
-    // Either name or phone triggers the popup
-    required: [],
+    required: ["name", "phone", "companyName"],
   },
 };
 
@@ -43,23 +42,36 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
     const orgName = organization?.name || "Our Team";
     const currentEvent = eventName || "our event";
 
-    // Normalize phone number (extract last 10 digits if valid Indian number)
+    // Normalize phone number (must be a valid 10-digit number)
     let cleanPhone = "";
     if (args.phone) {
       const digits = String(args.phone).replace(/\D/g, "");
       if (digits.length >= 10) {
         cleanPhone = digits.slice(-10);
-      } else if (digits.length > 0) {
-        cleanPhone = digits;
       }
     }
 
     const rawName = (args.name || "").trim();
-    // Default name if attendee only stated phone number
-    const attendeeName = rawName || (cleanPhone ? `Attendee (${cleanPhone})` : "Event Attendee");
     const companyName = (args.companyName || "").trim();
     const summary = (args.summary || "").trim();
 
+    // STRICT VALIDATION: Require full name, complete 10-digit phone, and company before triggering popup
+    if (!rawName || rawName.length < 2 || !cleanPhone || cleanPhone.length !== 10 || !companyName || companyName.length < 2) {
+      console.log(
+        `[EventCaptureTool] Withholding popup trigger - incomplete details: Name="${rawName}", Phone="${cleanPhone}" (${cleanPhone.length} digits), Company="${companyName}"`
+      );
+      return JSON.stringify({
+        ok: false,
+        message: "Trigger withheld: Full name, valid 10-digit phone number, and company name are all required before opening the review popup.",
+        missing: {
+          name: !rawName || rawName.length < 2,
+          phone: !cleanPhone || cleanPhone.length !== 10,
+          companyName: !companyName || companyName.length < 2,
+        },
+      });
+    }
+
+    const attendeeName = rawName;
     const greetingName = rawName || "there";
     const defaultMessage =
       `Hello ${greetingName},\n\n` +
