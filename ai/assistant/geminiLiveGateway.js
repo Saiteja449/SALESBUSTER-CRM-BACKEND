@@ -5,6 +5,10 @@ import { executeToolCall } from "./toolRunner.js";
 import { decryptApiKey } from "../../utils/encryption.js";
 import { reserveAiQuota } from "../../services/aiUsageService.js";
 import { VoiceTelemetry } from "./voiceTelemetry.js";
+import {
+  createEventCaptureTool,
+  EVENT_CAPTURE_TOOL_DECLARATION,
+} from "./tools/eventCaptureTool.js";
 
 /**
  * Standard Function Declarations for Gemini Live API
@@ -117,12 +121,26 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
  * for real-time speech-to-speech with live CRM database tool execution.
  */
 export class GeminiLiveSessionManager {
-  constructor({ socket, user, organization, tenantModels, voiceName = "Aoede" }) {
+  constructor({
+    socket,
+    user,
+    organization,
+    tenantModels,
+    voiceName = "Aoede",
+    sessionMode = "crm_assistant",
+    eventId = null,
+    eventName = null,
+    silentMode = false,
+  }) {
     this.socket = socket;
     this.user = user;
     this.organization = organization;
     this.tenantModels = tenantModels;
     this.voiceName = voiceName;
+    this.sessionMode = sessionMode;
+    this.eventId = eventId;
+    this.eventName = eventName;
+    this.silentMode = Boolean(silentMode);
     this.session = null;
     this.isActive = false;
     this.toolsByName = {};
@@ -151,6 +169,18 @@ export class GeminiLiveSessionManager {
       user,
     });
     this.toolsByName = toolsByName;
+
+    // If running in event capture mode, bind the event contact trigger tool
+    if (this.sessionMode === "event_capture") {
+      const eventTool = createEventCaptureTool({
+        socket: this.socket,
+        eventId: this.eventId,
+        eventName: this.eventName,
+        user: this.user,
+        organization: this.organization,
+      });
+      this.toolsByName[eventTool.name] = eventTool;
+    }
   }
 
   /**
@@ -197,7 +227,35 @@ export class GeminiLiveSessionManager {
     const orgName = this.organization?.name || "Our Organization";
     const managerName = this.user?.name || "Sales Manager";
 
-    const systemPrompt = `You are the executive AI Voice CRM Assistant for "${orgName}", talking directly with ${managerName} (Sales Manager) in real-time.
+    let systemPrompt = "";
+    let functionDeclarations = CRM_LIVE_FUNCTION_DECLARATIONS;
+
+    if (this.sessionMode === "event_capture") {
+      const currentEvent = this.eventName || "our event";
+      systemPrompt = `You are the SalesBuster Event Intelligence Ear for the event "${currentEvent}".
+You are listening passively to an in-person conversation between sales representative ${managerName} (${orgName}) and an event attendee.
+
+CRITICAL OPERATIONAL RULES:
+1. SILENT LISTENER MODE (MANDATORY):
+   - You MUST remain COMPLETELY SILENT.
+   - NEVER speak aloud, generate audible voice audio, or respond to the attendee.
+2. MULTILINGUAL RECOGNITION:
+   - Understand English, Hindi, Telugu, Tamil, Marathi, and Hinglish code-switching naturally spoken in Indian business events.
+3. REAL-TIME CAPTURE TRIGGER:
+   - AS SOON AS you hear the attendee's Name, OR a 10-digit mobile number, OR company name, OR discussion topic:
+     IMMEDIATELY execute the tool 'trigger_contact_review'.
+   - Extract:
+     * name: Person's full name.
+     * phone: 10-digit Indian mobile number (digits only, e.g. "9876543210"). If not mentioned, return empty string.
+     * companyName: Company/business name. If not mentioned, return empty string.
+     * summary: 1-2 sentence discussion summary or requirement.
+     * suggestedMessage: A warm, personalized WhatsApp follow-up greeting from ${managerName} (${orgName}) referencing ${currentEvent}.
+4. STRICT ZERO HALLUCINATION:
+   - If phone number was NOT spoken, leave phone empty. Never invent phone numbers.`;
+
+      functionDeclarations = [EVENT_CAPTURE_TOOL_DECLARATION, ...CRM_LIVE_FUNCTION_DECLARATIONS];
+    } else {
+      systemPrompt = `You are the executive AI Voice CRM Assistant for "${orgName}", talking directly with ${managerName} (Sales Manager) in real-time.
 You have instant access to the live MongoDB database of the CRM via specialized tools.
 
 =======================================================
@@ -227,12 +285,13 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    - Overdue tasks and follow-ups: CALL 'get_followup_status'
    - WhatsApp unread chats: CALL 'get_whatsapp_analytics'
    - Integrations and configurations: CALL 'get_org_integrations_and_config'`;
+    }
 
     const liveModel =
       process.env.AI_ASSISTANT_LIVE_MODEL ||
       "gemini-3.8-live";
 
-    console.log(`[Gemini Live Gateway] Connecting user ${this.user?.id} to model ${liveModel} (Voice: ${this.voiceName})`);
+    console.log(`[Gemini Live Gateway] Connecting user ${this.user?.id} to model ${liveModel} (Mode: ${this.sessionMode}, Silent: ${this.silentMode})`);
 
     const config = {
       responseModalities: ["AUDIO"],
@@ -250,7 +309,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       },
       tools: [
         {
-          functionDeclarations: CRM_LIVE_FUNCTION_DECLARATIONS,
+          functionDeclarations,
         },
       ],
     };
@@ -467,8 +526,8 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         if (!hasQuota) return;
 
         for (const part of content.modelTurn.parts) {
-          // Audio chunk (24kHz PCM)
-          if (part.inlineData?.data) {
+          // Audio chunk (24kHz PCM) - Muted in silent listener mode
+          if (part.inlineData?.data && !this.silentMode) {
             this.audioChunksOutCount++;
             this.audioBytesOutCount += part.inlineData.data.length;
 

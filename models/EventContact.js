@@ -15,8 +15,8 @@ const eventContactSchema = new mongoose.Schema(
     },
     phone: {
       type: String,
-      required: [true, "Contact phone number is required"],
       trim: true,
+      default: "",
       index: true,
     },
     companyName: {
@@ -34,6 +34,19 @@ const eventContactSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    transcript: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    aiExtracted: {
+      type: Object,
+      default: () => ({}),
+    },
+    corrections: {
+      type: Object,
+      default: () => ({}),
+    },
     status: {
       type: String,
       enum: ["captured", "whatsapp_opened", "completed"],
@@ -47,6 +60,10 @@ const eventContactSchema = new mongoose.Schema(
     capturedByName: {
       type: String,
       default: "",
+    },
+    whatsappOpenedAt: {
+      type: Date,
+      default: null,
     },
     sentAt: {
       type: Date,

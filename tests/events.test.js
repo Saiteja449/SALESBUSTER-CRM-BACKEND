@@ -8,6 +8,7 @@ import {
   createEventContact,
   updateContactStatus,
 } from "../controllers/eventController.js";
+import { createEventCaptureTool } from "../ai/assistant/tools/eventCaptureTool.js";
 
 describe("Event & EventContact Architecture Unit Tests", () => {
   it("creates an event successfully with initial stats", async () => {
@@ -245,6 +246,101 @@ describe("Event & EventContact Architecture Unit Tests", () => {
     assert.equal(jsonResponse.data.contacts.length, 1);
     assert.equal(jsonResponse.data.contacts[0].name, "Suresh Reddy");
     assert.equal(jsonResponse.data.total, 1);
+  });
+
+  it("allows saving contact without phone number with default status captured", async () => {
+    let savedDoc = null;
+    let eventIncUpdate = null;
+
+    const mockEventModel = {
+      findById: async () => ({ _id: "event_123" }),
+      findByIdAndUpdate: async (id, update) => {
+        eventIncUpdate = update;
+        return { _id: id };
+      },
+    };
+
+    const mockEventContactModel = {
+      create: async (doc) => {
+        savedDoc = { _id: "contact_no_phone", ...doc };
+        return savedDoc;
+      },
+    };
+
+    let statusCode = null;
+    let jsonResponse = null;
+    const req = {
+      tenantModels: {
+        Event: mockEventModel,
+        EventContact: mockEventContactModel,
+      },
+      params: { id: "event_123" },
+      body: {
+        name: "Pooja Hegde",
+        companyName: "Creative Designs",
+        summary: "Discussed social media creative templates for event booths",
+        transcript: "Hi I am Pooja from Creative Designs",
+      },
+      user: { _id: "user_rep_1", name: "Bob Rep" },
+    };
+    const res = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(data) {
+        jsonResponse = data;
+        return this;
+      },
+    };
+
+    await createEventContact(req, res);
+    assert.equal(statusCode, 201);
+    assert.equal(jsonResponse.success, true);
+    assert.equal(savedDoc.name, "Pooja Hegde");
+    assert.equal(savedDoc.phone, "");
+    assert.equal(savedDoc.status, "captured");
+    assert.equal(savedDoc.transcript, "Hi I am Pooja from Creative Designs");
+    assert.equal(eventIncUpdate.$inc["stats.totalCaptured"], 1);
+    assert.equal(eventIncUpdate.$inc["stats.whatsappSentCount"], undefined);
+  });
+
+  it("trigger_contact_review tool execution emits event_contact_triggered with normalized phone", async () => {
+    let emittedEvent = null;
+    let emittedData = null;
+
+    const mockSocket = {
+      id: "socket_test_123",
+      emit: (evt, data) => {
+        emittedEvent = evt;
+        emittedData = data;
+      },
+    };
+
+    const tool = createEventCaptureTool({
+      socket: mockSocket,
+      eventId: "event_tech_2026",
+      eventName: "Bangalore Tech Summit 2026",
+      user: { name: "Ananya Rep" },
+      organization: { name: "SalesBuster" },
+    });
+
+    const resultStr = await tool.execute({
+      name: "Vikram Malhotra",
+      phone: "+91 9876543210",
+      companyName: "Malhotra Enterprises",
+      summary: "Looking for sales rep call tracking software",
+      suggestedMessage: "Hi Vikram, pleasure meeting you at Bangalore Tech Summit 2026!",
+    });
+
+    const result = JSON.parse(resultStr);
+    assert.equal(result.ok, true);
+    assert.equal(emittedEvent, "event_contact_triggered");
+    assert.equal(emittedData.name, "Vikram Malhotra");
+    assert.equal(emittedData.phone, "9876543210");
+    assert.equal(emittedData.companyName, "Malhotra Enterprises");
+    assert.equal(emittedData.eventName, "Bangalore Tech Summit 2026");
+    assert.ok(emittedData.messageText.includes("Bangalore Tech Summit 2026"));
   });
 });
 

@@ -201,6 +201,72 @@ export const initSocket = (server) => {
       });
 
       // =========================================================================
+      // EVENT INTELLIGENCE - CONTINUOUS GEMINI LIVE VOICE CAPTURE
+      // =========================================================================
+      socket.on("event_voice_start", async ({ eventId, eventName, voiceName = "Aoede" } = {}) => {
+        try {
+          console.log(`[Socket Voice] event_voice_start requested for event "${eventName || eventId}" on socket ${socket.id}`);
+
+          // Close any pre-existing session on this socket
+          if (socket.geminiLiveSession) {
+            socket.geminiLiveSession.close();
+            socket.geminiLiveSession = null;
+          }
+
+          const tenantDbName = socket.user?.tenantDbName;
+          const tenantModels = tenantDbName ? getTenantModels(tenantDbName) : null;
+          if (!tenantModels) {
+            socket.emit("bi_voice_error", {
+              message: "Tenant database context could not be resolved.",
+            });
+            return;
+          }
+
+          const { Organization: MasterOrg } = getMasterModels();
+          const orgId = socket.user?.organizationId;
+          const organization = orgId ? await MasterOrg.findById(orgId).lean() : null;
+
+          const liveSession = new GeminiLiveSessionManager({
+            socket,
+            user: socket.user,
+            organization,
+            tenantModels,
+            voiceName,
+            sessionMode: "event_capture",
+            eventId,
+            eventName,
+            silentMode: true, // Stay completely silent; do not speak back to attendee
+          });
+          socket.geminiLiveSession = liveSession;
+
+          await liveSession.start();
+        } catch (err) {
+          if (socket.geminiLiveSession) {
+            socket.geminiLiveSession.close();
+            socket.geminiLiveSession = null;
+          }
+          console.error(`[Socket Voice] Error starting Event Voice session for socket ${socket.id}:`, err);
+          socket.emit("bi_voice_error", {
+            message: err.message || "Failed to initialize Gemini Live Event Voice session.",
+          });
+        }
+      });
+
+      socket.on("event_voice_audio_in", (base64Chunk) => {
+        if (socket.geminiLiveSession) {
+          socket.geminiLiveSession.sendAudioChunk(base64Chunk);
+        }
+      });
+
+      socket.on("event_voice_stop", () => {
+        console.log(`[Socket Voice] event_voice_stop received for socket ${socket.id}`);
+        if (socket.geminiLiveSession) {
+          socket.geminiLiveSession.close();
+          socket.geminiLiveSession = null;
+        }
+      });
+
+      // =========================================================================
       // BI ANALYST - GEMINI MULTIMODAL LIVE REAL-TIME VOICE CHAT
       // =========================================================================
       socket.on("bi_voice_start", async ({ voiceName = "Aoede" } = {}) => {

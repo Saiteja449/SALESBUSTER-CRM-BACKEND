@@ -353,19 +353,22 @@ export const getEventContacts = async (req, res) => {
 export const createEventContact = async (req, res) => {
   try {
     const { Event, EventContact } = req.tenantModels;
-    const { name, phone, companyName, summary, messageText, status = "whatsapp_opened" } = req.body;
+    const {
+      name,
+      phone = "",
+      companyName = "",
+      summary = "",
+      messageText = "",
+      transcript = "",
+      aiExtracted = {},
+      corrections = {},
+      status = "captured",
+    } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({
         success: false,
         message: "Contact name is required.",
-      });
-    }
-
-    if (!phone || !phone.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "Contact phone number is required.",
       });
     }
 
@@ -377,8 +380,10 @@ export const createEventContact = async (req, res) => {
       });
     }
 
-    // Clean phone number
-    const cleanPhone = phone.replace(/\D/g, "");
+    // Clean phone number (leave empty if not provided)
+    const cleanPhone = phone ? String(phone).replace(/\D/g, "") : "";
+
+    const isHandoffDone = status === "whatsapp_opened" || status === "completed";
 
     const newContact = await EventContact.create({
       eventId: event._id,
@@ -387,19 +392,21 @@ export const createEventContact = async (req, res) => {
       companyName: (companyName || "").trim(),
       summary: (summary || "").trim(),
       messageText: (messageText || "").trim(),
-      status: status || "whatsapp_opened",
+      transcript: (transcript || "").trim(),
+      aiExtracted: aiExtracted || {},
+      corrections: corrections || {},
+      status: status || "captured",
       capturedBy: req.user?._id || null,
       capturedByName: req.user?.name || "Manager",
-      sentAt: status === "whatsapp_opened" || status === "completed" ? new Date() : null,
+      whatsappOpenedAt: isHandoffDone ? new Date() : null,
+      sentAt: isHandoffDone ? new Date() : null,
     });
 
     // Update event counter
     await Event.findByIdAndUpdate(event._id, {
       $inc: {
         "stats.totalCaptured": 1,
-        ...(status === "whatsapp_opened" || status === "completed"
-          ? { "stats.whatsappSentCount": 1 }
-          : {}),
+        ...(isHandoffDone ? { "stats.whatsappSentCount": 1 } : {}),
       },
     });
 
@@ -447,7 +454,8 @@ export const updateContactStatus = async (req, res) => {
 
     const wasSentBefore = contact.status === "whatsapp_opened" || contact.status === "completed";
     contact.status = status;
-    if ((status === "whatsapp_opened" || status === "completed") && !contact.sentAt) {
+    if ((status === "whatsapp_opened" || status === "completed") && !contact.whatsappOpenedAt) {
+      contact.whatsappOpenedAt = new Date();
       contact.sentAt = new Date();
     }
     await contact.save();
