@@ -40,6 +40,7 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
   const handler = async (args = {}) => {
     const repName = user?.name || "Sales Manager";
     const orgName = organization?.name || "Our Team";
+    const repPhone = (user?.phone || "").replace(/\D/g, "").slice(-10);
     const currentEvent = eventName || "our event";
 
     // Normalize phone number (must be a valid 10-digit number)
@@ -55,7 +56,7 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
     const companyName = (args.companyName || "").trim();
     const summary = (args.summary || "").trim();
 
-    // STRICT VALIDATION: Require full name, complete 10-digit phone, and company before triggering popup
+    // STRICT VALIDATION 1: Require full name, complete 10-digit phone, and company before triggering popup
     if (!rawName || rawName.length < 2 || !cleanPhone || cleanPhone.length !== 10 || !companyName || companyName.length < 2) {
       console.log(
         `[EventCaptureTool] Withholding popup trigger - incomplete details: Name="${rawName}", Phone="${cleanPhone}" (${cleanPhone.length} digits), Company="${companyName}"`
@@ -68,6 +69,36 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
           phone: !cleanPhone || cleanPhone.length !== 10,
           companyName: !companyName || companyName.length < 2,
         },
+      });
+    }
+
+    // STRICT VALIDATION 2: Anti-Self Capture Defense
+    // Prevent accidentally capturing the sales representative's own identity or host organization
+    const nameLower = rawName.toLowerCase();
+    const repNameLower = repName.toLowerCase();
+    if (repNameLower.length > 2 && (nameLower === repNameLower || nameLower.includes(repNameLower))) {
+      console.log(`[EventCaptureTool] Withholding popup trigger - captured name matches sales rep (${rawName})`);
+      return JSON.stringify({
+        ok: false,
+        message: "Trigger withheld: Captured name matches the sales representative, not the external attendee.",
+      });
+    }
+
+    if (repPhone && cleanPhone === repPhone) {
+      console.log(`[EventCaptureTool] Withholding popup trigger - captured phone matches sales rep's phone (${cleanPhone})`);
+      return JSON.stringify({
+        ok: false,
+        message: "Trigger withheld: Captured phone matches the sales representative's phone, not the external attendee.",
+      });
+    }
+
+    const companyLower = companyName.toLowerCase();
+    const orgLower = orgName.toLowerCase();
+    if (orgLower.length > 2 && (companyLower === orgLower || companyLower.includes(orgLower))) {
+      console.log(`[EventCaptureTool] Withholding popup trigger - captured company matches host organization (${companyName})`);
+      return JSON.stringify({
+        ok: false,
+        message: "Trigger withheld: Captured company matches the host organization, not the attendee's company.",
       });
     }
 

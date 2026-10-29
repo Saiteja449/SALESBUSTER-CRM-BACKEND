@@ -391,5 +391,54 @@ describe("Event & EventContact Architecture Unit Tests", () => {
     assert.equal(res3.ok, false);
     assert.equal(emittedEvent, null);
   });
+
+  it("trigger_contact_review rejects capturing sales rep's own identity or organization", async () => {
+    let emittedEvent = null;
+
+    const mockSocket = {
+      id: "socket_test_antiself",
+      emit: (evt) => {
+        emittedEvent = evt;
+      },
+    };
+
+    const tool = createEventCaptureTool({
+      socket: mockSocket,
+      eventId: "event_tech_2026",
+      eventName: "Bangalore Tech Summit 2026",
+      user: { name: "Ananya Rep", phone: "+91 99999 88888" },
+      organization: { name: "SalesBuster Technologies" },
+    });
+
+    // 1. Captured name is the rep's name
+    const res1Str = await tool.execute({
+      name: "Ananya Rep",
+      phone: "9876543210",
+      companyName: "External Corp",
+    });
+    const res1 = JSON.parse(res1Str);
+    assert.equal(res1.ok, false);
+    assert.equal(emittedEvent, null);
+
+    // 2. Captured phone is the rep's phone
+    const res2Str = await tool.execute({
+      name: "Suresh Raina",
+      phone: "9999988888",
+      companyName: "Raina Sports",
+    });
+    const res2 = JSON.parse(res2Str);
+    assert.equal(res2.ok, false);
+    assert.equal(emittedEvent, null);
+
+    // 3. Captured company is the rep's host organization
+    const res3Str = await tool.execute({
+      name: "Suresh Raina",
+      phone: "9876543210",
+      companyName: "SalesBuster Technologies",
+    });
+    const res3 = JSON.parse(res3Str);
+    assert.equal(res3.ok, false);
+    assert.equal(emittedEvent, null);
+  });
 });
 
