@@ -26,7 +26,7 @@ export const processInitialSync = async ({ accountId, phoneNumberId, accessToken
     }
 
     // 1. Sync Contacts (smb_app_state_sync) - only once
-    if (!account.contactsSyncRequested) {
+    if (!account.contactsSyncRequested || !account.contactsSyncRequestId) {
       try {
         console.log(`[WhatsAppSync] Requesting contacts sync for phone ${targetPhoneId}...`);
         const res = await fetch(`${getGraphApiBaseUrl()}/${targetPhoneId}/smb_app_data`, {
@@ -35,7 +35,10 @@ export const processInitialSync = async ({ accountId, phoneNumberId, accessToken
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ sync_type: "smb_app_state_sync" }),
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            sync_type: "smb_app_state_sync",
+          }),
         });
 
         const data = await res.json();
@@ -47,7 +50,7 @@ export const processInitialSync = async ({ accountId, phoneNumberId, accessToken
         } else {
           console.warn(`[WhatsAppSync] Contacts sync API warning:`, data.error?.message || data);
           // If already requested or feature unavailable for this tier, mark flag to avoid spamming
-          if (data.error?.code === 100 || data.error?.code === 131000) {
+          if (data.error?.code === 131000 || data.error?.message?.toLowerCase().includes("already")) {
             account.contactsSyncRequested = true;
             await account.save();
           }
@@ -58,7 +61,7 @@ export const processInitialSync = async ({ accountId, phoneNumberId, accessToken
     }
 
     // 2. Sync Chat History (history) - only once
-    if (!account.historySyncRequested) {
+    if (!account.historySyncRequested || !account.historySyncRequestId) {
       try {
         console.log(`[WhatsAppSync] Requesting chat history sync for phone ${targetPhoneId}...`);
         const res = await fetch(`${getGraphApiBaseUrl()}/${targetPhoneId}/smb_app_data`, {
@@ -67,7 +70,10 @@ export const processInitialSync = async ({ accountId, phoneNumberId, accessToken
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ sync_type: "history" }),
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            sync_type: "history",
+          }),
         });
 
         const data = await res.json();
@@ -78,7 +84,7 @@ export const processInitialSync = async ({ accountId, phoneNumberId, accessToken
           console.log(`[WhatsAppSync] Chat history sync initiated. Request ID: ${account.historySyncRequestId}`);
         } else {
           console.warn(`[WhatsAppSync] Chat history sync API warning:`, data.error?.message || data);
-          if (data.error?.code === 100 || data.error?.code === 131000) {
+          if (data.error?.code === 131000 || data.error?.message?.toLowerCase().includes("already")) {
             account.historySyncRequested = true;
             await account.save();
           }
