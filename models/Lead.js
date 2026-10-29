@@ -238,6 +238,11 @@ const leadSchema = new mongoose.Schema(
     },
     callHistory: [
       {
+        callEventId: {
+          type: String,
+          default: null,
+          index: true,
+        },
         salespersonId: {
           type: mongoose.Schema.Types.Mixed,
           ref: "User",
@@ -279,6 +284,10 @@ const leadSchema = new mongoose.Schema(
     ],
     recordings: [
       {
+        callEventId: {
+          type: String,
+          default: null,
+        },
         name: String,
         url: String,
         transcription: String,

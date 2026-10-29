@@ -6,12 +6,20 @@ import mongoose from "mongoose";
  * Uses atomic MongoDB operators ($inc, $set, $push) to guarantee
  * zero race conditions or overwritten counts during concurrent calls/uploads.
  *
+ * Deduplication & Idempotency:
+ * - Uses a stable `callEventId` passed through both the call-log and
+ *   recording-upload flows to update matching history entries idempotently.
+ * - If no stable ID is available, does NOT merge calls based on broad time windows;
+ *   separate calls and recordings are preserved.
+ * - Genuinely duplicate retries of the same recording file are handled idempotently.
+ *
  * @param {Object} params
  * @param {Object} params.LeadModel - The tenant-scoped Lead Mongoose model
  * @param {string} [params.leadId] - Lead ObjectId string
  * @param {string} [params.phone] - Phone number to locate lead
  * @param {string|Object} [params.salespersonId] - Authenticated salesperson ID
  * @param {string} [params.salespersonName] - Authenticated salesperson display name
+ * @param {string} [params.callEventId] - Stable unique call/event ID from native/client
  * @param {Object} [params.recordingObj] - Optional recording subdocument to append to recordings array
  * @param {string} [params.callType] - Call type (incoming, outgoing, missed, rejected)
  * @param {string} [params.status] - Call status (connected, missed, not-connected, rejected)
@@ -25,6 +33,7 @@ export const recordLeadCallAtomic = async ({
   phone,
   salespersonId,
   salespersonName,
+  callEventId = null,
   recordingObj = null,
   callType = "outgoing",
   status = "connected",
@@ -40,6 +49,7 @@ export const recordLeadCallAtomic = async ({
   const repNameStr = salespersonName ? String(salespersonName).trim() : "Sales Representative";
   const callDuration = parseInt(duration) || (recordingObj?.duration || 0);
   const callTimestamp = calledAt ? new Date(calledAt) : now;
+  const cleanCallEventId = callEventId ? String(callEventId).trim() : null;
 
   // Build match query for the lead
   let baseQuery = null;
@@ -83,8 +93,97 @@ export const recordLeadCallAtomic = async ({
     return null;
   }
 
-  // Detailed call history entry for timeline
+  const history = lead.callHistory || [];
+  let matchedCallIndex = -1;
+
+  // ---------------------------------------------------------------------------
+  // 1. PRIMARY MATCH: Stable call/event ID
+  // When callEventId is present, match the exact corresponding callHistory entry.
+  // ---------------------------------------------------------------------------
+  if (cleanCallEventId) {
+    matchedCallIndex = history.findIndex(
+      (entry) => entry.callEventId && String(entry.callEventId).trim() === cleanCallEventId
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 2. IDEMPOTENT RECORDING RETRY MATCH:
+  // If no match by callEventId, but a recordingObj is provided, check if the
+  // EXACT same recording file (by name, URL, or _id) is already attached to
+  // prevent duplicate recordings on network retries.
+  // ---------------------------------------------------------------------------
+  if (matchedCallIndex === -1 && recordingObj) {
+    matchedCallIndex = history.findIndex((entry) => {
+      const matchUrl = recordingObj.url && entry.recordingUrl && entry.recordingUrl === recordingObj.url;
+      const matchName = recordingObj.name && entry.recordingName && entry.recordingName === recordingObj.name;
+      const matchId = recordingObj._id && entry.recordingId && String(entry.recordingId) === String(recordingObj._id);
+      return Boolean(matchUrl || matchName || matchId);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // SCENARIO A: Existing matching call found. Update entry idempotently without
+  // incrementing callCount or repCallCounts.
+  // ---------------------------------------------------------------------------
+  if (matchedCallIndex !== -1) {
+    const updateOps = {
+      $set: {},
+    };
+
+    if (cleanCallEventId && !history[matchedCallIndex].callEventId) {
+      updateOps.$set[`callHistory.${matchedCallIndex}.callEventId`] = cleanCallEventId;
+    }
+
+    if (recordingObj) {
+      if (cleanCallEventId && !recordingObj.callEventId) {
+        recordingObj.callEventId = cleanCallEventId;
+      }
+      updateOps.$set[`callHistory.${matchedCallIndex}.recordingUrl`] = recordingObj.url || null;
+      updateOps.$set[`callHistory.${matchedCallIndex}.recordingName`] = recordingObj.name || null;
+      updateOps.$set[`callHistory.${matchedCallIndex}.recordingId`] = recordingObj._id || null;
+
+      const alreadyHasRecording = (lead.recordings || []).some(
+        (r) =>
+          (recordingObj._id && r._id && String(r._id) === String(recordingObj._id)) ||
+          (recordingObj.url && r.url === recordingObj.url) ||
+          (recordingObj.name && r.name === recordingObj.name) ||
+          (cleanCallEventId && r.callEventId && String(r.callEventId) === cleanCallEventId)
+      );
+
+      if (!alreadyHasRecording) {
+        updateOps.$push = { recordings: recordingObj };
+      }
+    }
+
+    if (callDuration > 0 && (!history[matchedCallIndex].duration || history[matchedCallIndex].duration === 0)) {
+      updateOps.$set[`callHistory.${matchedCallIndex}.duration`] = callDuration;
+      updateOps.$set[`callHistory.${matchedCallIndex}.status`] = "connected";
+    }
+
+    let updatedLead = null;
+    if (Object.keys(updateOps.$set).length > 0 || updateOps.$push) {
+      updatedLead = await LeadModel.findOneAndUpdate(
+        { _id: lead._id },
+        updateOps,
+        { new: true, returnDocument: "after" }
+      );
+    } else {
+      updatedLead = lead;
+    }
+
+    return updatedLead;
+  }
+
+  // ---------------------------------------------------------------------------
+  // SCENARIO B: Genuinely new call or distinct recording. Proceed with atomic
+  // increment of callCount and repCallCounts.
+  // ---------------------------------------------------------------------------
+  if (cleanCallEventId && recordingObj && !recordingObj.callEventId) {
+    recordingObj.callEventId = cleanCallEventId;
+  }
+
   const callEntry = {
+    callEventId: cleanCallEventId || null,
     salespersonId: repIdStr || null,
     salespersonName: repNameStr,
     callType: callType || "outgoing",
@@ -100,7 +199,6 @@ export const recordLeadCallAtomic = async ({
       : {}),
   };
 
-  // 2. Determine if rep already exists in lead's repCallCounts array
   const existingRepIndex = (lead.repCallCounts || []).findIndex((rep) => {
     if (repIdStr && rep.salespersonId && String(rep.salespersonId) === repIdStr) {
       return true;
@@ -114,8 +212,7 @@ export const recordLeadCallAtomic = async ({
   let updatedLead = null;
 
   if (existingRepIndex >= 0) {
-    // SCENARIO 1: Rep already exists in array.
-    // Use direct index access (`repCallCounts.${existingRepIndex}`) avoiding positional operator ($) errors.
+    // Rep already exists in array. Direct index access avoids positional operator ($) errors.
     const updateOps = {
       $inc: {
         callCount: 1,
@@ -133,13 +230,19 @@ export const recordLeadCallAtomic = async ({
       },
     };
 
+    const insertFilter = cleanCallEventId
+      ? {
+          _id: lead._id,
+          callHistory: { $not: { $elemMatch: { callEventId: cleanCallEventId } } },
+        }
+      : { _id: lead._id };
     updatedLead = await LeadModel.findOneAndUpdate(
-      { _id: lead._id },
+      insertFilter,
       updateOps,
       { new: true, returnDocument: "after" }
     );
   } else {
-    // SCENARIO 2: Rep does NOT exist in array yet. Atomically $push new subdocument and call entry.
+    // Rep does NOT exist in array yet. Atomically $push new subdocument and call entry.
     const pushOps = {
       $inc: { callCount: 1 },
       $set: { lastCallAt: callTimestamp },
@@ -155,11 +258,58 @@ export const recordLeadCallAtomic = async ({
       },
     };
 
+    const insertFilter = cleanCallEventId
+      ? {
+          _id: lead._id,
+          callHistory: { $not: { $elemMatch: { callEventId: cleanCallEventId } } },
+        }
+      : { _id: lead._id };
     updatedLead = await LeadModel.findOneAndUpdate(
-      { _id: lead._id },
+      insertFilter,
       pushOps,
       { new: true, returnDocument: "after" }
     );
+  }
+
+  // A concurrent request may have inserted the same event after our initial read.
+  // The conditional insert above makes exactly one request increment the counters;
+  // reload the winner and attach any recording data without incrementing again.
+  if (!updatedLead && cleanCallEventId) {
+    const latestLead = await LeadModel.findOne({ _id: lead._id });
+    const latestHistory = latestLead?.callHistory || [];
+    const duplicateIndex = latestHistory.findIndex(
+      (entry) => entry.callEventId && String(entry.callEventId).trim() === cleanCallEventId
+    );
+    if (duplicateIndex >= 0) {
+      const duplicate = latestHistory[duplicateIndex];
+      const mergeSet = {};
+      const mergeUpdate = { $set: mergeSet };
+      if (recordingObj) {
+        mergeSet[`callHistory.${duplicateIndex}.recordingUrl`] = recordingObj.url || null;
+        mergeSet[`callHistory.${duplicateIndex}.recordingName`] = recordingObj.name || null;
+        mergeSet[`callHistory.${duplicateIndex}.recordingId`] = recordingObj._id || null;
+        const hasRecording = (latestLead.recordings || []).some(
+          (item) => item.callEventId === cleanCallEventId ||
+            (recordingObj.url && item.url === recordingObj.url)
+        );
+        if (!hasRecording) {
+          recordingObj.callEventId = cleanCallEventId;
+          mergeUpdate.$push = { recordings: recordingObj };
+        }
+      }
+      if (callDuration > 0 && !duplicate.duration) {
+        mergeSet[`callHistory.${duplicateIndex}.duration`] = callDuration;
+        mergeSet[`callHistory.${duplicateIndex}.status`] = "connected";
+      }
+      if (Object.keys(mergeSet).length > 0 || mergeUpdate.$push) {
+        return await LeadModel.findOneAndUpdate(
+          { _id: lead._id, [`callHistory.${duplicateIndex}.callEventId`]: cleanCallEventId },
+          mergeUpdate,
+          { new: true, returnDocument: "after" }
+        );
+      }
+      return latestLead;
+    }
   }
 
   return updatedLead;

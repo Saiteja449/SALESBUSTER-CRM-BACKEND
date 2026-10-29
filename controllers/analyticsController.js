@@ -18,11 +18,15 @@ export const logCall = async (req, res) => {
       salesperson,
       salespersonId,
       date,
+      timestamp,
+      calledAt,
       duration,
       callType,
       status,
       leadId,
       phone,
+      callEventId,
+      eventId,
     } = req.body;
 
     // Strict identity enforcement: if caller is authenticated, bind to verified identity
@@ -58,10 +62,11 @@ export const logCall = async (req, res) => {
         phone,
         salespersonId,
         salespersonName: salesperson,
+        callEventId: callEventId || eventId || null,
         callType,
         status,
         duration,
-        calledAt: new Date(),
+        calledAt: timestamp ? new Date(timestamp) : (calledAt ? new Date(calledAt) : new Date()),
       });
 
       // If an explicit leadId was provided without phone and no lead was found, abort and report 404

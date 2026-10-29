@@ -1011,9 +1011,10 @@ export const updateLead = async (req, res) => {
         leadId: lead._id,
         salespersonId: uploaderId,
         salespersonName: uploaderName,
+        callEventId: req.body.callEventId || req.body.eventId || null,
         recordingObj,
         duration: recordingObj.duration || 0,
-        calledAt: new Date(),
+        calledAt: req.body.callTimestamp ? new Date(req.body.callTimestamp) : (req.body.startTimestamp ? new Date(req.body.startTimestamp) : new Date()),
       });
 
       if (atomicallyUpdatedLead) {
@@ -1515,9 +1516,10 @@ export const uploadRecordingForLead = async (req, res) => {
       leadId: lead._id,
       salespersonId: uploaderId,
       salespersonName: uploaderName,
+      callEventId: req.body.callEventId || req.body.eventId || null,
       recordingObj,
       duration: recordingObj.duration || 0,
-      calledAt: new Date(),
+      calledAt: req.body.callTimestamp ? new Date(req.body.callTimestamp) : (req.body.startTimestamp ? new Date(req.body.startTimestamp) : new Date()),
     });
 
     if (!updatedLead) {
