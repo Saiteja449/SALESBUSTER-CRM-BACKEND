@@ -41,6 +41,11 @@ const createMockLeadModel = (initialLeadDoc) => {
             doc.repCallCounts[doc._matchedRepIndex].count =
               (doc.repCallCounts[doc._matchedRepIndex].count || 0) + incVal;
           }
+        } else if (key.startsWith("repCallCounts.") && key.endsWith(".count")) {
+          const idx = parseInt(key.split(".")[1], 10);
+          if (doc.repCallCounts && doc.repCallCounts[idx]) {
+            doc.repCallCounts[idx].count = (doc.repCallCounts[idx].count || 0) + incVal;
+          }
         }
       }
     }
@@ -57,6 +62,13 @@ const createMockLeadModel = (initialLeadDoc) => {
         } else if (key === "repCallCounts.$.salespersonName") {
           if (doc._matchedRepIndex !== undefined && doc.repCallCounts[doc._matchedRepIndex]) {
             doc.repCallCounts[doc._matchedRepIndex].salespersonName = val;
+          }
+        } else if (key.startsWith("repCallCounts.")) {
+          const parts = key.split(".");
+          const idx = parseInt(parts[1], 10);
+          const field = parts[2];
+          if (doc.repCallCounts && doc.repCallCounts[idx] && field) {
+            doc.repCallCounts[idx][field] = val;
           }
         }
       }

@@ -25,10 +25,17 @@ export const logCall = async (req, res) => {
       phone,
     } = req.body;
 
-    // Strict identity enforcement: if caller is a sales rep, bind to their verified user identity
+    // Strict identity enforcement: if caller is authenticated, bind to verified identity
     if (req.user?.role === "sales person") {
       salespersonId = (req.user._id || req.user.id).toString();
       salesperson = req.user.name || "Sales Representative";
+    } else if (req.user) {
+      if (!salespersonId) {
+        salespersonId = (req.user._id || req.user.id)?.toString();
+      }
+      if (!salesperson) {
+        salesperson = req.user.name || "Sales Representative";
+      }
     }
 
     const repIdentifier = salespersonId || salesperson;
@@ -53,8 +60,8 @@ export const logCall = async (req, res) => {
         salespersonName: salesperson,
       });
 
-      // If an explicit leadId was provided but no lead was found, abort and report 404
-      if (leadId && !updatedLead) {
+      // If an explicit leadId was provided without phone and no lead was found, abort and report 404
+      if (leadId && !phone && !updatedLead) {
         return res.status(404).json({
           success: false,
           message: `Lead not found for leadId: ${leadId}. Call log aborted to preserve counter integrity.`,
