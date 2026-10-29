@@ -1,4 +1,3 @@
-/* Target Intelligence feature commented out
 import mongoose from "mongoose";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import Lead from "../models/Lead.js";
@@ -199,7 +198,7 @@ function synthesizeProspects(filters) {
       location: `${hub}, ${cluster.city}, ${cluster.state}`,
       city: cluster.city,
       companySize: `${80 + i * 40}-${180 + i * 50} employees`,
-      annualRevenue: `₹${25 + i * 15} Cr - ₹${50 + i * 20} Cr`,
+      annualRevenue: `â‚¹${25 + i * 15} Cr - â‚¹${50 + i * 20} Cr`,
       decisionMaker: {
         name: `${fName} ${lName}`,
         title: titles[i % titles.length],
@@ -365,7 +364,7 @@ Return ONLY valid JSON matching this schema:
     "location": "Industrial Hub, ${city || 'City'}, State",
     "city": "${city || 'City'}",
     "companySize": "employee count range",
-    "annualRevenue": "₹XX Cr - ₹XX Cr",
+    "annualRevenue": "â‚¹XX Cr - â‚¹XX Cr",
     "decisionMaker": {
       "name": "Indian / Regional Executive Full Name",
       "title": "Exact Title matching requirement",

@@ -200,7 +200,7 @@ export const provisionOrganization = async (req, res) => {
       addons: {
         whatsappCampaigns: Boolean(addons?.whatsappCampaigns),
         biAnalyst: Boolean(addons?.biAnalyst),
-        // targetIntelligence: Boolean(addons?.targetIntelligence),
+        targetIntelligence: Boolean(addons?.targetIntelligence),
       },
       aiSettings: getDefaultAISettings(name.trim()),
       createdBy: req.user?._id || null,
@@ -638,7 +638,7 @@ export const updateOrganizationWhatsAppLimit = async (req, res) => {
     org.whatsappLineLimit = limit;
     await org.save();
 
-    // If downgrading from 2 → 1, disconnect secondary session if active
+    // If downgrading from 2 â†’ 1, disconnect secondary session if active
     if (previousLimit === 2 && limit === 1) {
       try {
         const { logoutWhatsApp } = await import("../whatsapp/whatsappService.js");
@@ -646,7 +646,7 @@ export const updateOrganizationWhatsAppLimit = async (req, res) => {
         await logoutWhatsApp(secondarySessionId);
         // console.log(`[WhatsApp] Auto-disconnected secondary session ${secondarySessionId} after line limit downgrade for org "${org.name}".`);
       } catch (disconnectErr) {
-        // Non-fatal — session may not have been active
+        // Non-fatal â€” session may not have been active
         // console.warn(`[WhatsApp] Could not disconnect secondary session for org "${org.name}":`, disconnectErr.message);
       }
     }
@@ -683,7 +683,7 @@ export const updateOrganizationWhatsAppLimit = async (req, res) => {
 // @access  Protected (Super Admin)
 export const updateOrganizationAddons = async (req, res) => {
   try {
-    const { whatsappCampaigns, biAnalyst /*, targetIntelligence */ } = req.body;
+    const { whatsappCampaigns, biAnalyst, targetIntelligence } = req.body;
 
     const { Organization } = getMasterModels();
     const org = await Organization.findById(req.params.id);
@@ -696,7 +696,7 @@ export const updateOrganizationAddons = async (req, res) => {
     }
 
     if (!org.addons) {
-      org.addons = { whatsappCampaigns: false, biAnalyst: false /*, targetIntelligence: false */ };
+      org.addons = { whatsappCampaigns: false, biAnalyst: false, targetIntelligence: false };
     }
 
     if (whatsappCampaigns !== undefined) {
@@ -705,11 +705,9 @@ export const updateOrganizationAddons = async (req, res) => {
     if (biAnalyst !== undefined) {
       org.addons.biAnalyst = Boolean(biAnalyst);
     }
-    /* Target Intelligence feature commented out
     if (targetIntelligence !== undefined) {
       org.addons.targetIntelligence = Boolean(targetIntelligence);
     }
-    */
 
     org.markModified("addons");
     await org.save();
@@ -884,7 +882,7 @@ export const getMyOrganization = async (req, res) => {
       data: {
         ...orgJson,
         webhookKey: org.webhookKey,
-        addons: org.addons || { whatsappCampaigns: false, biAnalyst: false /*, targetIntelligence: false */ },
+        addons: org.addons || { whatsappCampaigns: false, biAnalyst: false, targetIntelligence: false },
         whatsappLineLimit: org.whatsappLineLimit || 1,
         whatsappConnectionMode: (org.whatsappLineLimit || 1) === 2 ? "double" : "single",
         usedSeats,

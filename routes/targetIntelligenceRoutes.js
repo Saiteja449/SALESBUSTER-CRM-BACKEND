@@ -1,4 +1,3 @@
-/* Target Intelligence feature commented out
 import express from "express";
 import { protect } from "../middleware/authMiddleware.js";
 import { requireAddon } from "../middleware/addonMiddleware.js";
@@ -43,5 +42,3 @@ router.post("/search", searchProspects);
 router.post("/import-to-crm", importToCrm);
 
 export default router;
-
-*/
