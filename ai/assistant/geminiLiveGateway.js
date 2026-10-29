@@ -4,6 +4,11 @@ import { getISTDateBoundaries } from "./dateUtils.js";
 import { executeToolCall } from "./toolRunner.js";
 import { decryptApiKey } from "../../utils/encryption.js";
 import { reserveAiQuota } from "../../services/aiUsageService.js";
+import { VoiceTelemetry } from "./voiceTelemetry.js";
+import {
+  createEventCaptureTool,
+  EVENT_CAPTURE_TOOL_DECLARATION,
+} from "./tools/eventCaptureTool.js";
 
 /**
  * Standard Function Declarations for Gemini Live API
@@ -116,17 +121,46 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
  * for real-time speech-to-speech with live CRM database tool execution.
  */
 export class GeminiLiveSessionManager {
-  constructor({ socket, user, organization, tenantModels, voiceName = "Aoede" }) {
+  constructor({
+    socket,
+    user,
+    organization,
+    tenantModels,
+    voiceName = "Aoede",
+    sessionMode = "crm_assistant",
+    eventId = null,
+    eventName = null,
+    silentMode = false,
+  }) {
     this.socket = socket;
     this.user = user;
     this.organization = organization;
     this.tenantModels = tenantModels;
     this.voiceName = voiceName;
+    this.sessionMode = sessionMode;
+    this.eventId = eventId;
+    this.eventName = eventName;
+    this.silentMode = Boolean(silentMode);
     this.session = null;
     this.isActive = false;
     this.toolsByName = {};
-    this.isSpeakingEmitted = false; // Tracks whether 'speaking' status was emitted for the current turn
-    this.isTurnReserved = false; // Tracks whether quota has been reserved for the active voice query turn
+    this.isSpeakingEmitted = false;
+    this.isTurnReserved = false;
+    this.currentTurnId = null;
+    this.isReadyAcknowledged = false;
+    this.startupStartTime = null;
+    this.pendingAudioQueue = [];
+    this.audioChunksInCount = 0;
+    this.audioChunksOutCount = 0;
+    this.audioBytesOutCount = 0;
+
+    // Correlated Timing Telemetry
+    this.telemetry = new VoiceTelemetry({
+      socketId: socket?.id,
+      orgId: organization?._id,
+      userId: user?.id || user?._id,
+      provider: "gemini",
+    });
 
     // 1. Build Authenticated CRM Tools Suite
     const { toolsByName } = buildAssistantTools({
@@ -135,6 +169,18 @@ export class GeminiLiveSessionManager {
       user,
     });
     this.toolsByName = toolsByName;
+
+    // If running in event capture mode, bind the event contact trigger tool
+    if (this.sessionMode === "event_capture") {
+      const eventTool = createEventCaptureTool({
+        socket: this.socket,
+        eventId: this.eventId,
+        eventName: this.eventName,
+        user: this.user,
+        organization: this.organization,
+      });
+      this.toolsByName[eventTool.name] = eventTool;
+    }
   }
 
   /**
@@ -180,8 +226,55 @@ export class GeminiLiveSessionManager {
     const boundaries = getISTDateBoundaries();
     const orgName = this.organization?.name || "Our Organization";
     const managerName = this.user?.name || "Sales Manager";
+    const repPhone = (this.user?.phone || "").replace(/\D/g, "").slice(-10);
 
-    const systemPrompt = `You are the executive AI Voice CRM Assistant for "${orgName}", talking directly with ${managerName} (Sales Manager) in real-time.
+    let systemPrompt = "";
+    let functionDeclarations = CRM_LIVE_FUNCTION_DECLARATIONS;
+
+    if (this.sessionMode === "event_capture") {
+      const currentEvent = this.eventName || "our event";
+      systemPrompt = `You are the SalesBuster Event Intelligence Ear for the event "${currentEvent}".
+You are listening passively to an in-person conversation between sales representative ${managerName} (${orgName}${repPhone ? `, Phone: ${repPhone}` : ""}) and an event attendee.
+
+CRITICAL OPERATIONAL RULES:
+1. SILENT LISTENER MODE (MANDATORY):
+   - You MUST remain COMPLETELY SILENT.
+   - NEVER speak aloud, generate audible voice audio, or respond to the attendee.
+
+2. SPEAKER DIFFERENTIATION & NEGATIVE FILTER (CRITICAL):
+   - The person holding this mobile phone is the sales representative: "${managerName}" representing "${orgName}"${repPhone ? ` (Phone: ${repPhone})` : ""}.
+   - NEVER capture "${managerName}" as the contact name.
+   - NEVER capture "${orgName}" as the company name.
+   ${repPhone ? `- NEVER capture "${repPhone}" as the attendee's phone number.` : ""}
+   - You are EXCLUSIVELY capturing the EXTERNAL EVENT ATTENDEE / VISITOR who is speaking with ${managerName}.
+   - Distinguish speaker roles through dialogue context:
+     * When ${managerName} introduces themselves (e.g. "Hi, I am ${managerName} from ${orgName}"), IGNORE those host details.
+     * When ${managerName} asks questions (e.g. "May I know your name / company / number?"), the person answering is the attendee.
+     * When the attendee introduces themselves (e.g. "I am [Name] from [Company]", "My number is [Phone]"), capture THOSE attendee details.
+     * If multiple names are mentioned (e.g. "I am [Name A], but call my partner [Name B] on [Phone]"), attribute the contact to the person directly associated with the phone number.
+
+3. MULTILINGUAL RECOGNITION:
+   - Understand English, Hindi, Telugu, Tamil, Marathi, and Hinglish code-switching naturally spoken in Indian business events.
+
+4. REAL-TIME CAPTURE TRIGGER:
+   - ONLY execute the tool 'trigger_contact_review' when ALL THREE core contact details have been completely and clearly spoken:
+     1. Attendee's full Name (MUST NOT be ${managerName}).
+     2. A complete 10-digit mobile phone number (digits only, e.g. "9876543210"${repPhone ? `, MUST NOT be ${repPhone}` : ""}).
+     3. Attendee's Company / Business name (MUST NOT be ${orgName}).
+   - DO NOT trigger the tool when only one or two details are spoken. Wait patiently until the conversation has revealed the Name, 10-digit Phone, and Company.
+   - Extract:
+     * name: Attendee's full name.
+     * phone: Exactly 10-digit Indian mobile number (e.g. "9876543210").
+     * companyName: Attendee's company/business name.
+     * summary: 1-2 sentence discussion summary or requirement.
+     * suggestedMessage: A warm, personalized WhatsApp follow-up greeting from ${managerName} (${orgName}) referencing ${currentEvent}.
+
+5. STRICT ZERO HALLUCINATION:
+   - If any required detail (Attendee Name, full 10-digit Phone, or Company) has NOT been spoken yet by the attendee, DO NOT call 'trigger_contact_review'. Never invent or guess phone numbers or companies.`;
+
+      functionDeclarations = [EVENT_CAPTURE_TOOL_DECLARATION, ...CRM_LIVE_FUNCTION_DECLARATIONS];
+    } else {
+      systemPrompt = `You are the executive AI Voice CRM Assistant for "${orgName}", talking directly with ${managerName} (Sales Manager) in real-time.
 You have instant access to the live MongoDB database of the CRM via specialized tools.
 
 =======================================================
@@ -211,12 +304,13 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    - Overdue tasks and follow-ups: CALL 'get_followup_status'
    - WhatsApp unread chats: CALL 'get_whatsapp_analytics'
    - Integrations and configurations: CALL 'get_org_integrations_and_config'`;
+    }
 
     const liveModel =
       process.env.AI_ASSISTANT_LIVE_MODEL ||
-      "gemini-2.5-flash-native-audio-preview-12-2025";
+      "gemini-3.8-live";
 
-    console.log(`[Gemini Live Gateway] Connecting user ${this.user?.id} to model ${liveModel} (Voice: ${this.voiceName})`);
+    console.log(`[Gemini Live Gateway] Connecting user ${this.user?.id} to model ${liveModel} (Mode: ${this.sessionMode}, Silent: ${this.silentMode})`);
 
     const config = {
       responseModalities: ["AUDIO"],
@@ -227,47 +321,108 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           },
         },
       },
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
       systemInstruction: {
         parts: [{ text: systemPrompt }],
       },
       tools: [
         {
-          functionDeclarations: CRM_LIVE_FUNCTION_DECLARATIONS,
+          functionDeclarations,
         },
       ],
     };
 
+    this.startupStartTime = Date.now();
+    this.telemetry.logEvent("session_startup_initiated", { model: liveModel, voiceName: this.voiceName });
+
     try {
+      // Connect to Gemini Live WebSocket. The returned promise resolves ONLY after setupComplete is verified.
       this.session = await ai.live.connect({
         model: liveModel,
         config,
         callbacks: {
           onopen: () => {
-            this.isActive = true;
-            this.socket.emit("bi_voice_status", { state: "connected", model: liveModel });
-            console.log(`[Gemini Live Gateway] Live session opened for socket ${this.socket.id}`);
+            console.log(`[Gemini Live Gateway] WebSocket transport opened for socket ${this.socket.id}`);
           },
           onmessage: async (serverMsg) => {
             await this.handleServerMessage(serverMsg);
           },
           onerror: (err) => {
+            this.telemetry.logEvent("session_error", { error: err?.message || "Gemini Live API error" });
             console.error(`[Gemini Live Gateway] Live session error for socket ${this.socket.id}:`, err);
             this.socket.emit("bi_voice_error", { message: err?.message || "Gemini Live API error" });
           },
           onclose: (closeEvt) => {
             this.isActive = false;
+            this.telemetry.logEvent("session_closed");
             this.socket.emit("bi_voice_status", { state: "closed" });
             console.log(`[Gemini Live Gateway] Live session closed for socket ${this.socket.id}`);
           },
         },
       });
 
+      // Session is now 100% established and ready to process audio input
       this.isActive = true;
+      this.isReadyAcknowledged = true;
+      const startupMs = Date.now() - (this.startupStartTime || Date.now());
+      this.telemetry.logEvent("session_ready", { startupMs, model: liveModel });
+
+      // Flush any microphone chunks buffered during connection handshake
+      if (this.pendingAudioQueue.length > 0) {
+        console.log(`[Gemini Live Gateway] Flushing ${this.pendingAudioQueue.length} buffered audio chunk(s) to Gemini`);
+        while (this.pendingAudioQueue.length > 0) {
+          const chunk = this.pendingAudioQueue.shift();
+          try {
+            this.session.sendRealtimeInput({
+              audio: {
+                mimeType: "audio/pcm;rate=16000",
+                data: chunk,
+              },
+            });
+          } catch (e) {}
+        }
+      }
+
+      // Explicit Session-Ready Acknowledgement (Gates Audio Streaming on Frontend & Mobile)
+      this.socket.emit("bi_voice_ready", {
+        sessionId: this.telemetry.sessionId,
+        startupMs,
+        model: liveModel,
+        provider: "gemini",
+      });
+
+      this.socket.emit("bi_voice_status", {
+        state: "connected",
+        model: liveModel,
+        sessionId: this.telemetry.sessionId,
+        startupMs,
+      });
+
+      console.log(`[Gemini Live Gateway] Live session fully READY in ${startupMs}ms for socket ${this.socket.id}`);
     } catch (err) {
+      this.telemetry.logEvent("session_startup_failed", { error: err.message });
       console.error("[Gemini Live Gateway] Failed to connect to Gemini Live API:", err);
       this.socket.emit("bi_voice_error", { message: err.message || "Failed to start Gemini Live voice session" });
       throw err;
     }
+  }
+
+  /**
+   * Friendly label generator for CRM tools in UI
+   */
+  getFriendlyToolLabel(toolName) {
+    const labels = {
+      get_dashboard_kpis: "Calculating CRM dashboard KPIs",
+      get_salesperson_performance: "Analyzing sales rep leaderboard",
+      search_leads: "Searching CRM leads",
+      lookup_phone_number: "Looking up contact in CRM",
+      get_followup_status: "Checking pending follow-ups",
+      get_whatsapp_analytics: "Inspecting WhatsApp chat status",
+      get_org_integrations_and_config: "Verifying system configuration",
+      search_crm_documentation_and_features: "Searching documentation",
+    };
+    return labels[toolName] || `Querying CRM tool (${toolName})`;
   }
 
   /**
@@ -276,39 +431,90 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
   async handleServerMessage(serverMsg) {
     if (!serverMsg) return;
 
-    // 1. Tool Calls from Gemini mid-speech
+    if (serverMsg.setupComplete) {
+      console.log(`[LiveVoice Setup] setupComplete received from Gemini Live API for socket ${this.socket.id}`);
+    }
+
+    if (serverMsg.goAway) {
+      console.warn(`[LiveVoice Warning] Gemini sent goAway notice! timeLeft:`, serverMsg.goAway.timeLeft);
+    }
+
+    // 1. Tool Calls from Gemini mid-speech (CONCURRENT EXECUTION)
     if (serverMsg.toolCall?.functionCalls?.length > 0) {
+      if (this.currentTurnId) {
+        this.telemetry.recordFirstProviderResponse(this.currentTurnId);
+      }
+
       const hasQuota = await this.ensureTurnQuota();
       if (!hasQuota) return;
 
       const functionCalls = serverMsg.toolCall.functionCalls;
-      const functionResponses = [];
+      const isParallel = functionCalls.length > 1;
+      const firstToolName = functionCalls[0].name;
+      const friendlyLabel = isParallel
+        ? `Running ${functionCalls.length} CRM queries concurrently`
+        : this.getFriendlyToolLabel(firstToolName);
 
-      for (const fc of functionCalls) {
-        console.log(`[Gemini Live Gateway] Executing tool '${fc.name}' for socket ${this.socket.id}`);
-        this.socket.emit("bi_voice_status", { state: "tool_running", toolName: fc.name });
+      this.socket.emit("bi_voice_status", {
+        state: "tool_running",
+        toolName: firstToolName,
+        friendlyLabel,
+        toolNames: functionCalls.map((fc) => fc.name),
+        count: functionCalls.length,
+        concurrent: isParallel,
+      });
 
-        const result = await executeToolCall({
-          toolCall: { id: fc.id, name: fc.name, args: fc.args || {} },
-          toolsByName: this.toolsByName,
-          timeoutMs: 6500,
-        });
+      console.log(
+        `[LiveVoice ToolCall] Gemini requested ${functionCalls.length} tool(s) ${isParallel ? "CONCURRENTLY" : ""} for socket ${this.socket.id}: ${functionCalls.map((fc) => fc.name).join(", ")}`
+      );
 
-        functionResponses.push({
-          id: fc.id,
-          name: fc.name,
-          response: { output: result.output },
-        });
-      }
+      const toolBatchStart = Date.now();
+
+      // Execute all tool calls concurrently while strictly preserving tenant isolation and result ordering
+      const functionResponses = await Promise.all(
+        functionCalls.map(async (fc) => {
+          const fcStart = Date.now();
+          console.log(`[LiveVoice ToolCall] Starting execution: ${fc.name} (args: ${JSON.stringify(fc.args || {})})`);
+          const result = await executeToolCall({
+            toolCall: { id: fc.id, name: fc.name, args: fc.args || {} },
+            toolsByName: this.toolsByName,
+            timeoutMs: 6500,
+          });
+          const fcDurationMs = Date.now() - fcStart;
+          console.log(`[LiveVoice ToolCall] Finished ${fc.name} in ${fcDurationMs}ms (ok: ${result.ok})`);
+
+          this.telemetry.recordToolExecution({
+            turnId: this.currentTurnId,
+            toolName: fc.name,
+            toolCallId: fc.id,
+            durationMs: fcDurationMs,
+            ok: result.ok,
+            concurrent: isParallel,
+          });
+
+          return {
+            id: fc.id,
+            name: fc.name,
+            response: { output: result.output },
+          };
+        })
+      );
+
+      const totalBatchDurationMs = Date.now() - toolBatchStart;
+      console.log(`[LiveVoice ToolComplete] Batch finished in ${totalBatchDurationMs}ms -> returning tool responses to Gemini`);
 
       // Return tool results back to Gemini Live API
       try {
         if (this.session && this.isActive) {
           this.session.sendToolResponse({ functionResponses });
-          this.socket.emit("bi_voice_status", { state: "tool_complete" });
+          this.socket.emit("bi_voice_status", {
+            state: "tool_complete",
+            durationMs: totalBatchDurationMs,
+            toolNames: functionCalls.map((fc) => fc.name),
+          });
         }
       } catch (toolErr) {
-        console.error("[Gemini Live Gateway] Error returning tool response to Gemini:", toolErr);
+        console.error("[LiveVoice ToolError] Error returning tool response to Gemini:", toolErr);
       }
       return;
     }
@@ -318,34 +524,50 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
     if (content) {
       // Check for native user barge-in / interruption
       if (content.interrupted) {
-        console.log(`[Gemini Live Gateway] Model interrupted by user speech on socket ${this.socket.id}`);
+        console.log(`[LiveVoice Interruption] User barged in / interrupted speech on socket ${this.socket.id}`);
+        if (this.currentTurnId) {
+          this.telemetry.logEvent("turn_interrupted", { turnId: this.currentTurnId });
+          this.currentTurnId = null;
+        }
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
         this.socket.emit("bi_voice_interrupted");
+        this.socket.emit("bi_voice_status", { state: "listening" });
       }
 
       // Process model turn parts
       if (content.modelTurn?.parts) {
+        if (this.currentTurnId) {
+          this.telemetry.recordFirstProviderResponse(this.currentTurnId);
+        }
+
         const hasQuota = await this.ensureTurnQuota();
         if (!hasQuota) return;
 
         for (const part of content.modelTurn.parts) {
-          // Audio chunk (24kHz PCM)
-          if (part.inlineData?.data) {
-            // Emit 'speaking' exactly once per turn, right before the first audio chunk.
-            // This ensures the frontend status updates at the same moment audio is enqueued,
-            // eliminating the race condition where the badge showed 'Speaking' before any sound.
+          // Audio chunk (24kHz PCM) - Muted in silent listener mode
+          if (part.inlineData?.data && !this.silentMode) {
+            this.audioChunksOutCount++;
+            this.audioBytesOutCount += part.inlineData.data.length;
+
             if (!this.isSpeakingEmitted) {
               this.isSpeakingEmitted = true;
+              this.telemetry.recordFirstAudio(this.currentTurnId);
               this.socket.emit("bi_voice_status", { state: "speaking" });
+              console.log(
+                `[LiveVoice AudioOut] >>> FIRST voice audio emitted for turn ${this.currentTurnId || "unknown"} (chunk #${this.audioChunksOutCount}, ${part.inlineData.data.length} chars base64)`
+              );
             }
+
             this.socket.emit("bi_voice_audio_out", {
               mimeType: part.inlineData.mimeType || "audio/pcm;rate=24000",
               data: part.inlineData.data, // base64 string
+              turnId: this.currentTurnId,
             });
           }
           // Real-time text subtitle
           if (part.text) {
+            console.log(`[LiveVoice TextPart] "${part.text.slice(0, 80)}"`);
             this.socket.emit("bi_voice_transcript", {
               role: "assistant",
               text: part.text,
@@ -354,11 +576,44 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         }
       }
 
+      // Real-time user speech transcription (supported by gemini-3.8-live)
+      const userText = content.inputTranscription?.text || content.interimInputTranscription?.text;
+      if (userText) {
+        console.log(`[LiveVoice Transcription] User speech recognized: "${userText}"`);
+        this.socket.emit("bi_voice_transcript", {
+          role: "user",
+          text: userText,
+        });
+      }
+
+      // Real-time text subtitle from outputTranscription (native channel for gemini-3.8-live)
+      if (content.outputTranscription?.text) {
+        if (this.currentTurnId) {
+          this.telemetry.recordFirstProviderResponse(this.currentTurnId);
+        }
+        console.log(`[LiveVoice Transcription] Assistant subtitle: "${content.outputTranscription.text}"`);
+        this.socket.emit("bi_voice_transcript", {
+          role: "assistant",
+          text: content.outputTranscription.text,
+        });
+      }
+
       // Turn complete flag — reset speaking and quota reservation trackers for the next turn
       if (content.turnComplete) {
+        console.log(
+          `[LiveVoice TurnComplete] Turn ${this.currentTurnId || "unknown"} finished! User mic chunks in: ${this.audioChunksInCount}, Assistant audio chunks out: ${this.audioChunksOutCount} (${this.audioBytesOutCount} bytes). Emitted 'listening'.`
+        );
+        if (this.currentTurnId) {
+          this.telemetry.endTurn(this.currentTurnId);
+          this.currentTurnId = null;
+        }
+        this.audioChunksInCount = 0;
+        this.audioChunksOutCount = 0;
+        this.audioBytesOutCount = 0;
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
         this.socket.emit("bi_voice_turn_complete");
+        this.socket.emit("bi_voice_status", { state: "listening" });
       }
     }
   }
@@ -367,16 +622,60 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    * Receives incoming PCM 16kHz audio chunk from user microphone and sends to Gemini
    */
   sendAudioChunk(base64Chunk) {
-    if (!this.session || !this.isActive || !base64Chunk) return;
+    if (!base64Chunk) return;
+
+    // Buffer chunks if session connection is still resolving
+    if (!this.session || !this.isActive) {
+      if (this.pendingAudioQueue.length < 100) {
+        this.pendingAudioQueue.push(base64Chunk);
+        if (this.pendingAudioQueue.length === 1 || this.pendingAudioQueue.length % 25 === 0) {
+          console.log(`[LiveVoice AudioIn] Buffering pre-connect mic chunk (buffered count: ${this.pendingAudioQueue.length}) for socket ${this.socket?.id}`);
+        }
+      }
+      return;
+    }
+
+    // Flush any pending queue
+    if (this.pendingAudioQueue.length > 0) {
+      console.log(`[LiveVoice AudioIn] Flushing ${this.pendingAudioQueue.length} pre-buffered chunks to Gemini Live`);
+      while (this.pendingAudioQueue.length > 0) {
+        const buffered = this.pendingAudioQueue.shift();
+        try {
+          this.session.sendRealtimeInput({
+            audio: {
+              mimeType: "audio/pcm;rate=16000",
+              data: buffered,
+            },
+          });
+        } catch (e) {}
+      }
+    }
+
+    if (!this.currentTurnId) {
+      this.currentTurnId = this.telemetry.startTurn();
+      this.audioChunksInCount = 0;
+      this.audioChunksOutCount = 0;
+      this.audioBytesOutCount = 0;
+      console.log(`[LiveVoice Turn] New turn ${this.currentTurnId} initiated by user mic audio`);
+    }
+
+    this.audioChunksInCount++;
+    if (this.audioChunksInCount === 1) {
+      console.log(`[LiveVoice AudioIn] First mic chunk (${base64Chunk.length} chars) sent to Gemini for turn ${this.currentTurnId}`);
+    } else if (this.audioChunksInCount % 50 === 0) {
+      const estimatedSec = (this.audioChunksInCount * 0.032).toFixed(1);
+      console.log(`[LiveVoice AudioIn] Streamed ${this.audioChunksInCount} chunks (~${estimatedSec}s audio) for turn ${this.currentTurnId}`);
+    }
+
     try {
       this.session.sendRealtimeInput({
-        media: {
+        audio: {
           mimeType: "audio/pcm;rate=16000",
           data: base64Chunk,
         },
       });
     } catch (err) {
-      console.warn("[Gemini Live Gateway] Error sending audio chunk to Gemini:", err.message);
+      console.warn("[LiveVoice AudioIn] Error sending audio chunk to Gemini:", err.message);
     }
   }
 
@@ -385,6 +684,14 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    */
   close() {
     this.isActive = false;
+    this.pendingAudioQueue = [];
+    this.audioChunksInCount = 0;
+    this.audioChunksOutCount = 0;
+    this.audioBytesOutCount = 0;
+    if (this.currentTurnId) {
+      this.telemetry.endTurn(this.currentTurnId);
+      this.currentTurnId = null;
+    }
     if (this.session) {
       try {
         this.session.close();

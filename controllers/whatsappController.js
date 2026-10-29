@@ -286,30 +286,108 @@ export const getMessages = async (req, res) => {
 
     const { ConversationModel, MessageModel, LeadModel } = getModels(req);
 
-    // Security: Check lead existence and sales rep assignment
-    const lead = await LeadModel.findById(leadId).select("assignedTo").lean();
-    if (!lead) {
+    // 1. Try finding by LeadModel first
+    let lead = null;
+    if (mongoose.Types.ObjectId.isValid(leadId)) {
+      lead = await LeadModel.findById(leadId).select("assignedTo phone").lean();
+    }
+
+    if (lead) {
+      if (req.user?.role === "sales person") {
+        const repId = req.user._id.toString();
+        const repName = req.user.name;
+        const isAssigned =
+          lead.assignedTo?.toString() === repId ||
+          (repName && lead.assignedTo === repName);
+        if (!isAssigned) {
+          return res.status(403).json({
+            message: "Access denied. You are not assigned to this conversation.",
+          });
+        }
+      }
+
+      // Reset unread count for this conversation since the agent is loading it
+      await ConversationModel.findOneAndUpdate({ leadId }, { unreadCount: 0 });
+
+      const messages = await MessageModel.find({ leadId }).sort({ timestamp: 1 });
+      return res.status(200).json(messages);
+    }
+
+    // 2. Fallback: check if leadId corresponds to a Prospect / Non-Lead Conversation
+    const convConditions = [];
+    if (mongoose.Types.ObjectId.isValid(leadId)) {
+      convConditions.push({ _id: leadId });
+      convConditions.push({ leadId });
+    }
+    const cleanPhone = String(leadId).replace(/\D/g, "");
+    if (cleanPhone.length >= 10) {
+      convConditions.push({ phone: cleanPhone });
+      const last10 = cleanPhone.slice(-10);
+      convConditions.push({ phone: "91" + last10 });
+      convConditions.push({ phone: last10 });
+    }
+
+    const conversation = await ConversationModel.findOne({
+      $or: convConditions,
+    }).lean();
+
+    if (!conversation) {
       return res.status(404).json({ message: "Lead not found." });
     }
 
-    if (req.user?.role === "sales person") {
-      const repId = req.user._id.toString();
-      const repName = req.user.name;
-      const isAssigned =
-        lead.assignedTo?.toString() === repId ||
-        (repName && lead.assignedTo === repName);
-      if (!isAssigned) {
-        return res.status(403).json({
-          message: "Access denied. You are not assigned to this conversation.",
-        });
+    // If conversation is linked to a lead that wasn't found by direct ID
+    if (conversation.leadId) {
+      const linkedLead = await LeadModel.findById(conversation.leadId).select("assignedTo phone").lean();
+      if (linkedLead) {
+        if (req.user?.role === "sales person") {
+          const repId = req.user._id.toString();
+          const repName = req.user.name;
+          const isAssigned =
+            linkedLead.assignedTo?.toString() === repId ||
+            (repName && linkedLead.assignedTo === repName);
+          if (!isAssigned) {
+            return res.status(403).json({
+              message: "Access denied. You are not assigned to this conversation.",
+            });
+          }
+        }
+
+        await ConversationModel.findByIdAndUpdate(conversation._id, { unreadCount: 0 });
+        const messages = await MessageModel.find({
+          $or: [{ leadId: conversation.leadId }, { leadId: conversation._id }],
+        }).sort({ timestamp: 1 });
+        return res.status(200).json(messages);
       }
     }
 
-    // Reset unread count for this conversation since the agent is loading it
-    await ConversationModel.findOneAndUpdate({ leadId }, { unreadCount: 0 });
+    // Non-lead prospect conversation (isLead: false):
+    if (req.user?.role === "sales person") {
+      return res.status(403).json({
+        message: "Access denied. You are not assigned to this prospect conversation.",
+      });
+    }
 
-    const messages = await MessageModel.find({ leadId }).sort({ timestamp: 1 });
-    res.status(200).json(messages);
+    // Reset unread count
+    await ConversationModel.findByIdAndUpdate(conversation._id, { unreadCount: 0 });
+
+    const messageConditions = [{ leadId: conversation._id }];
+    if (conversation.phone) {
+      messageConditions.push({ contactPhone: conversation.phone });
+      messageConditions.push({ to: conversation.phone });
+      messageConditions.push({ from: conversation.phone });
+      const last10 = conversation.phone.slice(-10);
+      if (last10 && last10 !== conversation.phone) {
+        messageConditions.push({ contactPhone: last10 });
+        messageConditions.push({ to: last10 });
+        messageConditions.push({ from: last10 });
+      }
+    }
+
+    const messages = await MessageModel.find({
+      $or: messageConditions,
+    }).sort({ timestamp: 1 });
+
+    return res.status(200).json(messages);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -327,10 +405,30 @@ export const sendMessage = async (req, res) => {
         .json({ message: "leadId and text are required fields." });
     }
 
-    const { LeadModel, MessageModel, UserModel } = getModels(req);
-    const lead = await LeadModel.findById(leadId).lean();
+    const { LeadModel, MessageModel, UserModel, ConversationModel } = getModels(req);
+    let lead = null;
+    let prospectConversation = null;
+
+    if (mongoose.Types.ObjectId.isValid(leadId)) {
+      lead = await LeadModel.findById(leadId).lean();
+    }
+
     if (!lead) {
-      return res.status(404).json({ message: "Lead not found." });
+      const convQuery = [];
+      if (mongoose.Types.ObjectId.isValid(leadId)) {
+        convQuery.push({ _id: leadId });
+      }
+      const cleanP = String(leadId).replace(/\D/g, "");
+      if (cleanP.length >= 10) {
+        convQuery.push({ phone: cleanP });
+        convQuery.push({ phone: "91" + cleanP.slice(-10) });
+      }
+      if (convQuery.length > 0) {
+        prospectConversation = await ConversationModel.findOne({ $or: convQuery }).lean();
+      }
+      if (!prospectConversation) {
+        return res.status(404).json({ message: "Lead not found." });
+      }
     }
 
     const senderRole = req.user?.role;
@@ -339,6 +437,26 @@ export const sendMessage = async (req, res) => {
       : req.organization?._id
         ? req.organization._id.toString()
         : null;
+
+    if (prospectConversation) {
+      if (senderRole === "sales person") {
+        return res.status(403).json({
+          message: "Access denied. Only managers can send messages to prospect conversations.",
+        });
+      }
+      let targetSessionId = req.body.sessionId || (orgId ? `org_${orgId}` : null);
+      const messageRecord = await sendMessageFromCRM(
+        prospectConversation._id,
+        text,
+        senderName || req.user?.name || "Manager",
+        {
+          organizationId: orgId,
+          tenantModels: req.tenantModels,
+          sessionId: targetSessionId,
+        }
+      );
+      return res.status(200).json(messageRecord);
+    }
 
     // Check if conversation/lead belongs to a sales rep in the database
     let isRepOwned = false;
@@ -1094,7 +1212,7 @@ export const summarizeConversation = async (req, res) => {
 
     res.status(200).json({ success: true, data: summary });
   } catch (error) {
-    console.error("[WhatsApp] summarizeConversation error:", error.message);
+    // console.error("[WhatsApp] summarizeConversation error:", error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -1182,8 +1300,7 @@ export const getTeamWhatsAppStatuses = async (req, res) => {
 
     res.status(200).json({ success: true, data: result });
   } catch (error) {
-    console.error("[WhatsApp] getTeamWhatsAppStatuses error:", error.message);
+    // console.error("[WhatsApp] getTeamWhatsAppStatuses error:", error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
-

@@ -200,6 +200,7 @@ export const provisionOrganization = async (req, res) => {
       addons: {
         whatsappCampaigns: Boolean(addons?.whatsappCampaigns),
         biAnalyst: Boolean(addons?.biAnalyst),
+        targetIntelligence: Boolean(addons?.targetIntelligence),
       },
       aiSettings: getDefaultAISettings(name.trim()),
       createdBy: req.user?._id || null,
@@ -637,8 +638,6 @@ export const updateOrganizationWhatsAppLimit = async (req, res) => {
     org.whatsappLineLimit = limit;
     await org.save();
 
-
-
     const io = getIO();
     if (io) {
       io.to(`org_${org._id}`).emit("organization_updated", {
@@ -671,7 +670,7 @@ export const updateOrganizationWhatsAppLimit = async (req, res) => {
 // @access  Protected (Super Admin)
 export const updateOrganizationAddons = async (req, res) => {
   try {
-    const { whatsappCampaigns, biAnalyst } = req.body;
+    const { whatsappCampaigns, biAnalyst, targetIntelligence } = req.body;
 
     const { Organization } = getMasterModels();
     const org = await Organization.findById(req.params.id);
@@ -684,7 +683,7 @@ export const updateOrganizationAddons = async (req, res) => {
     }
 
     if (!org.addons) {
-      org.addons = { whatsappCampaigns: false, biAnalyst: false };
+      org.addons = { whatsappCampaigns: false, biAnalyst: false, targetIntelligence: false };
     }
 
     if (whatsappCampaigns !== undefined) {
@@ -692,6 +691,9 @@ export const updateOrganizationAddons = async (req, res) => {
     }
     if (biAnalyst !== undefined) {
       org.addons.biAnalyst = Boolean(biAnalyst);
+    }
+    if (targetIntelligence !== undefined) {
+      org.addons.targetIntelligence = Boolean(targetIntelligence);
     }
 
     org.markModified("addons");
@@ -867,7 +869,7 @@ export const getMyOrganization = async (req, res) => {
       data: {
         ...orgJson,
         webhookKey: org.webhookKey,
-        addons: org.addons || { whatsappCampaigns: false, biAnalyst: false },
+        addons: org.addons || { whatsappCampaigns: false, biAnalyst: false, targetIntelligence: false },
         whatsappLineLimit: org.whatsappLineLimit || 1,
         whatsappConnectionMode: (org.whatsappLineLimit || 1) === 2 ? "double" : "single",
         usedSeats,

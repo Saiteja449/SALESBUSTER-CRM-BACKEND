@@ -18,17 +18,28 @@ export const logCall = async (req, res) => {
       salesperson,
       salespersonId,
       date,
+      timestamp,
+      calledAt,
       duration,
       callType,
       status,
       leadId,
       phone,
+      callEventId,
+      eventId,
     } = req.body;
 
-    // Strict identity enforcement: if caller is a sales rep, bind to their verified user identity
+    // Strict identity enforcement: if caller is authenticated, bind to verified identity
     if (req.user?.role === "sales person") {
       salespersonId = (req.user._id || req.user.id).toString();
       salesperson = req.user.name || "Sales Representative";
+    } else if (req.user) {
+      if (!salespersonId) {
+        salespersonId = (req.user._id || req.user.id)?.toString();
+      }
+      if (!salesperson) {
+        salesperson = req.user.name || "Sales Representative";
+      }
     }
 
     const repIdentifier = salespersonId || salesperson;
@@ -51,10 +62,15 @@ export const logCall = async (req, res) => {
         phone,
         salespersonId,
         salespersonName: salesperson,
+        callEventId: callEventId || eventId || null,
+        callType,
+        status,
+        duration,
+        calledAt: timestamp ? new Date(timestamp) : (calledAt ? new Date(calledAt) : new Date()),
       });
 
-      // If an explicit leadId was provided but no lead was found, abort and report 404
-      if (leadId && !updatedLead) {
+      // If an explicit leadId was provided without phone and no lead was found, abort and report 404
+      if (leadId && !phone && !updatedLead) {
         return res.status(404).json({
           success: false,
           message: `Lead not found for leadId: ${leadId}. Call log aborted to preserve counter integrity.`,
@@ -70,6 +86,7 @@ export const logCall = async (req, res) => {
               leadId: updatedLead._id.toString(),
               callCount: updatedLead.callCount,
               repCallCounts: updatedLead.repCallCounts,
+              callHistory: updatedLead.callHistory,
               lastCallAt: updatedLead.lastCallAt,
             };
             io.to(`org_${orgId}`).emit("lead_call_updated", payload);
@@ -128,6 +145,7 @@ export const logCall = async (req, res) => {
             id: updatedLead._id,
             callCount: updatedLead.callCount,
             repCallCounts: updatedLead.repCallCounts,
+            callHistory: updatedLead.callHistory,
             lastCallAt: updatedLead.lastCallAt,
           }
         : null,

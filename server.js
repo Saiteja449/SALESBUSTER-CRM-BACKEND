@@ -27,6 +27,9 @@ import whatsappCloudRoutes from "./routes/whatsappCloudRoutes.js";
 import whatsappWebhookRoutes from "./routes/whatsappWebhookRoutes.js";
 import appReleaseRoutes from "./routes/appReleaseRoutes.js";
 import aiAssistantRoutes from "./routes/aiAssistantRoutes.js";
+import supportRoutes from "./routes/supportRoutes.js";
+import eventRoutes from "./routes/eventRoutes.js";
+import targetIntelligenceRoutes from "./routes/targetIntelligenceRoutes.js";
 
 // Socket & WhatsApp Cloud Imports
 import { initSocket } from "./socket/socket.js";
@@ -100,6 +103,9 @@ app.use("/api/mobile-app/apk", appReleaseRoutes);
 app.use("/api/app-release", appReleaseRoutes);
 app.use("/api/static-chat", staticChatRoutes);
 app.use("/api/ai-assistant", aiAssistantRoutes);
+app.use("/api/support", supportRoutes);
+app.use("/api/events", eventRoutes);
+app.use("/api/target-intelligence", targetIntelligenceRoutes);
 
 // Base route
 app.get("/", (req, res) => {

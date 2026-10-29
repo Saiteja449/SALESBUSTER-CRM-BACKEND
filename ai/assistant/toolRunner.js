@@ -69,7 +69,11 @@ export const executeToolCall = async ({
     const execPromise = (async () => {
       // Safely invoke the tool
       const rawArgs = toolCall.args || {};
-      const result = await targetTool.invoke(rawArgs);
+      const result = typeof targetTool.invoke === "function"
+        ? await targetTool.invoke(rawArgs)
+        : typeof targetTool.execute === "function"
+        ? await targetTool.execute(rawArgs)
+        : await targetTool(rawArgs);
       return typeof result === "string" ? result : JSON.stringify(result);
     })();
 

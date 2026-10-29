@@ -5,9 +5,35 @@ const conversationSchema = new mongoose.Schema(
     leadId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Lead",
-      required: true,
-      unique: true,
+      required: false,
+      sparse: true,
       index: true,
+    },
+    phone: {
+      type: String,
+      default: "",
+      index: true,
+    },
+    customerName: {
+      type: String,
+      default: "",
+    },
+    companyName: {
+      type: String,
+      default: "",
+    },
+    isLead: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+    aiDisabled: {
+      type: Boolean,
+      default: false,
+    },
+    lastTemplateSentAt: {
+      type: Date,
+      default: null,
     },
     unreadCount: {
       type: Number,

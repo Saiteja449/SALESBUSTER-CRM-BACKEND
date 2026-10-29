@@ -23,6 +23,7 @@ import {
   disconnectCoexistenceAccount,
   getCoexistenceStatus,
 } from "../controllers/whatsappCoexistenceController.js";
+import { captureAndSendLiveVoiceWhatsApp } from "../controllers/managerLiveVoiceController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { getMasterModels } from "../services/tenantManager.js";
 
@@ -68,6 +69,28 @@ const documentMulter = multer({
   storage: docStorage,
   limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB limit
   fileFilter: docFilter,
+});
+
+// Multer Storage Configuration for Live Voice Recordings (.m4a, .mp3, .wav, etc.)
+const voiceUploadDir = path.resolve(process.cwd(), "uploads", "voice");
+if (!fs.existsSync(voiceUploadDir)) {
+  fs.mkdirSync(voiceUploadDir, { recursive: true });
+}
+
+const voiceStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, voiceUploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    const ext = path.extname(file.originalname || "") || ".m4a";
+    cb(null, `voice-${uniqueSuffix}${ext}`);
+  },
+});
+
+const voiceMulter = multer({
+  storage: voiceStorage,
+  limits: { fileSize: 30 * 1024 * 1024 }, // 30 MB max
 });
 
 // Middleware wrapper for document upload
@@ -196,5 +219,15 @@ router.post("/ai/toggle", toggleAI);
 // Testing Route (Restricted to managers/admins)
 router.post("/test-ai", requireManagerOrOwner, testAI);
 router.get("/test-ai", requireManagerOrOwner, getTestAIHistory);
+
+// Legacy Baileys socket dispatch deprecated - replaced by Event-based device WhatsApp architecture (/api/events)
+/*
+router.post(
+  "/manager/live-voice-send",
+  requireManagerOrOwner,
+  voiceMulter.single("audio"),
+  captureAndSendLiveVoiceWhatsApp
+);
+*/
 
 export default router;
