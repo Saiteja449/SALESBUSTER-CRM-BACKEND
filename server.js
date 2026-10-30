@@ -35,11 +35,22 @@ import targetIntelligenceRoutes from "./routes/targetIntelligenceRoutes.js";
 import { initSocket } from "./socket/socket.js";
 import { resumeInterruptedCampaigns } from "./services/whatsappCampaignWorker.js";
 import { startCampaignScheduler } from "./services/whatsappCampaignScheduler.js";
+import { startWebhookRetryWorker } from "./services/whatsappWebhookRetryWorker.js";
 
 dotenv.config();
 
 // Connect to database
 connectDB();
+
+// WhatsApp Cloud API Webhook Security Diagnostics
+import {
+  getWebhookSecurityDiagnostics,
+  logStartupDiagnostics,
+} from "./utils/securityDiagnostics.js";
+export { getWebhookSecurityDiagnostics, logStartupDiagnostics };
+
+logStartupDiagnostics();
+
 
 console.log("Node version:", process.version);
 dns.lookup("smtp.gmail.com", { all: true }, (err, addresses) => {

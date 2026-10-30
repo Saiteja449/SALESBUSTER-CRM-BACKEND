@@ -2,7 +2,7 @@ import fs from "fs";
 import WAAccount from "../models/WhatsAppAccount.js";
 import { encryptApiKey, decryptApiKey } from "../utils/encryption.js";
 import { enqueueSyncJob } from "../services/whatsappSyncService.js";
-import { getMasterModels } from "../services/tenantManager.js";
+import { getMasterModels, getTenantModels } from "../services/tenantManager.js";
 
 const getGraphApiVersion = () => process.env.META_GRAPH_API_VERSION || "v26.0";
 const getGraphApiBaseUrl = () =>
@@ -205,8 +205,18 @@ export const onboardCoexistenceAccount = async (req, res) => {
       );
       const subData = await subscribeRes.json();
       console.log(`[CoexistenceOnboard] Subscribed apps result for WABA ${wabaId}:`, subData);
+      if (!subscribeRes.ok || subData.error || subData.success === false) {
+        return res.status(502).json({
+          success: false,
+          message: subData.error?.message || "Meta rejected the WhatsApp webhook subscription.",
+        });
+      }
     } catch (subErr) {
       console.warn(`[CoexistenceOnboard] Subscribed apps warning for WABA ${wabaId}:`, subErr.message);
+      return res.status(502).json({
+        success: false,
+        message: "Could not subscribe the WhatsApp Business Account to app webhooks.",
+      });
     }
 
     // -------------------------------------------------------------
@@ -275,11 +285,19 @@ export const onboardCoexistenceAccount = async (req, res) => {
       );
       const regData = await regRes.json();
       console.log(`[WhatsAppOnboard] Phone registration response for ${phoneNumberId}:`, regData);
-      if (!regRes.ok && regData.error) {
-        console.warn(`[WhatsAppOnboard] Phone registration notice: ${regData.error.message}`);
+      if (!regRes.ok || regData.error || regData.success === false) {
+        console.warn(`[WhatsAppOnboard] Phone registration notice: ${regData.error?.message || "Meta rejected registration"}`);
+        return res.status(502).json({
+          success: false,
+          message: regData.error?.message || "Meta rejected WhatsApp phone number registration.",
+        });
       }
     } catch (regErr) {
       console.warn(`[WhatsAppOnboard] Phone registration call warning:`, regErr.message);
+      return res.status(502).json({
+        success: false,
+        message: "Could not register the WhatsApp phone number with Meta.",
+      });
     }
 
     // -------------------------------------------------------------

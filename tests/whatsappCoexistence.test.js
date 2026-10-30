@@ -12,6 +12,7 @@ import Message from "../models/Message.js";
 // Controllers & Services
 import { verifyMetaSignature } from "../controllers/whatsappWebhookController.js";
 import { runMigration } from "../scripts/migrateCloudSettingsToWAAccount.js";
+import { findActiveWhatsAppAccount } from "../utils/whatsappAccountLookup.js";
 
 describe("WhatsApp Coexistence - Database Models & Schemas", () => {
   it("WAAccount schema defines all required coexistence fields and statuses", () => {
@@ -69,6 +70,64 @@ describe("WhatsApp Coexistence - Database Models & Schemas", () => {
     assert.ok(sourceEnum.includes("cloud_api"), "source must include cloud_api");
     assert.ok(sourceEnum.includes("baileys"), "source must retain baileys for backward compatibility");
     assert.equal(paths.source.defaultValue, "cloud_api", "default message source must be cloud_api");
+  });
+});
+
+describe("WhatsApp Coexistence - Active account lookup", () => {
+  const makeModel = (result = null) => {
+    const queries = [];
+    return {
+      queries,
+      findOne(query) {
+        queries.push(query);
+        return {
+          sort() {
+            return this;
+          },
+          async lean() {
+            return result;
+          },
+        };
+      },
+    };
+  };
+
+  it("continues to the master model when the tenant model has no active line", async () => {
+    const tenantModel = makeModel(null);
+    const masterAccount = { status: "connected", phoneNumberId: "phone-1" };
+    const masterModel = makeModel(masterAccount);
+
+    const result = await findActiveWhatsAppAccount(
+      [tenantModel, masterModel],
+      "org-1"
+    );
+
+    assert.equal(result, masterAccount);
+    assert.deepEqual(tenantModel.queries[0], {
+      organizationId: "org-1",
+      status: { $in: ["connected", "syncing"] },
+    });
+    assert.equal(masterModel.queries.length, 1);
+  });
+
+  it("checks a sales rep line before falling back to the organization line", async () => {
+    const model = makeModel(null);
+    await findActiveWhatsAppAccount([model], "org-1", {
+      isSalesRep: true,
+      userId: "user-1",
+    });
+
+    assert.equal(model.queries.length, 2);
+    assert.deepEqual(model.queries[0], {
+      organizationId: "org-1",
+      userId: "user-1",
+      status: { $in: ["connected", "syncing"] },
+    });
+    assert.deepEqual(model.queries[1], {
+      organizationId: "org-1",
+      userId: null,
+      status: { $in: ["connected", "syncing"] },
+    });
   });
 });
 

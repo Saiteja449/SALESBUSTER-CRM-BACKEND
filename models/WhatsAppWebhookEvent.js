@@ -19,7 +19,7 @@ export const waWebhookEventSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "processed", "failed", "ignored"],
+      enum: ["pending", "processing", "processed", "failed", "ignored"],
       default: "pending",
       index: true,
     },

@@ -1,3 +1,5 @@
+import { toInternationalPhone } from "../utils/phoneUtils.js";
+
 const getGraphApiVersion = () => process.env.META_GRAPH_API_VERSION || "v26.0";
 const getGraphApiBaseUrl = () =>
   `https://graph.facebook.com/${getGraphApiVersion()}`;
@@ -110,7 +112,8 @@ export const sendTemplateMessage = async ({
   }
 
   // Ensure digits only for recipient phone
-  const cleanPhone = String(toPhone).replace(/\D/g, "");
+  // Canonical international recipient phone without double-prefixing
+  const cleanPhone = toInternationalPhone(toPhone);
 
   const payload = {
     messaging_product: "whatsapp",
@@ -169,7 +172,8 @@ export const sendTextMessage = async ({
     );
   }
 
-  const cleanPhone = String(toPhone).replace(/\D/g, "");
+  // Canonical international recipient phone without double-prefixing
+  const cleanPhone = toInternationalPhone(toPhone);
 
   const payload = {
     messaging_product: "whatsapp",

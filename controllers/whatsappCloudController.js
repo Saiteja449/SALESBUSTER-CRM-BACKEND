@@ -12,6 +12,7 @@ import {
 } from "../utils/encryption.js";
 import { getMasterModels } from "../services/tenantManager.js";
 import WAAccount from "../models/WhatsAppAccount.js";
+import { findActiveWhatsAppAccount } from "../utils/whatsappAccountLookup.js";
 
 /**
  * Normalizes phone string to clean digits only.
@@ -82,10 +83,11 @@ export const getCloudStatus = async (req, res) => {
     // Seamless Coexistence fallback: check if official WhatsApp Coexistence account is connected
     if (!cloud.isConfigured) {
       try {
-        const waAccount = await WAAccount.findOne({
-          organizationId: org._id,
-          status: { $in: ["connected", "syncing"] },
-        }).sort({ updatedAt: -1 });
+        const { WAAccount: MasterWA } = getMasterModels();
+        const waAccount = await findActiveWhatsAppAccount(
+          [req.tenantModels?.WAAccount, MasterWA, WAAccount],
+          org._id
+        );
 
         if (waAccount && waAccount.wabaId && waAccount.phoneNumberId) {
           const { Organization } = getMasterModels();

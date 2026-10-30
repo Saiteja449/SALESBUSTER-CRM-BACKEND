@@ -1,3 +1,4 @@
+import { toInternationalPhone } from "../utils/phoneUtils.js";
 import mongoose from "mongoose";
 
 const leadSchema = new mongoose.Schema(
@@ -11,6 +12,12 @@ const leadSchema = new mongoose.Schema(
       type: String,
       required: true,
       index: true,
+      set: function (val) {
+        if (val) {
+          this.phoneNormalized = toInternationalPhone(val);
+        }
+        return val;
+      },
     },
     phoneNormalized: {
       type: String,
@@ -313,8 +320,7 @@ const leadSchema = new mongoose.Schema(
 
 const normalizeLeadPhone = function () {
   if (this.phone) {
-    const digits = String(this.phone).replace(/\D/g, "");
-    this.phoneNormalized = digits.length >= 10 ? digits.slice(-10) : digits;
+    this.phoneNormalized = toInternationalPhone(this.phone);
   }
 };
 leadSchema.pre("validate", normalizeLeadPhone);

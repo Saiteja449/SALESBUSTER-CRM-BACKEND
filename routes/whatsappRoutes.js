@@ -17,6 +17,8 @@ import {
   getTestAIHistory,
   summarizeConversation,
   getTeamWhatsAppStatuses,
+  getApprovedTemplatesForChat,
+  sendTemplateToLead,
 } from "../controllers/whatsappController.js";
 import {
   onboardCoexistenceAccount,
@@ -208,6 +210,8 @@ router.post("/logout", logoutClient);
 router.get("/conversations", getConversations);
 router.get("/conversation/:leadId", getMessages);
 router.post("/message/send", sendMessage);
+router.get("/templates", getApprovedTemplatesForChat);
+router.post("/template/send", sendTemplateToLead);
 
 // AI Features
 router.post("/conversation/:leadId/summarize", summarizeConversation);

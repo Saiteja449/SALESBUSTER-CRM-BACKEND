@@ -8,15 +8,21 @@ import { getMasterModels } from "../services/tenantManager.js";
 import { getIO } from "../socket/socket.js";
 import WAAccount from "../models/WhatsAppAccount.js";
 import { sendTextMessage } from "../services/whatsappCloudService.js";
+import { sendTemplateMessage } from "../services/whatsappCloudService.js";
 import { decryptApiKey } from "../utils/encryption.js";
+import { findActiveWhatsAppAccount } from "../utils/whatsappAccountLookup.js";
+import { toInternationalPhone } from "./whatsappWebhookController.js";
 
-const getModels = (req) => ({
-  LeadModel: req.tenantModels?.Lead || Lead,
-  MessageModel: req.tenantModels?.Message || Message,
-  ConversationModel: req.tenantModels?.Conversation || Conversation,
-  WhatsAppSessionModel: req.tenantModels?.WhatsAppSession || WhatsAppSession,
-  UserModel: req.tenantModels?.User || User,
-});
+const getModels = (req) => {
+  const hasDb = mongoose.connection && mongoose.connection.readyState === 1;
+  return {
+    LeadModel: req.tenantModels?.Lead || (hasDb ? Lead : null),
+    MessageModel: req.tenantModels?.Message || (hasDb ? Message : null),
+    ConversationModel: req.tenantModels?.Conversation || (hasDb ? Conversation : null),
+    WhatsAppSessionModel: req.tenantModels?.WhatsAppSession || (hasDb ? WhatsAppSession : null),
+    UserModel: req.tenantModels?.User || (hasDb ? User : null),
+  };
+};
 
 const isLeadAssignedToUser = (lead, user) => {
   if (!lead || !user) return false;
@@ -45,39 +51,23 @@ export const getStatus = async (req, res) => {
         ? req.organization._id.toString()
         : null;
 
-    const isSalesRep = req.user?.role === "sales person";
+    const normalizedRole = String(req.user?.role || "").toLowerCase().trim();
+    const isSalesRep = ["sales person", "sales representative", "sales_person"].includes(
+      normalizedRole
+    );
 
     let waAccount = null;
     const AccountModel = req.tenantModels?.WAAccount || WAAccount;
     if (orgId) {
       try {
-        if (isSalesRep) {
-          waAccount = await AccountModel.findOne({
-            organizationId: orgId,
-            userId: req.user._id,
-          }).lean();
-        }
-        if (!waAccount) {
-          waAccount = await AccountModel.findOne({
-            organizationId: orgId,
-            userId: null,
-          }).lean();
-        }
-        // Fallback 1: Check Master WAAccount
-        if (!waAccount) {
-          const { WAAccount: MasterWA } = getMasterModels();
-          waAccount = await MasterWA.findOne({
-            organizationId: orgId,
-            ...(isSalesRep ? { userId: req.user._id } : {}),
-          }).lean();
-        }
-        // Fallback 2: Check Default WAAccount
-        if (!waAccount) {
-          waAccount = await WAAccount.findOne({
-            organizationId: orgId,
-            ...(isSalesRep ? { userId: req.user._id } : {}),
-          }).lean();
-        }
+        const { WAAccount: MasterWA } = getMasterModels();
+        // Search for an active line in every database scope. A stale disconnected
+        // tenant copy must not mask the connected master/default copy.
+        waAccount = await findActiveWhatsAppAccount(
+          [AccountModel, MasterWA, WAAccount],
+          orgId,
+          { isSalesRep, userId: req.user?._id }
+        );
         // Fallback 3: Check Organization.whatsappCloudSettings
         if (!waAccount) {
           const org = req.organization || (await getMasterModels().Organization.findById(orgId).lean());
@@ -358,9 +348,16 @@ export const getMessages = async (req, res) => {
       convConditions.push({ phone: last10 });
     }
 
-    const conversation = await ConversationModel.findOne({
-      $or: convConditions,
-    }).lean();
+    let conversation = null;
+    if (ConversationModel && typeof ConversationModel.findOne === "function") {
+      try {
+        conversation = await ConversationModel.findOne({
+          $or: convConditions,
+        }).lean();
+      } catch (convErr) {
+        // In mock or disconnected DB environment, continue gracefully
+      }
+    }
 
     if (!conversation) {
       return res.status(404).json({ message: "Lead not found." });
@@ -492,23 +489,27 @@ export const sendMessage = async (req, res) => {
     // Check if conversation/lead belongs to a sales rep in the database
     let isRepOwned = false;
     if (lead.assignedTo && lead.assignedTo !== "Unassigned") {
-      if (mongoose.Types.ObjectId.isValid(lead.assignedTo)) {
-        const assignedUser = await UserModel.findById(lead.assignedTo).select("role").lean();
-        if (assignedUser?.role === "sales person") isRepOwned = true;
-      } else if (typeof lead.assignedTo === "string") {
-        const assignedUser = await UserModel.findOne({ name: lead.assignedTo }).select("role").lean();
-        if (assignedUser?.role === "sales person") isRepOwned = true;
-      }
+      try {
+        if (mongoose.Types.ObjectId.isValid(lead.assignedTo) && UserModel && typeof UserModel.findById === "function") {
+          const assignedUser = await UserModel.findById(lead.assignedTo).select("role").lean();
+          if (assignedUser?.role === "sales person") isRepOwned = true;
+        } else if (typeof lead.assignedTo === "string" && UserModel && typeof UserModel.findOne === "function") {
+          const assignedUser = await UserModel.findOne({ name: lead.assignedTo }).select("role").lean();
+          if (assignedUser?.role === "sales person") isRepOwned = true;
+        }
+      } catch (_) {}
     }
-    if (!isRepOwned) {
-      const repMessage = await MessageModel.findOne({
-        leadId,
-        $or: [
-          { salesRepId: { $ne: null } },
-          { sessionId: { $regex: "_user_" } },
-        ],
-      }).select("_id").lean();
-      if (repMessage) isRepOwned = true;
+    if (!isRepOwned && MessageModel && typeof MessageModel.findOne === "function") {
+      try {
+        const repMessage = await MessageModel.findOne({
+          leadId,
+          $or: [
+            { salesRepId: { $ne: null } },
+            { sessionId: { $regex: "_user_" } },
+          ],
+        }).select("_id").lean();
+        if (repMessage) isRepOwned = true;
+      } catch (_) {}
     }
 
     // ================================================================
@@ -554,21 +555,24 @@ export const sendMessage = async (req, res) => {
     // META CLOUD API COEXISTENCE OUTBOUND ROUTING
     // ================================================================
     let waAccount = null;
-    if (orgId) {
-      if (senderRole === "sales person") {
-        waAccount = await WAAccount.findOne({
-          organizationId: orgId,
-          userId: req.user._id,
-          status: { $in: ["connected", "syncing"] },
-        });
-      }
-      if (!waAccount) {
-        waAccount = await WAAccount.findOne({
-          organizationId: orgId,
-          userId: null,
-          status: { $in: ["connected", "syncing"] },
-        });
-      }
+    const AccountModel = req.tenantModels?.WAAccount || WAAccount;
+    if (orgId && AccountModel && typeof AccountModel.findOne === "function") {
+      try {
+        if (senderRole === "sales person") {
+          waAccount = await AccountModel.findOne({
+            organizationId: orgId,
+            userId: req.user._id,
+            status: { $in: ["connected", "syncing"] },
+          });
+        }
+        if (!waAccount) {
+          waAccount = await AccountModel.findOne({
+            organizationId: orgId,
+            userId: null,
+            status: { $in: ["connected", "syncing"] },
+          });
+        }
+      } catch (_) {}
     }
 
     if (waAccount && waAccount.accessTokenEncrypted) {
@@ -592,12 +596,17 @@ export const sendMessage = async (req, res) => {
       }
 
       const accessToken = decryptApiKey(waAccount.accessTokenEncrypted);
-      const cleanPhone = (lead.phone || "").replace(/\D/g, "");
+      // Fix #2 – derive canonical international number without double-prefixing.
+      // Prefer the stored phoneNormalized (set on inbound), fall back to
+      // deriving it from lead.phone via toInternationalPhone.
+      const recipientPhone = toInternationalPhone(
+        lead.phoneNormalized || lead.phone
+      );
 
       const sendResult = await sendTextMessage({
         phoneNumberId: waAccount.phoneNumberId,
         accessToken,
-        toPhone: cleanPhone,
+        toPhone: recipientPhone,
         textBody: text,
       });
 
@@ -1333,5 +1342,351 @@ export const getTeamWhatsAppStatuses = async (req, res) => {
   } catch (error) {
     // console.error("[WhatsApp] getTeamWhatsAppStatuses error:", error.message);
     res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+// @desc    Get approved templates for chat selector
+// @route   GET /api/whatsapp/templates
+// @access  Protected
+export const getApprovedTemplatesForChat = async (req, res) => {
+  try {
+    const { WhatsAppTemplate } = req.tenantModels || {};
+    let templates = [];
+    if (WhatsAppTemplate) {
+      templates = await WhatsAppTemplate.find({ status: "APPROVED" })
+        .select("name language category components variableCount variableNames status")
+        .sort({ name: 1 })
+        .lean();
+    }
+    if (!templates || templates.length === 0) {
+      try {
+        if (mongoose.connection && mongoose.connection.readyState === 1) {
+          const { WhatsAppTemplate: MasterTpl } = getMasterModels();
+          if (MasterTpl && typeof MasterTpl.find === "function") {
+            templates = await MasterTpl.find({ status: "APPROVED" })
+              .select("name language category components variableCount variableNames status")
+              .sort({ name: 1 })
+              .lean();
+          }
+        }
+      } catch (_) {}
+    }
+    return res.status(200).json({ success: true, data: templates || [] });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// @desc    Send approved WhatsApp template to an individual lead (Customer Window bypass)
+// @route   POST /api/whatsapp/template/send
+// @access  Protected
+export const sendTemplateToLead = async (req, res) => {
+  try {
+    const { leadId, templateName, languageCode, variables, parameters, components: customComponents, headerMediaUrl } = req.body;
+
+    if (!leadId) {
+      return res.status(400).json({ success: false, message: "leadId is required." });
+    }
+    if (!templateName) {
+      return res.status(400).json({ success: false, message: "templateName is required." });
+    }
+
+    const { LeadModel, MessageModel, ConversationModel, UserModel } = getModels(req);
+    const lead = await LeadModel.findById(leadId);
+    if (!lead) {
+      return res.status(404).json({ success: false, message: "Lead not found." });
+    }
+
+    const senderRole = req.user?.role;
+    const orgId = req.user?.organizationId
+      ? req.user.organizationId.toString()
+      : req.organization?._id
+        ? req.organization._id.toString()
+        : null;
+
+    // Check if conversation/lead belongs to a sales rep in the database
+    let isRepOwned = false;
+    if (lead.assignedTo && lead.assignedTo !== "Unassigned") {
+      try {
+        if (mongoose.Types.ObjectId.isValid(lead.assignedTo) && UserModel && typeof UserModel.findById === "function") {
+          const assignedUser = await UserModel.findById(lead.assignedTo).select("role").lean();
+          if (assignedUser?.role === "sales person") isRepOwned = true;
+        } else if (typeof lead.assignedTo === "string" && UserModel && typeof UserModel.findOne === "function") {
+          const assignedUser = await UserModel.findOne({ name: lead.assignedTo }).select("role").lean();
+          if (assignedUser?.role === "sales person") isRepOwned = true;
+        }
+      } catch (_) {}
+    }
+    if (!isRepOwned && MessageModel && typeof MessageModel.findOne === "function") {
+      try {
+        const repMessage = await MessageModel.findOne({
+          leadId,
+          $or: [
+            { salesRepId: { $ne: null } },
+            { sessionId: { $regex: "_user_" } },
+          ],
+        }).select("_id").lean();
+        if (repMessage) isRepOwned = true;
+      } catch (_) {}
+    }
+
+    // Admin view-only check
+    if (senderRole === "sales manager" || senderRole === "super_admin") {
+      if (isRepOwned) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Administrators have View-Only access to sales representative WhatsApp conversations. Only the assigned Sales Representative can send messages.",
+        });
+      }
+    }
+
+    // Sales rep assignment enforcement
+    if (senderRole === "sales person") {
+      const repId = req.user._id.toString();
+      const repName = req.user.name;
+      const isAssigned =
+        lead.assignedTo?.toString() === repId ||
+        (repName && lead.assignedTo === repName);
+
+      if (!isAssigned) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Access denied. You are only authorized to send messages to leads assigned to you.",
+        });
+      }
+    }
+
+    // Validate template
+    const { WhatsAppTemplate } = req.tenantModels || {};
+    let templateDoc = null;
+    if (WhatsAppTemplate) {
+      templateDoc = await WhatsAppTemplate.findOne({ name: templateName });
+    }
+
+    if (!templateDoc) {
+      try {
+        if (mongoose.connection && mongoose.connection.readyState === 1) {
+          const { WhatsAppTemplate: MasterTemplate } = getMasterModels();
+          if (MasterTemplate && typeof MasterTemplate.findOne === "function") {
+            templateDoc = await MasterTemplate.findOne({ name: templateName });
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!templateDoc) {
+      return res.status(400).json({
+        success: false,
+        message: `Template "${templateName}" not found. Please sync templates with Meta.`,
+      });
+    }
+
+    if (String(templateDoc.status).toUpperCase() !== "APPROVED") {
+      return res.status(400).json({
+        success: false,
+        message: `Template "${templateDoc.name}" is not approved by Meta (current status: ${templateDoc.status}). Only APPROVED templates can be sent.`,
+      });
+    }
+
+    // Resolve WhatsApp Cloud API account
+    let waAccount = null;
+    const hasDbConnection = mongoose.connection && mongoose.connection.readyState === 1;
+    const AccountModel = req.tenantModels?.WAAccount || (hasDbConnection ? WAAccount : null);
+    if (orgId && AccountModel && typeof AccountModel.findOne === "function") {
+      try {
+        if (senderRole === "sales person") {
+          waAccount = await AccountModel.findOne({
+            organizationId: orgId,
+            userId: req.user._id,
+            status: { $in: ["connected", "syncing"] },
+          });
+        }
+        if (!waAccount) {
+          waAccount = await AccountModel.findOne({
+            organizationId: orgId,
+            userId: null,
+            status: { $in: ["connected", "syncing"] },
+          });
+        }
+      } catch (_) {}
+    }
+
+    let phoneNumberId = waAccount?.phoneNumberId;
+    let encryptedToken = waAccount?.accessTokenEncrypted;
+
+    if (!phoneNumberId || !encryptedToken) {
+      const org = req.organization || (orgId && hasDbConnection ? await getMasterModels().Organization.findById(orgId).lean() : null);
+      if (org?.whatsappCloudSettings?.isConfigured && org.whatsappCloudSettings.phoneNumberId) {
+        phoneNumberId = org.whatsappCloudSettings.phoneNumberId;
+        encryptedToken = org.whatsappCloudSettings.accessTokenEncrypted;
+      }
+    }
+
+    if (!phoneNumberId || !encryptedToken) {
+      return res.status(400).json({
+        success: false,
+        message: "No active WhatsApp Cloud API connection found for this organization. Please connect your WhatsApp Business account via Meta Embedded Signup.",
+      });
+    }
+
+    const accessToken = decryptApiKey(encryptedToken);
+
+    // Map components / variables
+    let metaComponents = [];
+    if (Array.isArray(customComponents) && customComponents.length > 0) {
+      metaComponents = customComponents;
+    } else {
+      if (headerMediaUrl) {
+        metaComponents.push({
+          type: "header",
+          parameters: [
+            {
+              type: "image",
+              image: { link: headerMediaUrl },
+            },
+          ],
+        });
+      }
+
+      let paramsArray = [];
+      if (Array.isArray(variables)) {
+        paramsArray = variables;
+      } else if (Array.isArray(parameters)) {
+        paramsArray = parameters;
+      } else if (typeof variables === "object" && variables !== null) {
+        const keys = Object.keys(variables).sort((a, b) => Number(a) - Number(b));
+        paramsArray = keys.map((k) => variables[k]);
+      }
+
+      if (paramsArray.length === 0 && (templateDoc.variableCount === 1 || templateDoc.variableNames?.length === 1)) {
+        paramsArray = [lead.name || "Customer"];
+      }
+
+      if (paramsArray.length > 0) {
+        metaComponents.push({
+          type: "body",
+          parameters: paramsArray.map((val) => ({
+            type: "text",
+            text: String(val ?? ""),
+          })),
+        });
+      }
+    }
+
+    // Build human-readable text for chat message
+    let renderedText = "";
+    const bodyComp = templateDoc.components?.find((c) => String(c.type).toUpperCase() === "BODY");
+    if (bodyComp?.text) {
+      renderedText = bodyComp.text;
+      const bodyParams = metaComponents.find((c) => String(c.type).toLowerCase() === "body")?.parameters || [];
+      bodyParams.forEach((param, idx) => {
+        const placeholder = new RegExp(`\\{\\{?${idx + 1}\\}?\\}`, "g");
+        renderedText = renderedText.replace(placeholder, param.text || "");
+      });
+    } else {
+      renderedText = `[Template: ${templateDoc.name}]`;
+    }
+
+    const recipientPhone = toInternationalPhone(lead.phoneNormalized || lead.phone);
+    const now = new Date();
+
+    // Stage and pre-validate message record before calling Meta to prevent sending if DB/schema invalid
+    const stagedMessage = new MessageModel({
+      messageId: `pending_${Date.now()}`,
+      leadId,
+      sender: req.user?.name || "Agent",
+      senderName: req.user?.name || "Agent",
+      direction: "outgoing",
+      messageType: "template",
+      text: renderedText,
+      timestamp: now,
+      source: "cloud_api",
+      status: "sending",
+      salesRepId: waAccount?.userId || (senderRole === "sales person" ? req.user._id : null),
+      rawPayload: {
+        template: templateDoc.name,
+        components: metaComponents,
+      },
+    });
+
+    if (typeof stagedMessage.validateSync === "function") {
+      const validationErr = stagedMessage.validateSync();
+      if (validationErr) {
+        return res.status(400).json({
+          success: false,
+          message: `Failed to prepare template message: ${validationErr.message}`,
+        });
+      }
+    }
+
+    // Send through Meta
+    let sendResult;
+    try {
+      sendResult = await sendTemplateMessage({
+        phoneNumberId,
+        accessToken,
+        toPhone: recipientPhone,
+        templateName: templateDoc.name,
+        languageCode: languageCode || templateDoc.language || "en_US",
+        components: metaComponents,
+      });
+    } catch (metaErr) {
+      console.error("[sendTemplateToLead] Meta API send error:", metaErr);
+      const metaMsg = metaErr.meta?.message || metaErr.message || "Meta failed to send template message.";
+      return res.status(400).json({
+        success: false,
+        message: `Meta error: ${metaMsg}`,
+        error: metaErr.meta || null,
+      });
+    }
+
+    // Persist outgoing message in tenant DB with Meta messageId
+    stagedMessage.messageId = sendResult.metaMessageId || `out_template_${Date.now()}`;
+    stagedMessage.wamid = sendResult.metaMessageId || null;
+    stagedMessage.status = "sent";
+    stagedMessage.rawPayload = {
+      template: templateDoc.name,
+      metaMessageId: sendResult.metaMessageId,
+      components: metaComponents,
+    };
+    const messageRecord = typeof stagedMessage.save === "function" ? await stagedMessage.save() : stagedMessage;
+
+    // Update conversation
+    await ConversationModel.findOneAndUpdate(
+      { leadId },
+      {
+        lastMessage: renderedText,
+        lastMessageTime: now,
+      },
+      { upsert: true }
+    );
+
+    // Socket.io live updates
+    const io = getIO();
+    if (io) {
+      io.to(leadId.toString()).emit("new_message", messageRecord);
+      if (orgId) {
+        io.to(`org_${orgId}`).emit("conversation_updated", {
+          leadId,
+          lastMessage: renderedText,
+          lastMessageTime: now,
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Template sent successfully",
+      data: messageRecord,
+    });
+  } catch (error) {
+    console.error("[sendTemplateToLead error]:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to send template message",
+    });
   }
 };
