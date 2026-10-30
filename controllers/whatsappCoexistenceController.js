@@ -251,15 +251,37 @@ export const onboardCoexistenceAccount = async (req, res) => {
     const displayPhone = primaryPhone.display_phone_number || primaryPhone.id;
 
     // -------------------------------------------------------------
-    // STEP 4: SKIP Register Call
-    // CRITICAL: Calling /{phoneNumberId}/register would unlink the
-    // physical WhatsApp Business mobile app and break coexistence!
+    // STEP 4: Register Phone Number with Cloud API (Standard Onboarding)
     // -------------------------------------------------------------
+    try {
+      const regPin = process.env.META_TWO_STEP_VERIFICATION_PIN || "123456";
+      const regRes = await fetch(
+        `${getGraphApiBaseUrl()}/${phoneNumberId}/register`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            pin: regPin,
+          }),
+        }
+      );
+      const regData = await regRes.json();
+      console.log(`[WhatsAppOnboard] Phone registration response for ${phoneNumberId}:`, regData);
+      if (!regRes.ok && regData.error) {
+        console.warn(`[WhatsAppOnboard] Phone registration notice: ${regData.error.message}`);
+      }
+    } catch (regErr) {
+      console.warn(`[WhatsAppOnboard] Phone registration call warning:`, regErr.message);
+    }
 
     // -------------------------------------------------------------
-    // STEP 5: Verify Coexistence Capability Flags
+    // STEP 5: Verify Capability Flags
     // -------------------------------------------------------------
-    let isOnBizApp = true;
+    let isOnBizApp = false;
     let platformType = "CLOUD_API";
 
     try {
@@ -277,7 +299,7 @@ export const onboardCoexistenceAccount = async (req, res) => {
         platformType = verifyData.platform_type;
       }
     } catch (verifyErr) {
-      console.warn(`[CoexistenceOnboard] Non-fatal check warning for ${phoneNumberId}:`, verifyErr.message);
+      console.warn(`[WhatsAppOnboard] Non-fatal check warning for ${phoneNumberId}:`, verifyErr.message);
     }
 
     // -------------------------------------------------------------
@@ -293,32 +315,62 @@ export const onboardCoexistenceAccount = async (req, res) => {
     // -------------------------------------------------------------
     const onboardedAt = new Date();
     const syncDeadline = new Date(onboardedAt.getTime() + 24 * 60 * 60 * 1000);
+    const initialStatus = isOnBizApp ? "syncing" : "connected";
+
+    const accountPayload = {
+      organizationId,
+      userId: assignedUserId,
+      wabaId,
+      phoneNumberId,
+      displayPhone,
+      accessTokenEncrypted: encryptedToken,
+      status: initialStatus,
+      isOnBizApp,
+      platformType,
+      onboardedAt,
+      syncDeadline,
+      disconnectReason: "",
+      contactsSyncRequested: false,
+      historySyncRequested: false,
+      historySharingDeclined: false,
+      "historyProgress.isComplete": !isOnBizApp,
+      lastActivityAt: onboardedAt,
+    };
 
     const account = await WAAccount.findOneAndUpdate(
       { phoneNumberId },
-      {
-        $set: {
-          organizationId,
-          userId: assignedUserId,
-          wabaId,
-          phoneNumberId,
-          displayPhone,
-          accessTokenEncrypted: encryptedToken,
-          status: "syncing",
-          isOnBizApp,
-          platformType,
-          onboardedAt,
-          syncDeadline,
-          disconnectReason: "",
-          contactsSyncRequested: false,
-          historySyncRequested: false,
-          historySharingDeclined: false,
-          "historyProgress.isComplete": false,
-          lastActivityAt: onboardedAt,
-        },
-      },
-      { upsert: true, new: true }
+      { $set: accountPayload },
+      { upsert: true, returnDocument: "after" }
     );
+
+    // Synchronize to Master DB and Tenant DB
+    try {
+      const { WAAccount: MasterWA, Organization } = getMasterModels();
+      await MasterWA.findOneAndUpdate(
+        { phoneNumberId },
+        { $set: accountPayload },
+        { upsert: true }
+      );
+      if (req.tenantModels?.WAAccount) {
+        await req.tenantModels.WAAccount.findOneAndUpdate(
+          { phoneNumberId },
+          { $set: accountPayload },
+          { upsert: true }
+        );
+      } else {
+        const orgRec = await Organization.findById(organizationId).lean();
+        if (orgRec?.tenantDbName) {
+          const tenantModels = getTenantModels(orgRec.tenantDbName);
+          await tenantModels.WAAccount.findOneAndUpdate(
+            { phoneNumberId },
+            { $set: accountPayload },
+            { upsert: true }
+          );
+        }
+      }
+    } catch (syncDbErr) {
+      console.warn("[WhatsAppOnboard] Cross-database sync warning:", syncDbErr.message);
+    }
 
     // Also update Organization.whatsappCloudSettings for backward-compatibility with existing campaigns
     try {
@@ -334,17 +386,19 @@ export const onboardCoexistenceAccount = async (req, res) => {
         },
       });
     } catch (orgErr) {
-      console.warn("[CoexistenceOnboard] Org cloud settings mirror error:", orgErr.message);
+      console.warn("[WhatsAppOnboard] Org cloud settings mirror error:", orgErr.message);
     }
 
     // -------------------------------------------------------------
-    // STEP 8: Asynchronously Enqueue Initial Contacts & History Sync
+    // STEP 8: If Coexistence mobile app, enqueue sync; else complete
     // -------------------------------------------------------------
-    await enqueueSyncJob({
-      accountId: account._id.toString(),
-      phoneNumberId,
-      accessToken,
-    });
+    if (isOnBizApp) {
+      await enqueueSyncJob({
+        accountId: account._id.toString(),
+        phoneNumberId,
+        accessToken,
+      });
+    }
 
     return res.status(200).json({
       success: true,

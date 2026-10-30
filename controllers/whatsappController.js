@@ -49,7 +49,7 @@ export const getStatus = async (req, res) => {
 
     let waAccount = null;
     const AccountModel = req.tenantModels?.WAAccount || WAAccount;
-    if (orgId && (mongoose.connection?.readyState === 1 || req.tenantModels?.WAAccount)) {
+    if (orgId) {
       try {
         if (isSalesRep) {
           waAccount = await AccountModel.findOne({
@@ -63,7 +63,38 @@ export const getStatus = async (req, res) => {
             userId: null,
           }).lean();
         }
-      } catch (e) {}
+        // Fallback 1: Check Master WAAccount
+        if (!waAccount) {
+          const { WAAccount: MasterWA } = getMasterModels();
+          waAccount = await MasterWA.findOne({
+            organizationId: orgId,
+            ...(isSalesRep ? { userId: req.user._id } : {}),
+          }).lean();
+        }
+        // Fallback 2: Check Default WAAccount
+        if (!waAccount) {
+          waAccount = await WAAccount.findOne({
+            organizationId: orgId,
+            ...(isSalesRep ? { userId: req.user._id } : {}),
+          }).lean();
+        }
+        // Fallback 3: Check Organization.whatsappCloudSettings
+        if (!waAccount) {
+          const org = req.organization || (await getMasterModels().Organization.findById(orgId).lean());
+          if (org?.whatsappCloudSettings?.isConfigured && org.whatsappCloudSettings.phoneNumberId) {
+            waAccount = {
+              phoneNumberId: org.whatsappCloudSettings.phoneNumberId,
+              displayPhone: org.whatsappCloudSettings.displayPhoneNumber,
+              status: "connected",
+              businessName: org.whatsappCloudSettings.verifiedName || "WhatsApp Business (Official)",
+              organizationId: orgId,
+              wabaId: org.whatsappCloudSettings.wabaId,
+            };
+          }
+        }
+      } catch (e) {
+        console.warn("[getStatus] Account resolution error:", e.message);
+      }
     }
 
     if (waAccount && (waAccount.status === "connected" || waAccount.status === "syncing")) {
