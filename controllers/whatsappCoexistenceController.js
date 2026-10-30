@@ -237,7 +237,11 @@ export const onboardCoexistenceAccount = async (req, res) => {
         }
       );
       const phoneData = await phoneRes.json();
-      primaryPhone = phoneData.data?.[0];
+      const allPhones = Array.isArray(phoneData.data) ? phoneData.data : [];
+      // Prioritize real verified official numbers over sandbox 555 numbers
+      primaryPhone =
+        allPhones.find((p) => p.quality_rating === "GREEN" || (p.verified_name && !p.display_phone_number?.includes("555"))) ||
+        allPhones[0];
     }
 
     if (!primaryPhone || !primaryPhone.id) {
@@ -441,32 +445,50 @@ export const disconnectCoexistenceAccount = async (req, res) => {
       query.phoneNumberId = phoneNumberId;
     } else if (isSalesRep) {
       query.userId = req.user._id;
-    } else {
-      query.userId = null;
     }
 
-    const account = await WAAccount.findOne(query);
-    if (!account) {
-      return res.status(404).json({
-        success: false,
-        message: "No connected WhatsApp account found to disconnect.",
+    // 1. Mark disconnected across Default DB
+    await WAAccount.updateMany(query, {
+      $set: { status: "disconnected", disconnectReason: "USER_REMOVED" },
+    });
+
+    // 2. Mark disconnected across Master DB and Tenant DB
+    try {
+      const { Organization, WAAccount: MasterWA } = getMasterModels();
+      await MasterWA.updateMany(query, {
+        $set: { status: "disconnected", disconnectReason: "USER_REMOVED" },
       });
+
+      if (req.tenantModels?.WAAccount) {
+        await req.tenantModels.WAAccount.updateMany(query, {
+          $set: { status: "disconnected", disconnectReason: "USER_REMOVED" },
+        });
+      } else {
+        const orgRec = await Organization.findById(organizationId).lean();
+        if (orgRec?.tenantDbName) {
+          const tenantModels = getTenantModels(orgRec.tenantDbName);
+          await tenantModels.WAAccount.updateMany(query, {
+            $set: { status: "disconnected", disconnectReason: "USER_REMOVED" },
+          });
+        }
+      }
+
+      // 3. Mark Organization whatsappCloudSettings as unconfigured
+      await Organization.findByIdAndUpdate(organizationId, {
+        $set: {
+          "whatsappCloudSettings.isConfigured": false,
+          "whatsappCloudSettings.lastSyncedAt": new Date(),
+        },
+      });
+    } catch (dbErr) {
+      console.warn("[CoexistenceDisconnect] Multi-DB disconnect sync warning:", dbErr.message);
     }
 
-    account.status = "disconnected";
-    account.disconnectReason = "USER_REMOVED";
-    await account.save();
-
-    console.log(`[CoexistenceDisconnect] Account ${account.phoneNumberId} marked disconnected.`);
+    console.log(`[CoexistenceDisconnect] Line ${phoneNumberId || organizationId} marked disconnected.`);
 
     return res.status(200).json({
       success: true,
       message: "WhatsApp Business line disconnected successfully.",
-      account: {
-        id: account._id,
-        phoneNumberId: account.phoneNumberId,
-        status: account.status,
-      },
     });
   } catch (error) {
     console.error("[CoexistenceDisconnectError]", error);
