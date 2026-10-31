@@ -5,6 +5,9 @@ import {
   getQuota,
   interpretPrompt,
   searchProspects,
+  resolveProspect,
+  unresolveProspect,
+  getResolvedProspects,
   importToCrm,
 } from "../controllers/targetIntelligenceController.js";
 
@@ -39,6 +42,13 @@ router.use(requireAddon("targetIntelligence"));
 router.get("/quota", getQuota);
 router.post("/interpret-prompt", interpretPrompt);
 router.post("/search", searchProspects);
+
+// Resolution endpoints (Replacing legacy CRM import with permanent resolution tracking)
+router.post("/resolve", resolveProspect);
+router.post("/unresolve", unresolveProspect);
+router.get("/resolved-list", getResolvedProspects);
+
+// Retained for legacy backward compatibility if needed
 router.post("/import-to-crm", importToCrm);
 
 export default router;

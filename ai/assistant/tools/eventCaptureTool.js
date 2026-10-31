@@ -1,12 +1,43 @@
 /**
- * Event Contact Capture Tool for Gemini Multimodal Live API
- * Triggers the client mobile review popup in real-time when attendee details are spoken.
+ * Event Contact Capture & Real-Time Interim Tools for Gemini Multimodal Live API
+ * Provides live progressive field filling and completed contact review popup triggers.
  */
+
+export const EVENT_INTERIM_TOOL_DECLARATION = {
+  name: "update_contact_draft",
+  description:
+    "Progressively updates attendee contact fields in real time on the sales rep's mobile screen as soon as any detail is spoken (e.g. attendee name, company, phone digits, or discussion topic). Call this immediately whenever any single attribute is heard so fields fill live.",
+  parameters: {
+    type: "OBJECT",
+    properties: {
+      name: {
+        type: "STRING",
+        description: "Attendee full name if heard. Must not be the sales representative.",
+      },
+      phone: {
+        type: "STRING",
+        description: "Mobile phone digits spoken. Can be partial or complete.",
+      },
+      companyName: {
+        type: "STRING",
+        description: "Attendee company or business name mentioned. Must not be the host organization.",
+      },
+      summary: {
+        type: "STRING",
+        description: "Progressive notes, requirement, or topic discussed so far.",
+      },
+      suggestedMessage: {
+        type: "STRING",
+        description: "Draft WhatsApp greeting message based on discussion so far.",
+      },
+    },
+  },
+};
 
 export const EVENT_CAPTURE_TOOL_DECLARATION = {
   name: "trigger_contact_review",
   description:
-    "Triggers the mobile review popup ONLY after all key attendee contact details are completely captured: full name, complete 10-digit mobile phone number, and company name.",
+    "Triggers the completed contact review popup on mobile ONLY after all key attendee contact details are completely captured: full name, complete 10-digit mobile phone number, and company name.",
   parameters: {
     type: "OBJECT",
     properties: {
@@ -36,6 +67,72 @@ export const EVENT_CAPTURE_TOOL_DECLARATION = {
   },
 };
 
+export const createEventInterimTool = ({ socket, eventId, eventName, user, organization }) => {
+  const handler = async (args = {}) => {
+    const repName = user?.name || "Sales Manager";
+    const orgName = organization?.name || "Our Team";
+    const repPhone = (user?.phone || "").replace(/\D/g, "").slice(-10);
+    const currentEvent = eventName || "our event";
+
+    let cleanPhone = "";
+    if (args.phone) {
+      const digits = String(args.phone).replace(/\D/g, "");
+      if (digits.length >= 10) {
+        cleanPhone = digits.slice(-10);
+      } else if (digits.length > 0) {
+        cleanPhone = digits;
+      }
+    }
+
+    let rawName = (args.name || "").trim();
+    let companyName = (args.companyName || "").trim();
+    const summary = (args.summary || "").trim();
+
+    // Anti-self capture filters
+    const repNameLower = repName.toLowerCase();
+    if (rawName && repNameLower.length > 2 && rawName.toLowerCase().includes(repNameLower)) {
+      rawName = "";
+    }
+    if (repPhone && cleanPhone === repPhone) {
+      cleanPhone = "";
+    }
+    const orgLower = orgName.toLowerCase();
+    if (companyName && orgLower.length > 2 && companyName.toLowerCase().includes(orgLower)) {
+      companyName = "";
+    }
+
+    const payload = {
+      eventId: eventId || null,
+      eventName: currentEvent,
+      name: rawName,
+      phone: cleanPhone,
+      companyName,
+      summary,
+      messageText: (args.suggestedMessage || "").trim(),
+      updatedAt: new Date().toISOString(),
+      isComplete: Boolean(rawName && cleanPhone.length === 10 && companyName),
+    };
+
+    if (socket) {
+      socket.emit("event_contact_interim", payload);
+      console.log(`[EventCaptureTool] Emitted 'event_contact_interim' to socket ${socket.id}: Name="${rawName}", Phone="${cleanPhone}", Company="${companyName}"`);
+    }
+
+    return JSON.stringify({
+      ok: true,
+      message: "Draft contact fields updated in real-time on mobile screen.",
+      payload,
+    });
+  };
+
+  return {
+    name: "update_contact_draft",
+    description: EVENT_INTERIM_TOOL_DECLARATION.description,
+    invoke: handler,
+    execute: handler,
+  };
+};
+
 export const createEventCaptureTool = ({ socket, eventId, eventName, user, organization }) => {
   const handler = async (args = {}) => {
     const repName = user?.name || "Sales Manager";
@@ -56,7 +153,7 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
     const companyName = (args.companyName || "").trim();
     const summary = (args.summary || "").trim();
 
-    // STRICT VALIDATION 1: Require full name, complete 10-digit phone, and company before triggering popup
+    // STRICT VALIDATION 1: Require full name, complete 10-digit phone, and company before triggering complete review
     if (!rawName || rawName.length < 2 || !cleanPhone || cleanPhone.length !== 10 || !companyName || companyName.length < 2) {
       console.log(
         `[EventCaptureTool] Withholding popup trigger - incomplete details: Name="${rawName}", Phone="${cleanPhone}" (${cleanPhone.length} digits), Company="${companyName}"`
@@ -73,7 +170,6 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
     }
 
     // STRICT VALIDATION 2: Anti-Self Capture Defense
-    // Prevent accidentally capturing the sales representative's own identity or host organization
     const nameLower = rawName.toLowerCase();
     const repNameLower = repName.toLowerCase();
     if (repNameLower.length > 2 && (nameLower === repNameLower || nameLower.includes(repNameLower))) {
@@ -124,6 +220,7 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
       summary,
       messageText,
       triggeredAt: new Date().toISOString(),
+      isComplete: true,
     };
 
     console.log(

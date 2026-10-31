@@ -8,7 +8,10 @@ import {
   createEventContact,
   updateContactStatus,
 } from "../controllers/eventController.js";
-import { createEventCaptureTool } from "../ai/assistant/tools/eventCaptureTool.js";
+import {
+  createEventCaptureTool,
+  createEventInterimTool,
+} from "../ai/assistant/tools/eventCaptureTool.js";
 
 describe("Event & EventContact Architecture Unit Tests", () => {
   it("creates an event successfully with initial stats", async () => {
@@ -440,5 +443,53 @@ describe("Event & EventContact Architecture Unit Tests", () => {
     assert.equal(res3.ok, false);
     assert.equal(emittedEvent, null);
   });
-});
+  it("update_contact_draft progressively emits event_contact_interim with partial fields", async () => {
+    let emittedEvent = null;
+    let emittedData = null;
 
+    const mockSocket = {
+      id: "socket_test_interim",
+      emit: (evt, data) => {
+        emittedEvent = evt;
+        emittedData = data;
+      },
+    };
+
+    const interimTool = createEventInterimTool({
+      socket: mockSocket,
+      eventId: "event_tech_2026",
+      eventName: "Bangalore Tech Summit 2026",
+      user: { name: "Ananya Rep", phone: "+91 99999 88888" },
+      organization: { name: "SalesBuster Technologies" },
+    });
+
+    // 1. Partial: Only Name heard
+    await interimTool.execute({ name: "Rajesh Kumar" });
+    assert.equal(emittedEvent, "event_contact_interim");
+    assert.equal(emittedData.name, "Rajesh Kumar");
+    assert.equal(emittedData.companyName, "");
+    assert.equal(emittedData.phone, "");
+    assert.equal(emittedData.isComplete, false);
+
+    // 2. Partial: Company heard
+    await interimTool.execute({ name: "Rajesh Kumar", companyName: "Apex Cloud" });
+    assert.equal(emittedEvent, "event_contact_interim");
+    assert.equal(emittedData.name, "Rajesh Kumar");
+    assert.equal(emittedData.companyName, "Apex Cloud");
+    assert.equal(emittedData.isComplete, false);
+
+    // 3. Partial: Phone heard (10 digits) -> now complete
+    await interimTool.execute({
+      name: "Rajesh Kumar",
+      companyName: "Apex Cloud",
+      phone: "+91 98765 43210",
+      summary: "Interested in CRM voice features",
+    });
+    assert.equal(emittedEvent, "event_contact_interim");
+    assert.equal(emittedData.name, "Rajesh Kumar");
+    assert.equal(emittedData.phone, "9876543210");
+    assert.equal(emittedData.companyName, "Apex Cloud");
+    assert.equal(emittedData.summary, "Interested in CRM voice features");
+    assert.equal(emittedData.isComplete, true);
+  });
+});

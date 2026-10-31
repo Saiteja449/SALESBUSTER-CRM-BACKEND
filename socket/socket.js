@@ -327,15 +327,8 @@ export const initSocket = (server) => {
             return;
           }
 
-          const quotaCheck = await checkAiQuotaAvailable(organization || orgId, "biAnalyst", 1);
-          if (!quotaCheck.allowed) {
-            console.warn(`[Socket Voice] Quota check blocked session start for org ${orgId}: ${quotaCheck.reason}`);
-            socket.emit("bi_voice_error", {
-              message: quotaCheck.reason,
-              quotaExceeded: true,
-            });
-            return;
-          }
+          // Voice agent calling is exempt from BI agent quota deductions.
+          // Note: organization.addons.biAnalyst check above still ensures active add-on access.
 
           const liveSession = new GeminiLiveSessionManager({
             socket,
