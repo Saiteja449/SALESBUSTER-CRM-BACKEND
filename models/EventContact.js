@@ -24,6 +24,11 @@ const eventContactSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    designation: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     summary: {
       type: String,
       trim: true,

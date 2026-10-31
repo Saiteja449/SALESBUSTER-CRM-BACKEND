@@ -22,6 +22,10 @@ const conversationSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    designation: {
+      type: String,
+      default: "",
+    },
     isLead: {
       type: Boolean,
       default: true,

@@ -56,8 +56,9 @@ Extract the following information:
 1. name: The customer / person's name mentioned or spoken. If unknown, return null.
 2. phone: The customer's 10-digit mobile number spoken (e.g. "9876543210"). Extract ONLY digits. If none found, return null.
 3. companyName: The company, firm, shop, or organization associated with the person. If none mentioned, return null.
-4. summary: A concise 1-2 sentence summary of the discussion topic, requirements, or next steps.
-5. messageText: A professional, warm, personalized WhatsApp message ready to be sent to this person from ${senderName} (${orgName}). Keep it friendly, mentioning the context discussed and inviting them to stay in touch. (Do NOT include fake links or placeholders).
+4. designation: The customer's job title, role, or designation (e.g. "Managing Director", "Founder", "CEO", "Owner", "Procurement Manager", "Operations Head", "Partner", "Doctor"). If none mentioned, return null.
+5. summary: A concise 1-2 sentence summary of the discussion topic, requirements, or next steps.
+6. messageText: A professional, warm, personalized WhatsApp message ready to be sent to this person from ${senderName} (${orgName}). Keep it friendly, mentioning the context discussed and inviting them to stay in touch. (Do NOT include fake links or placeholders).
 
 CRITICAL FORMAT REQUIREMENT:
 Respond ONLY with a valid raw JSON object and nothing else. Do NOT include markdown code fences or backticks.
@@ -66,6 +67,7 @@ Example:
   "name": "Rahul Verma",
   "phone": "9876543210",
   "companyName": "Apex Technologies",
+  "designation": "Managing Director",
   "summary": "Discussed commercial CRM licensing and sales rep tracking.",
   "messageText": "Hello Rahul, it was great speaking with you regarding commercial CRM at ${currentEvent}. Feel free to connect directly whenever you need assistance!\\n\\nBest regards,\\n${senderName}\\n${orgName}"
 }
@@ -121,6 +123,11 @@ Example:
         ? parsed.companyName.trim()
         : "";
 
+    const designation =
+      parsed.designation && parsed.designation !== "null"
+        ? parsed.designation.trim()
+        : "";
+
     const summary = (parsed.summary || transcript.slice(0, 120)).trim();
 
     const greetingName = customerName || "there";
@@ -140,6 +147,7 @@ Example:
         name: customerName,
         phone: cleanPhone,
         companyName,
+        designation,
         summary,
         messageText,
         originalTranscript: transcript,
@@ -310,6 +318,7 @@ export const getEventContacts = async (req, res) => {
         { name: { $regex: q, $options: "i" } },
         { phone: { $regex: q, $options: "i" } },
         { companyName: { $regex: q, $options: "i" } },
+        { designation: { $regex: q, $options: "i" } },
         { summary: { $regex: q, $options: "i" } },
       ];
     }
@@ -357,6 +366,7 @@ export const createEventContact = async (req, res) => {
       name,
       phone = "",
       companyName = "",
+      designation = "",
       summary = "",
       messageText = "",
       transcript = "",
@@ -390,6 +400,7 @@ export const createEventContact = async (req, res) => {
       name: name.trim(),
       phone: cleanPhone,
       companyName: (companyName || "").trim(),
+      designation: (designation || "").trim(),
       summary: (summary || "").trim(),
       messageText: (messageText || "").trim(),
       transcript: (transcript || "").trim(),

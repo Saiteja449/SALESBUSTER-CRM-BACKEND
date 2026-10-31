@@ -22,6 +22,10 @@ export const EVENT_INTERIM_TOOL_DECLARATION = {
         type: "STRING",
         description: "Attendee company or business name mentioned. Must not be the host organization.",
       },
+      designation: {
+        type: "STRING",
+        description: "Attendee job title, role, or designation if heard (e.g. 'Managing Director', 'CEO', 'Purchasing Head', 'Owner').",
+      },
       summary: {
         type: "STRING",
         description: "Progressive notes, requirement, or topic discussed so far.",
@@ -52,6 +56,10 @@ export const EVENT_CAPTURE_TOOL_DECLARATION = {
       companyName: {
         type: "STRING",
         description: "Company, organization, or business name mentioned. Mandatory.",
+      },
+      designation: {
+        type: "STRING",
+        description: "Job title, role, or designation spoken (e.g. 'Managing Director', 'Owner', 'CEO', 'Operations Head'). Optional if not mentioned.",
       },
       summary: {
         type: "STRING",
@@ -86,6 +94,7 @@ export const createEventInterimTool = ({ socket, eventId, eventName, user, organ
 
     let rawName = (args.name || "").trim();
     let companyName = (args.companyName || "").trim();
+    const designation = (args.designation || "").trim();
     const summary = (args.summary || "").trim();
 
     // Anti-self capture filters
@@ -107,6 +116,7 @@ export const createEventInterimTool = ({ socket, eventId, eventName, user, organ
       name: rawName,
       phone: cleanPhone,
       companyName,
+      designation,
       summary,
       messageText: (args.suggestedMessage || "").trim(),
       updatedAt: new Date().toISOString(),
@@ -115,7 +125,7 @@ export const createEventInterimTool = ({ socket, eventId, eventName, user, organ
 
     if (socket) {
       socket.emit("event_contact_interim", payload);
-      console.log(`[EventCaptureTool] Emitted 'event_contact_interim' to socket ${socket.id}: Name="${rawName}", Phone="${cleanPhone}", Company="${companyName}"`);
+      console.log(`[EventCaptureTool] Emitted 'event_contact_interim' to socket ${socket.id}: Name="${rawName}", Phone="${cleanPhone}", Company="${companyName}", Designation="${designation}"`);
     }
 
     return JSON.stringify({
@@ -151,6 +161,7 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
 
     const rawName = (args.name || "").trim();
     const companyName = (args.companyName || "").trim();
+    const designation = (args.designation || "").trim();
     const summary = (args.summary || "").trim();
 
     // STRICT VALIDATION 1: Require full name, complete 10-digit phone, and company before triggering complete review
@@ -217,6 +228,7 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
       displayName: attendeeName,
       phone: cleanPhone,
       companyName,
+      designation,
       summary,
       messageText,
       triggeredAt: new Date().toISOString(),
@@ -242,6 +254,7 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
         name: attendeeName,
         phone: cleanPhone,
         companyName,
+        designation,
       },
     });
   };

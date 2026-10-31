@@ -257,6 +257,7 @@ CRITICAL OPERATIONAL & SPEAKER SAFEGUARD RULES:
    - As you listen, IMMEDIATELY call 'update_contact_draft' whenever ANY single contact detail is spoken:
      * Name mentioned -> call update_contact_draft with { name }.
      * Company mentioned -> call update_contact_draft with { companyName }.
+     * Designation or job title mentioned -> call update_contact_draft with { designation }.
      * Phone digits dictated -> call update_contact_draft with { phone }.
      * Topic or requirement discussed -> call update_contact_draft with { summary, suggestedMessage }.
    - This progressive tool call updates the mobile screen in real time so the rep sees fields populating live!
@@ -270,6 +271,7 @@ CRITICAL OPERATIONAL & SPEAKER SAFEGUARD RULES:
      * name: Primary attendee's full name.
      * phone: Exactly 10-digit Indian mobile number (e.g. "9876543210").
      * companyName: Attendee's company/business name.
+     * designation: Attendee's job title, role, or designation if heard (e.g. "Managing Director", "Owner", "CEO").
      * summary: 1-2 sentence discussion summary including any companion names.
      * suggestedMessage: A warm, personalized WhatsApp follow-up greeting from ${managerName} (${orgName}) referencing ${currentEvent}.
 
