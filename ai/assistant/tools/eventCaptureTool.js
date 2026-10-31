@@ -92,10 +92,10 @@ export const createEventInterimTool = ({ socket, eventId, eventName, user, organ
       }
     }
 
-    let rawName = (args.name || "").trim();
-    let companyName = (args.companyName || "").trim();
-    const designation = (args.designation || "").trim();
-    const summary = (args.summary || "").trim();
+    let rawName = (typeof args.name === 'string' ? args.name : (args.name ? String(args.name) : "")).trim();
+    let companyName = (typeof args.companyName === 'string' ? args.companyName : (args.companyName ? String(args.companyName) : "")).trim();
+    const designation = (typeof args.designation === 'string' ? args.designation : (args.designation ? String(args.designation) : "")).trim();
+    const summary = (typeof args.summary === 'string' ? args.summary : (args.summary ? String(args.summary) : "")).trim();
 
     // Anti-self capture filters
     const repNameLower = repName.toLowerCase();
@@ -159,10 +159,10 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
       }
     }
 
-    const rawName = (args.name || "").trim();
-    const companyName = (args.companyName || "").trim();
-    const designation = (args.designation || "").trim();
-    const summary = (args.summary || "").trim();
+    const rawName = (typeof args.name === 'string' ? args.name : (args.name ? String(args.name) : "")).trim();
+    const companyName = (typeof args.companyName === 'string' ? args.companyName : (args.companyName ? String(args.companyName) : "")).trim();
+    const designation = (typeof args.designation === 'string' ? args.designation : (args.designation ? String(args.designation) : "")).trim();
+    const summary = (typeof args.summary === 'string' ? args.summary : (args.summary ? String(args.summary) : "")).trim();
 
     // STRICT VALIDATION 1: Require full name, complete 10-digit phone, and company before triggering complete review
     if (!rawName || rawName.length < 2 || !cleanPhone || cleanPhone.length !== 10 || !companyName || companyName.length < 2) {

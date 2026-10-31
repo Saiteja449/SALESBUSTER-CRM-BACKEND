@@ -373,6 +373,9 @@ export const createEventContact = async (req, res) => {
       aiExtracted = {},
       corrections = {},
       status = "captured",
+      idempotencyKey = null,
+      allowDuplicate = false,
+      forceUpdate = false,
     } = req.body;
 
     if (!name || !name.trim()) {
@@ -391,12 +394,85 @@ export const createEventContact = async (req, res) => {
     }
 
     // Clean phone number (leave empty if not provided)
-    const cleanPhone = phone ? String(phone).replace(/\D/g, "") : "";
+    const rawCleanPhone = phone ? String(phone).replace(/\D/g, "") : "";
+
+    // N10: Phone validation if non-empty
+    if (rawCleanPhone.length > 0 && rawCleanPhone.length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number: Must contain at least 10 digits.",
+      });
+    }
+
+    const cleanPhone = rawCleanPhone;
+    const normalized10 = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : "";
+
+    // D03: Idempotency check if idempotencyKey provided
+    if (idempotencyKey && typeof EventContact?.findOne === "function") {
+      const existingKeyDoc = await EventContact.findOne({
+        eventId: event._id,
+        idempotencyKey,
+      });
+      if (existingKeyDoc) {
+        return res.status(200).json({
+          success: true,
+          message: "Contact already saved (idempotent request).",
+          data: existingKeyDoc,
+          idempotent: true,
+        });
+      }
+    }
+
+    // D04 & D06: Duplicate prevention within same event by normalized phone
+    if (normalized10 && !allowDuplicate && typeof EventContact?.findOne === "function") {
+      const existingContact = await EventContact.findOne({
+        eventId: event._id,
+        $or: [
+          { phone: cleanPhone },
+          { phone: normalized10 },
+          { phone: `91${normalized10}` },
+        ],
+      });
+
+      if (existingContact) {
+        if (forceUpdate && typeof EventContact.findByIdAndUpdate === "function") {
+          const updated = await EventContact.findByIdAndUpdate(
+            existingContact._id,
+            {
+              $set: {
+                name: name.trim(),
+                companyName: (companyName || "").trim(),
+                designation: (designation || "").trim(),
+                summary: (summary || "").trim(),
+                messageText: (messageText || "").trim(),
+                transcript: (transcript || "").trim(),
+                updatedAt: new Date(),
+              },
+            },
+            { new: true }
+          );
+          return res.status(200).json({
+            success: true,
+            message: "Contact updated successfully.",
+            data: updated,
+            updated: true,
+          });
+        }
+
+        return res.status(409).json({
+          success: false,
+          duplicateDetected: true,
+          message: "This contact was already captured at this event.",
+          existingContact,
+        });
+      }
+    }
 
     const isHandoffDone = status === "whatsapp_opened" || status === "completed";
 
     const newContact = await EventContact.create({
       eventId: event._id,
+      idempotencyKey: idempotencyKey || null,
       name: name.trim(),
       phone: cleanPhone,
       companyName: (companyName || "").trim(),
