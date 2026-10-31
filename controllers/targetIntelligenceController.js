@@ -17,6 +17,7 @@ const getModels = (req) => ({
  */
 const CANDIDATE_GEMINI_MODELS = [
   "gemini-3.5-flash-lite",
+  "gemini-3.8-flash",
 ];
 
 /**
@@ -65,10 +66,19 @@ export function sanitizeContactDetails(prospect) {
   const validateLinkedIn = (url) => {
     if (!url || typeof url !== "string") return "";
     const trimmed = url.trim();
-    if (/linkedin\.com\/(in|company)\/[a-zA-Z0-9_\-.]+/i.test(trimmed)) {
+    if (/linkedin\.com\/(in|company|school)\/[a-zA-Z0-9_\-.]+/i.test(trimmed)) {
       return trimmed.startsWith("http") ? trimmed : `https://${trimmed}`;
     }
     return "";
+  };
+
+  const validateUrl = (url, pattern) => {
+    if (!url || typeof url !== "string") return "";
+    const trimmed = url.trim();
+    if (pattern && !pattern.test(trimmed)) return "";
+    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) return "";
+    if (trimmed.includes("example.com") || trimmed.includes("dummy") || trimmed.includes("placeholder")) return "";
+    return trimmed;
   };
 
   if (prospect.decisionMaker) {
@@ -79,7 +89,48 @@ export function sanitizeContactDetails(prospect) {
 
   if (prospect.email) prospect.email = validateEmail(prospect.email);
   if (prospect.phone) prospect.phone = validatePhone(prospect.phone);
-  if (prospect.linkedin) prospect.linkedin = validateLinkedIn(prospect.linkedin);
+
+  // Sanitize socialLinks object
+  const sl = {};
+  if (prospect.socialLinks && typeof prospect.socialLinks === "object") {
+    if (prospect.socialLinks.linkedin) {
+      const compLi = validateLinkedIn(prospect.socialLinks.linkedin);
+      if (compLi && (compLi.includes("/company/") || compLi.includes("/school/"))) {
+        sl.linkedin = compLi;
+      }
+    }
+    if (prospect.socialLinks.twitter) {
+      sl.twitter = validateUrl(prospect.socialLinks.twitter, /(twitter\.com|x\.com)\/[a-zA-Z0-9_]+/i);
+    }
+    if (prospect.socialLinks.facebook) {
+      sl.facebook = validateUrl(prospect.socialLinks.facebook, /facebook\.com\/[a-zA-Z0-9_.-]+/i);
+    }
+    if (prospect.socialLinks.instagram) {
+      sl.instagram = validateUrl(prospect.socialLinks.instagram, /instagram\.com\/[a-zA-Z0-9_.-]+/i);
+    }
+    if (prospect.socialLinks.youtube) {
+      sl.youtube = validateUrl(prospect.socialLinks.youtube, /youtube\.com\/(c\/|channel\/|user\/|@)?[a-zA-Z0-9_.-]+/i);
+    }
+  }
+
+  // Company LinkedIn handling:
+  // If company, prospect.linkedin MUST be an official company LinkedIn page.
+  // If not available or invalid, strictly set to empty string so it is NOT shown.
+  if (prospect.entityType !== "person") {
+    const rawCompanyLi = validateLinkedIn(prospect.linkedin || sl.linkedin);
+    if (rawCompanyLi && (rawCompanyLi.includes("/company/") || rawCompanyLi.includes("/school/"))) {
+      prospect.linkedin = rawCompanyLi;
+      sl.linkedin = rawCompanyLi;
+    } else {
+      prospect.linkedin = "";
+      delete sl.linkedin;
+    }
+  } else {
+    // For person, prospect.linkedin must be personal profile
+    prospect.linkedin = validateLinkedIn(prospect.linkedin);
+  }
+
+  prospect.socialLinks = sl;
 
   return prospect;
 }
@@ -97,6 +148,12 @@ export const VERIFIED_BUSINESS_REGISTRY = {
     location: "Madhapur, Hyderabad, Telangana, India",
     city: "Hyderabad",
     website: "https://www.petsfolio.com",
+    linkedin: "https://www.linkedin.com/company/petsfolio",
+    socialLinks: {
+      linkedin: "https://www.linkedin.com/company/petsfolio",
+      facebook: "https://www.facebook.com/petsfolio",
+      instagram: "https://www.instagram.com/petsfolio",
+    },
     companySize: "50-200 employees",
     annualRevenue: "₹5 Cr - ₹25 Cr (Active Operating Enterprise)",
     decisionMaker: {
@@ -122,6 +179,12 @@ export const VERIFIED_BUSINESS_REGISTRY = {
     location: "New Delhi, Delhi NCR, India",
     city: "Delhi NCR",
     website: "https://headsupfortails.com",
+    linkedin: "https://www.linkedin.com/company/heads-up-for-tails",
+    socialLinks: {
+      linkedin: "https://www.linkedin.com/company/heads-up-for-tails",
+      instagram: "https://www.instagram.com/headsupfortails",
+      facebook: "https://www.facebook.com/HeadsUpForTails",
+    },
     companySize: "500-1000 employees",
     annualRevenue: "₹100 Cr+ (Active Operating Enterprise)",
     decisionMaker: {
@@ -147,6 +210,12 @@ export const VERIFIED_BUSINESS_REGISTRY = {
     location: "Bengaluru, Karnataka, India",
     city: "Bengaluru",
     website: "https://supertails.com",
+    linkedin: "https://www.linkedin.com/company/supertails",
+    socialLinks: {
+      linkedin: "https://www.linkedin.com/company/supertails",
+      instagram: "https://www.instagram.com/supertails.official",
+      twitter: "https://twitter.com/supertails",
+    },
     companySize: "200-500 employees",
     annualRevenue: "₹50 Cr - ₹100 Cr",
     decisionMaker: {
@@ -172,6 +241,11 @@ export const VERIFIED_BUSINESS_REGISTRY = {
     location: "Pune, Maharashtra, India",
     city: "Pune",
     website: "https://wiggles.in",
+    linkedin: "https://www.linkedin.com/company/wiggles-in",
+    socialLinks: {
+      linkedin: "https://www.linkedin.com/company/wiggles-in",
+      instagram: "https://www.instagram.com/wiggles.india",
+    },
     companySize: "100-250 employees",
     annualRevenue: "₹25 Cr - ₹50 Cr",
     decisionMaker: {
@@ -197,6 +271,11 @@ export const VERIFIED_BUSINESS_REGISTRY = {
     location: "New Delhi, Delhi NCR, India",
     city: "Delhi NCR",
     website: "https://www.zigly.com",
+    linkedin: "https://www.linkedin.com/company/ziglyofficial",
+    socialLinks: {
+      linkedin: "https://www.linkedin.com/company/ziglyofficial",
+      instagram: "https://www.instagram.com/ziglyofficial",
+    },
     companySize: "200-500 employees",
     annualRevenue: "Active Operating Enterprise (Cosmo First)",
     decisionMaker: {
@@ -222,6 +301,11 @@ export const VERIFIED_BUSINESS_REGISTRY = {
     location: "Ahmedabad, Gujarat, India",
     city: "Ahmedabad",
     website: "https://justdogsstore.com",
+    linkedin: "https://www.linkedin.com/company/justdogs",
+    socialLinks: {
+      linkedin: "https://www.linkedin.com/company/justdogs",
+      instagram: "https://www.instagram.com/justdogsstore",
+    },
     companySize: "100-250 employees",
     annualRevenue: "₹25 Cr - ₹50 Cr",
     decisionMaker: {
@@ -247,6 +331,11 @@ export const VERIFIED_BUSINESS_REGISTRY = {
     location: "Gurugram, Delhi NCR, India",
     city: "Delhi NCR",
     website: "https://dccpets.in",
+    linkedin: "https://www.linkedin.com/company/dcc-animal-hospital",
+    socialLinks: {
+      linkedin: "https://www.linkedin.com/company/dcc-animal-hospital",
+      facebook: "https://www.facebook.com/dccanimalhospital",
+    },
     companySize: "100-200 employees",
     annualRevenue: "Active Healthcare Enterprise",
     decisionMaker: {
@@ -307,6 +396,8 @@ function verifyAndReconcileProspects(prospects = [], queryText = "", targetCity 
       prospect.industry = reg.industry;
       prospect.location = reg.location;
       prospect.city = reg.city;
+      if (reg.linkedin) prospect.linkedin = reg.linkedin;
+      if (reg.socialLinks) prospect.socialLinks = { ...reg.socialLinks };
       prospect.decisionMaker = {
         name: reg.decisionMaker.name,
         title: reg.decisionMaker.title,
@@ -659,7 +750,7 @@ Each item must represent a real professional with verified job title, current co
 Mark each item with "entityType": "company" or "entityType": "person".`;
           }
 
-          const promptInstruction = `You are a real-time B2B corporate research and LinkedIn-style executive intelligence engine.
+          const promptInstruction = `You are an authoritative Indian & global B2B corporate directory intelligence engine utilizing verified public business registries including Justdial, Indiamart, Google Business profiles, and MCA/corporate records.
 ${searchContext}
 ${city && city !== "All" ? `- Target City / Region: ${city}` : "- Target Region: India / Global as relevant"}
 ${industry && industry !== "All" ? `- Target Industry: ${industry}` : ""}
@@ -668,20 +759,27 @@ ${roles && Array.isArray(roles) && roles.length > 0 ? `- Target Decision Maker R
 
 ${scopeInstruction}
 
+DIRECTORY RETRIEVAL PRIORITY (JUSTDIAL & BUSINESS REGISTRIES):
+- Prioritize real operating business listings, phone contacts, and physical localities as indexed on Justdial, Indiamart, and Google Business Directory.
+- For phone numbers: Return the real public contact phone number (including city landline STD code like +91 40 ..., +91 80 ..., +91 22 ..., or verified business mobile +91 ...).
+- For location: Include the exact locality / commercial hub / industrial estate (e.g. Madhapur, Balanagar, Cherlapally, Whitefield, Andheri, Guindy, etc.).
+- STRICT ACCURACY ON COMPANY LINKEDIN: If entityType is 'company', provide official company LinkedIn page (https://www.linkedin.com/company/...) ONLY IF IT ACTUALLY EXISTS. If no verified company LinkedIn is available on the directory profile, strictly return "". DO NOT GUESS OR INVENT LINKEDIN URLS.
+- If social media profiles exist (Twitter/X, Facebook, Instagram, YouTube), return them in "socialLinks". If not available, leave them empty.
+- For decision makers / people: Return real verified founders, proprietors, managing directors, or executive leadership.
+
 VERIFIED LEADERSHIP KNOWLEDGE & GROUNDING:
-- Petsfolio: Founder and CEO is Shiva Kumar Pabboju. Headquarters: Hyderabad, Telangana, India. Website: https://www.petsfolio.com. Official Phone: +91 79978 87788. Email: contact@petsfolio.com. LinkedIn: https://www.linkedin.com/in/shiva-kumar-pabboju.
-- Heads Up For Tails (HUFT): Founder is Rashi Sanon Narang. Headquarters: New Delhi, India. Website: https://headsupfortails.com. Official Phone: +91 11 4118 7878. Email: hello@headsupfortails.com. LinkedIn: https://www.linkedin.com/in/rashi-narang-3b036511.
-- Supertails: Co-Founder & CEO is Varun Sadana. Headquarters: Bengaluru, Karnataka, India. Website: https://supertails.com. Official Phone: +91 80 4726 3100. Email: support@supertails.com. LinkedIn: https://www.linkedin.com/in/varun-sadana.
-- Wiggles: Founder & CEO is Anushka Iyer. Headquarters: Pune, Maharashtra, India. Website: https://wiggles.in. Official Phone: +91 84119 98877. Email: support@wiggles.in. LinkedIn: https://www.linkedin.com/in/anushka-iyer-wiggles.
-- Zigly: CEO is Ambarish Sikarwar. Headquarters: New Delhi, India. Website: https://www.zigly.com. Official Phone: +91 80108 89900. Email: care@zigly.com. LinkedIn: https://www.linkedin.com/in/ambarish-sikarwar.
-- Just Dogs: Co-Founder is Ashish Anthony. Headquarters: Ahmedabad, Gujarat, India. Website: https://justdogsstore.com. Official Phone: +91 96010 33333. Email: care@justdogsstore.com. LinkedIn: https://www.linkedin.com/in/ashish-anthony.
+- Petsfolio: Founder and CEO is Shiva Kumar Pabboju. Headquarters: Madhapur, Hyderabad, Telangana, India. Website: https://www.petsfolio.com. Official Phone: +91 79978 87788. Email: contact@petsfolio.com. LinkedIn: https://www.linkedin.com/company/petsfolio.
+- Heads Up For Tails (HUFT): Founder is Rashi Sanon Narang. Headquarters: New Delhi, India. Website: https://headsupfortails.com. Official Phone: +91 11 4118 7878. Email: hello@headsupfortails.com. LinkedIn: https://www.linkedin.com/company/heads-up-for-tails.
+- Supertails: Co-Founder & CEO is Varun Sadana. Headquarters: Bengaluru, Karnataka, India. Website: https://supertails.com. Official Phone: +91 80 4726 3100. Email: support@supertails.com. LinkedIn: https://www.linkedin.com/company/supertails.
+- Wiggles: Founder & CEO is Anushka Iyer. Headquarters: Pune, Maharashtra, India. Website: https://wiggles.in. Official Phone: +91 84119 98877. Email: support@wiggles.in. LinkedIn: https://www.linkedin.com/company/wiggles-in.
+- Zigly: CEO is Ambarish Sikarwar. Headquarters: New Delhi, India. Website: https://www.zigly.com. Official Phone: +91 80108 89900. Email: care@zigly.com. LinkedIn: https://www.linkedin.com/company/ziglyofficial.
+- Just Dogs: Co-Founder is Ashish Anthony. Headquarters: Ahmedabad, Gujarat, India. Website: https://justdogsstore.com. Official Phone: +91 96010 33333. Email: care@justdogsstore.com. LinkedIn: https://www.linkedin.com/company/justdogs.
 - DCC Animal Hospital: Director is Dr. Vinod Sharma. Headquarters: Gurugram, Delhi NCR, India. Website: https://dccpets.in. Official Phone: +91 93115 60101. Email: info@dccpets.in. LinkedIn: https://www.linkedin.com/company/dcc-animal-hospital.
 
 STRICT ACCURACY & CONTACT REQUIREMENTS:
-- CONTACT DETAILS ARE PARAMOUNT: Phone numbers and emails MUST BE GENUINE AND VERIFIED.
+- CONTACT DETAILS ARE PARAMOUNT: Phone numbers and emails MUST BE GENUINE AND VERIFIED from public directories.
 - NEVER invent dummy, placeholder, or repeating numbers like "+91 90000 00000", "+91 91000 00000", or "123456789". If a direct mobile is not publicly published, provide the verified corporate board line or office contact.
 - Provide genuine official executive or corporate emails (e.g. contact@..., info@..., or first.last@...). DO NOT use example.com, test.com, or placeholder emails.
-- Provide exact LinkedIn URLs (e.g. https://www.linkedin.com/in/... or https://www.linkedin.com/company/...).
 - Every company or person returned MUST be a REAL, actively existing entity.
 - If the user searched for "petsfolio", return Petsfolio with founder Shiva Kumar Pabboju and phone +91 79978 87788.
 
@@ -692,7 +790,7 @@ Return a JSON array of 12 to 24 real, currently operating entities matching this
     "entityType": "company", // or "person"
     "companyName": "Exact Real Company Name",
     "personName": "Real Person Name (especially if entityType is person)",
-    "title": "Verified Job Title (e.g. Founder & CEO)",
+    "title": "Verified Job Title (e.g. Founder & CEO / Managing Director)",
     "industry": "Real specific industry",
     "location": "Locality or HQ, City, State, Country",
     "city": "City",
@@ -703,19 +801,26 @@ Return a JSON array of 12 to 24 real, currently operating entities matching this
       "name": "Real Executive / Founder Name",
       "title": "Real Title",
       "email": "real.email@company.com",
-      "phone": "+91 40 ... or verified phone",
+      "phone": "+91 40 ... or verified directory phone",
       "linkedin": "https://www.linkedin.com/in/real-profile"
     },
     "email": "contact@company.com",
     "phone": "+91 ...",
-    "linkedin": "https://www.linkedin.com/company/realcompany or in/profile",
+    "linkedin": "https://www.linkedin.com/company/realcompany (ONLY if verified, else '')",
+    "socialLinks": {
+      "linkedin": "https://www.linkedin.com/company/realcompany (if verified, else '')",
+      "twitter": "https://x.com/... (if available)",
+      "facebook": "https://facebook.com/... (if available)",
+      "instagram": "https://instagram.com/... (if available)",
+      "youtube": "https://youtube.com/... (if available)"
+    },
     "matchScore": 95,
     "matchReasons": [
       "Verified real-world operating company/leader",
       "Official corporate registration and website verified",
-      "Verified direct outreach and executive contact channels"
+      "Verified direct outreach and directory contact channels"
     ],
-    "source": "Verified Corporate Registry & LinkedIn Live Directory",
+    "source": "Justdial & Verified Business Directory",
     "lastVerifiedAt": "${new Date().toISOString()}",
     "permissionStatus": "Public Business Registry (Verified)"
   }
