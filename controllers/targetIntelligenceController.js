@@ -113,10 +113,44 @@ export function sanitizeContactDetails(prospect) {
     }
   }
 
-  // Company LinkedIn handling:
-  // If company, prospect.linkedin MUST be an official company LinkedIn page.
-  // If not available or invalid, strictly set to empty string so it is NOT shown.
-  if (prospect.entityType !== "person") {
+  // Entity-specific contact and LinkedIn handling:
+  if (prospect.entityType === "person") {
+    // For person: check personal direct contacts first, fallback to company contacts
+    const dPhone = validatePhone(prospect.directPhone || prospect.phone);
+    const cPhone = validatePhone(prospect.companyPhone || prospect.decisionMaker?.phone);
+    if (dPhone) {
+      prospect.phone = dPhone;
+      prospect.phoneType = "direct";
+    } else if (cPhone) {
+      prospect.phone = cPhone;
+      prospect.phoneType = "company_fallback";
+    } else {
+      prospect.phone = "";
+      prospect.phoneType = "none";
+    }
+
+    const dEmail = validateEmail(prospect.directEmail || prospect.email);
+    const cEmail = validateEmail(prospect.companyEmail || prospect.decisionMaker?.email);
+    if (dEmail) {
+      prospect.email = dEmail;
+      prospect.emailType = "direct";
+    } else if (cEmail) {
+      prospect.email = cEmail;
+      prospect.emailType = "company_fallback";
+    } else {
+      prospect.email = "";
+      prospect.emailType = "none";
+    }
+
+    // Person LinkedIn MUST be a personal profile (/in/)
+    const pLi = validateLinkedIn(prospect.linkedin || prospect.decisionMaker?.linkedin);
+    if (pLi && pLi.includes("/in/")) {
+      prospect.linkedin = pLi;
+    } else {
+      prospect.linkedin = "";
+    }
+  } else {
+    // For company: prospect.linkedin MUST be an official company LinkedIn page (/company/ or /school/)
     const rawCompanyLi = validateLinkedIn(prospect.linkedin || sl.linkedin);
     if (rawCompanyLi && (rawCompanyLi.includes("/company/") || rawCompanyLi.includes("/school/"))) {
       prospect.linkedin = rawCompanyLi;
@@ -125,9 +159,8 @@ export function sanitizeContactDetails(prospect) {
       prospect.linkedin = "";
       delete sl.linkedin;
     }
-  } else {
-    // For person, prospect.linkedin must be personal profile
-    prospect.linkedin = validateLinkedIn(prospect.linkedin);
+    prospect.phoneType = "company";
+    prospect.emailType = "company";
   }
 
   prospect.socialLinks = sl;
@@ -741,10 +774,33 @@ export const searchProspects = async (req, res) => {
           let scopeInstruction = "";
           if (searchType === "companies") {
             scopeInstruction = `FOCUS: Strictly discover and return REAL, verified B2B corporate enterprise accounts.
-Each item must represent a genuine corporate entity with employee scale, official website, HQ location, corporate phone, and executive leadership. Set "entityType": "company".`;
+Every item MUST represent a corporate organization (NOT an individual person):
+- "entityType": "company"
+- "companyName": Full legal or trade name of the company
+- "industry": Sector
+- "companySize": Headcount scale (e.g. 50-200 employees)
+- "annualRevenue": Operating revenue estimate
+- "location": Locality, City, State, Country
+- "phone": Official corporate phone / landline (from Justdial/Google business directory)
+- "email": Official corporate contact email
+- "website": Official company website URL
+- "linkedin": Official company LinkedIn page (https://www.linkedin.com/company/...) ONLY IF VERIFIED, else ""
+- "socialLinks": { "twitter": "...", "facebook": "...", "instagram": "...", "youtube": "..." }
+- "decisionMaker": { "name": "Executive Name", "title": "Title" }`;
           } else if (searchType === "people") {
-            scopeInstruction = `FOCUS: Strictly discover and return REAL, verified decision makers, executives, founders, C-level officers, and directors.
-Each item must represent a real professional with verified job title, current company name, city, official corporate/business email, direct office phone, and exact personal LinkedIn URL. Set "entityType": "person".`;
+            scopeInstruction = `FOCUS: Strictly discover and return REAL individual professionals, decision makers, founders, and executives.
+Every item MUST represent an individual person (NOT a generic company card):
+- "entityType": "person"
+- "personName": Full Name of the individual
+- "title": Exact job title / role (e.g. Founder & CEO, Director of Operations, Managing Director)
+- "companyName": Current organization / company they lead or work at
+- "location": City, State of the person/company
+- "directPhone": Their direct contact phone / mobile if publicly available, else ""
+- "directEmail": Their direct executive email if publicly available, else ""
+- "companyPhone": Company's office board line / phone from Justdial/directory (used as fallback so rep can reach them)
+- "companyEmail": Company's corporate email (used as fallback)
+- "linkedin": Their personal LinkedIn profile URL (https://www.linkedin.com/in/...)
+- "website": Their company's official website`;
           } else {
             scopeInstruction = `FOCUS: Return a balanced mix of verified corporate companies and key decision makers / executive leaders matching the criteria.
 Mark each item with "entityType": "company" or "entityType": "person".`;
