@@ -26,9 +26,9 @@ const CANDIDATE_GEMINI_MODELS = [
 export function computeProspectKey(p) {
   if (!p) return `key_${Date.now()}`;
   const company = (p.companyName || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "");
-  const person = (p.decisionMaker?.name || p.personName || p.name || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "");
-  const email = (p.decisionMaker?.email || p.email || "").toLowerCase().trim().replace(/[^a-z0-9@.-]/g, "");
-  const website = (p.website || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "");
+  const person = (p.personContact?.name || p.decisionMaker?.name || p.personName || p.name || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "");
+  const email = (p.personContact?.email?.value || p.companyContact?.email?.value || p.decisionMaker?.email || p.email || "").toLowerCase().trim().replace(/[^a-z0-9@.-]/g, "");
+  const website = (p.companyContact?.website || p.website || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "");
 
   if (p.entityType === "person" || (!company && person)) {
     return `person_${person}_${email || company || "lead"}`.slice(0, 100);
@@ -37,135 +37,248 @@ export function computeProspectKey(p) {
 }
 
 /**
- * Strict contact data sanitization:
- * Rejects and removes dummy phone numbers, repeating digits (e.g. 00000, 12345),
- * and dummy emails to ensure only high-accuracy, verified coordinates reach the user.
+ * Creates a structured ContactChannel with strict source attribution and verification status.
+ *
+ * Verification status semantics:
+ * - "verified": Supported by verified corporate records/registry evidence
+ * - "sourced": Extracted directly from configured directory provider (e.g. OpenStreetMap)
+ * - "unverified": Sourced from an unverified public record
+ * - "not_found": Queried data source exists, but contact coordinate was absent
+ * - "unavailable": No provider integration is configured for this contact type
+ */
+export function createContactChannel({
+  value = null,
+  sourceName = null,
+  sourceUrl = null,
+  retrievedAt = null,
+  verificationStatus = "not_found",
+} = {}) {
+  const cleanVal = value && typeof value === "string" && value.trim() ? value.trim() : null;
+  const status = cleanVal
+    ? verificationStatus || "sourced"
+    : verificationStatus === "unavailable"
+    ? "unavailable"
+    : "not_found";
+
+  return {
+    value: cleanVal,
+    sourceName: cleanVal ? sourceName : null,
+    sourceUrl: cleanVal ? sourceUrl : null,
+    retrievedAt: cleanVal ? (retrievedAt || new Date().toISOString()) : null,
+    verificationStatus: status,
+  };
+}
+
+/**
+ * Validates email addresses and eliminates dummy/sample placeholders.
+ */
+export function validateEmail(email) {
+  if (!email || typeof email !== "string") return null;
+  const trimmed = email.trim().toLowerCase();
+  if (/^(none|na|null|undefined|test@|dummy@|sample@|placeholder@|john\.doe@)/.test(trimmed)) return null;
+  if (/@(example\.com|test\.com|dummy\.com|fake\.com)$/.test(trimmed)) return null;
+  if (!trimmed.includes("@") || !trimmed.includes(".")) return null;
+  const parts = trimmed.split("@");
+  if (parts.length !== 2 || !parts[0] || !parts[1] || !parts[1].includes(".")) return null;
+  return trimmed;
+}
+
+/**
+ * Validates phone numbers and eliminates dummy/repeating digits.
+ */
+export function validatePhone(phone) {
+  if (!phone || typeof phone !== "string") return null;
+  const trimmed = phone.trim();
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length < 8 || digits.length > 15) return null;
+  if (/00000|11111|22222|33333|44444|55555|66666|77777|88888|99999|123456/.test(digits)) return null;
+  if (/^(\d)\1+$/.test(digits)) return null;
+  return trimmed;
+}
+
+/**
+ * Validates URLs and discards placeholders.
+ */
+export function validateUrl(url, pattern) {
+  if (!url || typeof url !== "string") return null;
+  const trimmed = url.trim();
+  if (pattern && !pattern.test(trimmed)) return null;
+  if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) return null;
+  if (trimmed.includes("example.com") || trimmed.includes("dummy") || trimmed.includes("placeholder")) return null;
+  return trimmed;
+}
+
+/**
+ * Validates LinkedIn URLs.
+ */
+export function validateLinkedIn(url) {
+  if (!url || typeof url !== "string") return null;
+  const trimmed = url.trim();
+  if (/linkedin\.com\/(in|company|school)\/[a-zA-Z0-9_\-.]+/i.test(trimmed)) {
+    return trimmed.startsWith("http") ? trimmed : `https://${trimmed}`;
+  }
+  return null;
+}
+
+/**
+ * Normalizes contact details to keep company and personal contacts strictly distinct.
+ * Guarantees that company contact info is NEVER labeled as an individual's direct contact,
+ * and ensures missing contacts are preserved with truthful verification statuses and explanations.
+ */
+export function normalizeProspectContact(rawProspect) {
+  if (!rawProspect || typeof rawProspect !== "object") return rawProspect;
+  const p = { ...rawProspect };
+
+  const isPerson = p.entityType === "person";
+  const defaultSource = p.source || "OpenStreetMap";
+  const defaultSourceUrl = p.sourceUrl || null;
+  const defaultTimestamp = p.lastVerifiedAt || new Date().toISOString();
+  const isVerifiedRegistry = defaultSource.toLowerCase().includes("corporate registry") || defaultSource.toLowerCase().includes("verified");
+
+  // 1. Company Contact Channel Normalization
+  let rawCompPhone = p.companyContact?.phone?.value ?? p.companyPhone ?? (isPerson ? null : p.phone);
+  let rawCompEmail = p.companyContact?.email?.value ?? p.companyEmail ?? (isPerson ? null : p.email);
+  let compPhoneSource = p.companyContact?.phone?.sourceName ?? (rawCompPhone ? defaultSource : null);
+  let compEmailSource = p.companyContact?.email?.sourceName ?? (rawCompEmail ? defaultSource : null);
+  let compPhoneUrl = p.companyContact?.phone?.sourceUrl ?? defaultSourceUrl;
+  let compEmailUrl = p.companyContact?.email?.sourceUrl ?? defaultSourceUrl;
+  let compPhoneStatus = p.companyContact?.phone?.verificationStatus ?? (isVerifiedRegistry ? "verified" : (rawCompPhone ? "sourced" : "not_found"));
+  let compEmailStatus = p.companyContact?.email?.verificationStatus ?? (isVerifiedRegistry ? "verified" : (rawCompEmail ? "sourced" : "not_found"));
+
+  const validCompPhone = validatePhone(rawCompPhone);
+  const validCompEmail = validateEmail(rawCompEmail);
+
+  p.companyContact = {
+    phone: createContactChannel({
+      value: validCompPhone,
+      sourceName: validCompPhone ? compPhoneSource : null,
+      sourceUrl: validCompPhone ? compPhoneUrl : null,
+      retrievedAt: validCompPhone ? (p.companyContact?.phone?.retrievedAt || defaultTimestamp) : null,
+      verificationStatus: validCompPhone ? compPhoneStatus : "not_found",
+    }),
+    email: createContactChannel({
+      value: validCompEmail,
+      sourceName: validCompEmail ? compEmailSource : null,
+      sourceUrl: validCompEmail ? compEmailUrl : null,
+      retrievedAt: validCompEmail ? (p.companyContact?.email?.retrievedAt || defaultTimestamp) : null,
+      verificationStatus: validCompEmail ? compEmailStatus : "not_found",
+    }),
+    website: validateUrl(p.companyContact?.website ?? p.website),
+    linkedin: null,
+  };
+
+  const compLiRaw = p.companyContact?.linkedin ?? (!isPerson ? p.linkedin : null) ?? p.socialLinks?.linkedin;
+  const validCompLi = validateLinkedIn(compLiRaw);
+  if (validCompLi && (validCompLi.includes("/company/") || validCompLi.includes("/school/"))) {
+    p.companyContact.linkedin = validCompLi;
+  }
+
+  // 2. Person Contact Channel Normalization (Strictly Direct Coordinates)
+  let rawPersonPhone = p.personContact?.phone?.value ?? p.directPhone ?? (isPerson ? p.phone : p.decisionMaker?.phone);
+  let rawPersonEmail = p.personContact?.email?.value ?? p.directEmail ?? (isPerson ? p.email : p.decisionMaker?.email);
+  let rawPersonName = p.personContact?.name ?? (isPerson ? (p.personName || p.name) : p.decisionMaker?.name);
+  let rawPersonTitle = p.personContact?.title ?? (isPerson ? p.title : p.decisionMaker?.title);
+
+  let personPhoneSource = p.personContact?.phone?.sourceName ?? (isVerifiedRegistry && rawPersonPhone ? "Verified Corporate Registry" : null);
+  let personEmailSource = p.personContact?.email?.sourceName ?? (isVerifiedRegistry && rawPersonEmail ? "Verified Corporate Registry" : null);
+  let personPhoneStatus = p.personContact?.phone?.verificationStatus ?? (isVerifiedRegistry && rawPersonPhone ? "verified" : (rawPersonPhone ? "sourced" : "unavailable"));
+  let personEmailStatus = p.personContact?.email?.verificationStatus ?? (isVerifiedRegistry && rawPersonEmail ? "verified" : (rawPersonEmail ? "sourced" : "unavailable"));
+
+  const validPersonPhone = validatePhone(rawPersonPhone);
+  const validPersonEmail = validateEmail(rawPersonEmail);
+
+  p.personContact = {
+    name: rawPersonName && typeof rawPersonName === "string" && rawPersonName.trim() ? rawPersonName.trim() : null,
+    title: rawPersonTitle && typeof rawPersonTitle === "string" && rawPersonTitle.trim() ? rawPersonTitle.trim() : null,
+    phone: createContactChannel({
+      value: validPersonPhone,
+      sourceName: validPersonPhone ? personPhoneSource : null,
+      sourceUrl: validPersonPhone ? (p.personContact?.phone?.sourceUrl || defaultSourceUrl) : null,
+      retrievedAt: validPersonPhone ? (p.personContact?.phone?.retrievedAt || defaultTimestamp) : null,
+      verificationStatus: validPersonPhone ? personPhoneStatus : (rawPersonPhone ? "not_found" : "unavailable"),
+    }),
+    email: createContactChannel({
+      value: validPersonEmail,
+      sourceName: validPersonEmail ? personEmailSource : null,
+      sourceUrl: validPersonEmail ? (p.personContact?.email?.sourceUrl || defaultSourceUrl) : null,
+      retrievedAt: validPersonEmail ? (p.personContact?.email?.retrievedAt || defaultTimestamp) : null,
+      verificationStatus: validPersonEmail ? personEmailStatus : (rawPersonEmail ? "not_found" : "unavailable"),
+    }),
+    linkedin: null,
+  };
+
+  const personLiRaw = p.personContact?.linkedin ?? (isPerson ? p.linkedin : p.decisionMaker?.linkedin);
+  const validPersonLi = validateLinkedIn(personLiRaw);
+  if (validPersonLi && validPersonLi.includes("/in/")) {
+    p.personContact.linkedin = validPersonLi;
+  }
+
+  // 3. Truthful Contact Availability Diagnostics
+  p.contactAvailability = {
+    hasCompanyPhone: Boolean(p.companyContact.phone.value),
+    hasCompanyEmail: Boolean(p.companyContact.email.value),
+    hasPersonPhone: Boolean(p.personContact.phone.value),
+    hasPersonEmail: Boolean(p.personContact.email.value),
+    companyContactReason: p.companyContact.phone.value || p.companyContact.email.value
+      ? `Retrieved from ${p.companyContact.phone.sourceName || p.companyContact.email.sourceName || defaultSource}`
+      : `Not published in public ${defaultSource} records`,
+    personContactReason: p.personContact.phone.value || p.personContact.email.value
+      ? `Verified leadership contact from ${p.personContact.phone.sourceName || p.personContact.email.sourceName}`
+      : "No external B2B executive contact enrichment provider configured for this organization.",
+  };
+
+  // 4. Backward Compatibility Projections (Mapped truth without conflating company & person)
+  p.companyPhone = p.companyContact.phone.value || "";
+  p.companyEmail = p.companyContact.email.value || "";
+  p.directPhone = p.personContact.phone.value || "";
+  p.directEmail = p.personContact.email.value || "";
+
+  if (isPerson) {
+    p.phone = p.personContact.phone.value || "";
+    p.email = p.personContact.email.value || "";
+    p.phoneType = p.personContact.phone.value ? "direct" : "none";
+    p.emailType = p.personContact.email.value ? "direct" : "none";
+    p.linkedin = p.personContact.linkedin || "";
+  } else {
+    p.phone = p.companyContact.phone.value || "";
+    p.email = p.companyContact.email.value || "";
+    p.phoneType = p.companyContact.phone.value ? "company" : "none";
+    p.emailType = p.companyContact.email.value ? "company" : "none";
+    p.linkedin = p.companyContact.linkedin || "";
+  }
+
+  p.website = p.companyContact.website || p.website || "";
+
+  if (p.personContact.name || p.personContact.title || p.personContact.phone.value || p.personContact.email.value) {
+    p.decisionMaker = {
+      name: p.personContact.name || "",
+      title: p.personContact.title || "",
+      phone: p.personContact.phone.value || "",
+      email: p.personContact.email.value || "",
+      linkedin: p.personContact.linkedin || "",
+    };
+  } else {
+    p.decisionMaker = null;
+  }
+
+  const sl = {};
+  if (p.socialLinks && typeof p.socialLinks === "object") {
+    if (p.companyContact.linkedin) sl.linkedin = p.companyContact.linkedin;
+    if (p.socialLinks.twitter) sl.twitter = validateUrl(p.socialLinks.twitter, /(twitter\.com|x\.com)\/[a-zA-Z0-9_]+/i);
+    if (p.socialLinks.facebook) sl.facebook = validateUrl(p.socialLinks.facebook, /facebook\.com\/[a-zA-Z0-9_.-]+/i);
+    if (p.socialLinks.instagram) sl.instagram = validateUrl(p.socialLinks.instagram, /instagram\.com\/[a-zA-Z0-9_.-]+/i);
+    if (p.socialLinks.youtube) sl.youtube = validateUrl(p.socialLinks.youtube, /youtube\.com\/(c\/|channel\/|user\/|@)?[a-zA-Z0-9_.-]+/i);
+  }
+  p.socialLinks = sl;
+
+  return p;
+}
+
+/**
+ * Sanitizes and normalizes contact coordinates
  */
 export function sanitizeContactDetails(prospect) {
-  if (!prospect || typeof prospect !== "object") return prospect;
-
-  const validateEmail = (email) => {
-    if (!email || typeof email !== "string") return "";
-    const trimmed = email.trim().toLowerCase();
-    if (/^(none|na|null|undefined|test@|dummy@|sample@|placeholder@|john\.doe@)/.test(trimmed)) return "";
-    if (/@(example\.com|test\.com|dummy\.com|fake\.com)$/.test(trimmed)) return "";
-    if (!trimmed.includes("@") || !trimmed.includes(".")) return "";
-    return trimmed;
-  };
-
-  const validatePhone = (phone) => {
-    if (!phone || typeof phone !== "string") return "";
-    const trimmed = phone.trim();
-    const digits = trimmed.replace(/\D/g, "");
-    if (digits.length < 8) return "";
-    // Discard dummy repeating patterns
-    if (/00000|11111|22222|33333|44444|55555|66666|77777|88888|99999|123456/.test(digits)) return "";
-    return trimmed;
-  };
-
-  const validateLinkedIn = (url) => {
-    if (!url || typeof url !== "string") return "";
-    const trimmed = url.trim();
-    if (/linkedin\.com\/(in|company|school)\/[a-zA-Z0-9_\-.]+/i.test(trimmed)) {
-      return trimmed.startsWith("http") ? trimmed : `https://${trimmed}`;
-    }
-    return "";
-  };
-
-  const validateUrl = (url, pattern) => {
-    if (!url || typeof url !== "string") return "";
-    const trimmed = url.trim();
-    if (pattern && !pattern.test(trimmed)) return "";
-    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) return "";
-    if (trimmed.includes("example.com") || trimmed.includes("dummy") || trimmed.includes("placeholder")) return "";
-    return trimmed;
-  };
-
-  if (prospect.decisionMaker) {
-    prospect.decisionMaker.email = validateEmail(prospect.decisionMaker.email);
-    prospect.decisionMaker.phone = validatePhone(prospect.decisionMaker.phone);
-    prospect.decisionMaker.linkedin = validateLinkedIn(prospect.decisionMaker.linkedin);
-  }
-
-  if (prospect.email) prospect.email = validateEmail(prospect.email);
-  if (prospect.phone) prospect.phone = validatePhone(prospect.phone);
-
-  // Sanitize socialLinks object
-  const sl = {};
-  if (prospect.socialLinks && typeof prospect.socialLinks === "object") {
-    if (prospect.socialLinks.linkedin) {
-      const compLi = validateLinkedIn(prospect.socialLinks.linkedin);
-      if (compLi && (compLi.includes("/company/") || compLi.includes("/school/"))) {
-        sl.linkedin = compLi;
-      }
-    }
-    if (prospect.socialLinks.twitter) {
-      sl.twitter = validateUrl(prospect.socialLinks.twitter, /(twitter\.com|x\.com)\/[a-zA-Z0-9_]+/i);
-    }
-    if (prospect.socialLinks.facebook) {
-      sl.facebook = validateUrl(prospect.socialLinks.facebook, /facebook\.com\/[a-zA-Z0-9_.-]+/i);
-    }
-    if (prospect.socialLinks.instagram) {
-      sl.instagram = validateUrl(prospect.socialLinks.instagram, /instagram\.com\/[a-zA-Z0-9_.-]+/i);
-    }
-    if (prospect.socialLinks.youtube) {
-      sl.youtube = validateUrl(prospect.socialLinks.youtube, /youtube\.com\/(c\/|channel\/|user\/|@)?[a-zA-Z0-9_.-]+/i);
-    }
-  }
-
-  // Entity-specific contact and LinkedIn handling:
-  if (prospect.entityType === "person") {
-    // For person: check personal direct contacts first, fallback to company contacts
-    const dPhone = validatePhone(prospect.directPhone || prospect.phone);
-    const cPhone = validatePhone(prospect.companyPhone || prospect.decisionMaker?.phone);
-    if (dPhone) {
-      prospect.phone = dPhone;
-      prospect.phoneType = "direct";
-    } else if (cPhone) {
-      prospect.phone = cPhone;
-      prospect.phoneType = "company_fallback";
-    } else {
-      prospect.phone = "";
-      prospect.phoneType = "none";
-    }
-
-    const dEmail = validateEmail(prospect.directEmail || prospect.email);
-    const cEmail = validateEmail(prospect.companyEmail || prospect.decisionMaker?.email);
-    if (dEmail) {
-      prospect.email = dEmail;
-      prospect.emailType = "direct";
-    } else if (cEmail) {
-      prospect.email = cEmail;
-      prospect.emailType = "company_fallback";
-    } else {
-      prospect.email = "";
-      prospect.emailType = "none";
-    }
-
-    // Person LinkedIn MUST be a personal profile (/in/)
-    const pLi = validateLinkedIn(prospect.linkedin || prospect.decisionMaker?.linkedin);
-    if (pLi && pLi.includes("/in/")) {
-      prospect.linkedin = pLi;
-    } else {
-      prospect.linkedin = "";
-    }
-  } else {
-    // For company: prospect.linkedin MUST be an official company LinkedIn page (/company/ or /school/)
-    const rawCompanyLi = validateLinkedIn(prospect.linkedin || sl.linkedin);
-    if (rawCompanyLi && (rawCompanyLi.includes("/company/") || rawCompanyLi.includes("/school/"))) {
-      prospect.linkedin = rawCompanyLi;
-      sl.linkedin = rawCompanyLi;
-    } else {
-      prospect.linkedin = "";
-      delete sl.linkedin;
-    }
-    prospect.phoneType = "company";
-    prospect.emailType = "company";
-  }
-
-  prospect.socialLinks = sl;
-
-  return prospect;
+  return normalizeProspectContact(prospect);
 }
 
 /**
@@ -390,6 +503,69 @@ export const VERIFIED_BUSINESS_REGISTRY = {
 };
 
 /**
+ * Creates a verified prospect record from the authoritative local corporate registry.
+ */
+export function createVerifiedRegistryProspect(key, reg) {
+  const timestamp = new Date().toISOString();
+  const obj = {
+    id: `ti-verified-${key}-${Date.now()}`,
+    entityType: "company",
+    companyName: reg.canonicalName,
+    industry: reg.industry,
+    location: reg.location,
+    city: reg.city,
+    website: reg.website,
+    companySize: reg.companySize,
+    annualRevenue: reg.annualRevenue,
+    companyContact: {
+      phone: createContactChannel({
+        value: reg.decisionMaker?.phone || reg.phone,
+        sourceName: "Official Corporate Registry",
+        sourceUrl: reg.website,
+        retrievedAt: timestamp,
+        verificationStatus: "verified",
+      }),
+      email: createContactChannel({
+        value: reg.decisionMaker?.email || reg.email,
+        sourceName: "Official Corporate Registry",
+        sourceUrl: reg.website,
+        retrievedAt: timestamp,
+        verificationStatus: "verified",
+      }),
+      website: reg.website,
+      linkedin: reg.linkedin || null,
+    },
+    personContact: {
+      name: reg.decisionMaker?.name || null,
+      title: reg.decisionMaker?.title || null,
+      phone: createContactChannel({
+        value: reg.decisionMaker?.phone,
+        sourceName: "Official Corporate Registry",
+        sourceUrl: reg.website,
+        retrievedAt: timestamp,
+        verificationStatus: "verified",
+      }),
+      email: createContactChannel({
+        value: reg.decisionMaker?.email,
+        sourceName: "Official Corporate Registry",
+        sourceUrl: reg.website,
+        retrievedAt: timestamp,
+        verificationStatus: "verified",
+      }),
+      linkedin: reg.decisionMaker?.linkedin || null,
+    },
+    matchScore: reg.matchScore || 95,
+    matchReasons: reg.matchReasons,
+    source: reg.source,
+    sourceUrl: reg.website,
+    lastVerifiedAt: timestamp,
+    permissionStatus: reg.permissionStatus,
+    isDuplicate: false,
+  };
+  return normalizeProspectContact(obj);
+}
+
+/**
  * Reconcile & Verify Prospects against Authoritative Corporate Registry
  */
 function verifyAndReconcileProspects(prospects = [], queryText = "", targetCity = "All") {
@@ -402,8 +578,8 @@ function verifyAndReconcileProspects(prospects = [], queryText = "", targetCity 
   for (let prospect of prospects) {
     if (!prospect || typeof prospect !== "object") continue;
 
-    // Sanitize contact data immediately
-    prospect = sanitizeContactDetails(prospect);
+    // Normalize contact data with strict source attribution
+    prospect = normalizeProspectContact(prospect);
 
     const compName = (prospect.companyName || "").toLowerCase().trim();
     const web = (prospect.website || "").toLowerCase().trim();
@@ -424,26 +600,9 @@ function verifyAndReconcileProspects(prospects = [], queryText = "", targetCity 
 
     if (matchedKey) {
       const reg = VERIFIED_BUSINESS_REGISTRY[matchedKey];
-      prospect.companyName = reg.canonicalName;
-      prospect.website = reg.website;
-      prospect.industry = reg.industry;
-      prospect.location = reg.location;
-      prospect.city = reg.city;
-      if (reg.linkedin) prospect.linkedin = reg.linkedin;
-      if (reg.socialLinks) prospect.socialLinks = { ...reg.socialLinks };
-      prospect.decisionMaker = {
-        name: reg.decisionMaker.name,
-        title: reg.decisionMaker.title,
-        email: reg.decisionMaker.email,
-        phone: reg.decisionMaker.phone,
-        linkedin: reg.decisionMaker.linkedin,
-      };
-      if (reg.annualRevenue) prospect.annualRevenue = reg.annualRevenue;
-      if (reg.companySize) prospect.companySize = reg.companySize;
-      prospect.matchScore = Math.max(prospect.matchScore || 0, reg.matchScore);
-      prospect.source = reg.source;
-      prospect.permissionStatus = reg.permissionStatus;
-      prospect.matchReasons = reg.matchReasons;
+      const verifiedItem = createVerifiedRegistryProspect(matchedKey, reg);
+      verifiedItem.matchScore = Math.max(prospect.matchScore || 0, reg.matchScore);
+      prospect = verifiedItem;
     }
 
     prospect.prospectKey = computeProspectKey(prospect);
@@ -455,7 +614,7 @@ function verifyAndReconcileProspects(prospects = [], queryText = "", targetCity 
   }
 
   // If query is specifically for petsfolio or if prompt mentions petsfolio,
-  // ensure Petsfolio is present at index 0 with verified founder Shiva Kumar Pabboju
+  // ensure Petsfolio is present at index 0 with verified records
   if (queryIsPetsfolio) {
     const petsfolioIdx = results.findIndex((p) =>
       (p.companyName || "").toLowerCase().includes("petsfolio")
@@ -465,25 +624,8 @@ function verifyAndReconcileProspects(prospects = [], queryText = "", targetCity 
       results.unshift(item);
     } else {
       const reg = VERIFIED_BUSINESS_REGISTRY.petsfolio;
-      const petsfolioObj = {
-        id: `ti-prospect-petsfolio-${Date.now()}`,
-        entityType: "company",
-        companyName: reg.canonicalName,
-        industry: reg.industry,
-        location: reg.location,
-        city: reg.city,
-        website: reg.website,
-        companySize: reg.companySize,
-        annualRevenue: reg.annualRevenue,
-        decisionMaker: { ...reg.decisionMaker },
-        matchScore: 99,
-        matchReasons: reg.matchReasons,
-        source: reg.source,
-        lastVerifiedAt: new Date().toISOString(),
-        permissionStatus: reg.permissionStatus,
-        isDuplicate: false,
-      };
-      petsfolioObj.prospectKey = computeProspectKey(petsfolioObj);
+      const petsfolioObj = createVerifiedRegistryProspect("petsfolio", reg);
+      petsfolioObj.matchScore = 99;
       results.unshift(petsfolioObj);
     }
   }
@@ -517,58 +659,90 @@ function resolveGeminiKey(req) {
 /**
  * Fetch real-time online businesses from live web directories (OpenStreetMap Nominatim)
  * with zero dummy or fabricated data.
+ * Contact details are only populated when explicitly present in public directory extratags.
  */
-async function fetchLiveOnlineDirectory(query, city) {
+export async function fetchLiveOnlineDirectory(query, city) {
+  const startTime = Date.now();
+  const diagnostics = {
+    provider: "OpenStreetMap Nominatim",
+    status: "SUCCESS",
+    statusCode: null,
+    isTimeout: false,
+    isRateLimited: false,
+    error: null,
+    durationMs: 0,
+    itemsCount: 0,
+  };
+
   try {
     const rawQueryLower = (query || "").toLowerCase();
     if (rawQueryLower.includes("petsfolio")) {
       const reg = VERIFIED_BUSINESS_REGISTRY.petsfolio;
-      const item = {
-        id: `ti-live-petsfolio-${Date.now()}`,
-        entityType: "company",
-        companyName: reg.canonicalName,
-        industry: reg.industry,
-        location: reg.location,
-        city: reg.city,
-        website: reg.website,
-        companySize: reg.companySize,
-        annualRevenue: reg.annualRevenue,
-        decisionMaker: { ...reg.decisionMaker },
-        matchScore: 99,
-        matchReasons: reg.matchReasons,
-        source: reg.source,
-        lastVerifiedAt: new Date().toISOString(),
-        permissionStatus: reg.permissionStatus,
-        isDuplicate: false,
-      };
-      item.prospectKey = computeProspectKey(item);
-      return [item];
+      const item = createVerifiedRegistryProspect("petsfolio", reg);
+      diagnostics.durationMs = Date.now() - startTime;
+      diagnostics.itemsCount = 1;
+      return { items: [item], diagnostics };
     }
 
     const cleanedTerms = (query || "")
       .replace(/\b(find|search|companies|company|providing|services|service|in|near|and|or|for|the|with)\b/gi, "")
       .trim();
     const searchQuery = `${cleanedTerms || query || "commercial"} ${city && city !== "All" ? city : ""}`.trim();
-    if (!searchQuery) return [];
+    if (!searchQuery) {
+      diagnostics.durationMs = Date.now() - startTime;
+      return { items: [], diagnostics };
+    }
 
     const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=json&addressdetails=1&extratags=1&namedetails=1&limit=25`;
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
+    const timeout = setTimeout(() => controller.abort(), 7000);
 
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "SalesBusterCRM-LeadIntelligence/2.0 (support@salesbuster.ai)",
-      },
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          "User-Agent": "SalesBusterCRM-LeadIntelligence/2.0 (support@salesbuster.ai)",
+          "Accept": "application/json",
+        },
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      if (fetchErr.name === "AbortError") {
+        diagnostics.isTimeout = true;
+        diagnostics.status = "TIMEOUT";
+        diagnostics.error = "OpenStreetMap directory request timed out after 7000ms";
+      } else {
+        diagnostics.status = "ERROR";
+        diagnostics.error = `Network error connecting to directory provider: ${fetchErr.message}`;
+      }
+      diagnostics.durationMs = Date.now() - startTime;
+      return { items: [], diagnostics };
+    }
     clearTimeout(timeout);
 
-    if (!response.ok) return [];
+    diagnostics.statusCode = response.status;
+    if (response.status === 429) {
+      diagnostics.isRateLimited = true;
+      diagnostics.status = "RATE_LIMITED";
+      diagnostics.error = "OpenStreetMap rate limit exceeded (HTTP 429)";
+      diagnostics.durationMs = Date.now() - startTime;
+      return { items: [], diagnostics };
+    }
+
+    if (!response.ok) {
+      diagnostics.status = "ERROR";
+      diagnostics.error = `OpenStreetMap HTTP error ${response.status}`;
+      diagnostics.durationMs = Date.now() - startTime;
+      return { items: [], diagnostics };
+    }
+
     const data = await response.json();
 
     if (Array.isArray(data) && data.length > 0) {
-      return data.map((item, idx) => {
+      const retrievedAt = new Date().toISOString();
+      const items = data.map((item, idx) => {
         const name =
           item.namedetails?.name ||
           item.name ||
@@ -582,6 +756,12 @@ async function fetchLiveOnlineDirectory(query, city) {
         const phone = tags.phone || tags["contact:phone"] || "";
         const email = tags.email || tags["contact:email"] || "";
 
+        const osmUrl = `https://www.openstreetmap.org/${item.osm_type || "node"}/${item.osm_id}`;
+
+        const validPhone = validatePhone(phone);
+        const validEmail = validateEmail(email);
+        const validWebsite = validateUrl(website);
+
         const obj = {
           id: `ti-live-${item.osm_id || Date.now()}-${idx + 1}`,
           entityType: "company",
@@ -589,34 +769,78 @@ async function fetchLiveOnlineDirectory(query, city) {
           industry: tags["healthcare"] || tags["shop"] || tags["amenity"] || query || "Commercial Enterprise",
           location: `${cityName}, ${state}, India`.replace(/^[,\s]+|[,\s]+$/g, ""),
           city: cityName,
-          website: website || "",
+          website: validWebsite || "",
           companySize: "10-50 employees",
           annualRevenue: "Active Operating Enterprise",
-          decisionMaker: {
-            name: tags.operator || tags.brand || "Executive Office",
-            title: "Managing Director / Management",
-            email: email || "",
-            phone: phone || "",
-            linkedin: "",
+          companyContact: {
+            phone: createContactChannel({
+              value: validPhone,
+              sourceName: validPhone ? "OpenStreetMap" : null,
+              sourceUrl: validPhone ? osmUrl : null,
+              retrievedAt,
+              verificationStatus: validPhone ? "sourced" : "not_found",
+            }),
+            email: createContactChannel({
+              value: validEmail,
+              sourceName: validEmail ? "OpenStreetMap" : null,
+              sourceUrl: validEmail ? osmUrl : null,
+              retrievedAt,
+              verificationStatus: validEmail ? "sourced" : "not_found",
+            }),
+            website: validWebsite || null,
+            linkedin: null,
           },
-          matchScore: 92 - idx * 2,
+          personContact: {
+            name: null,
+            title: null,
+            phone: createContactChannel({
+              value: null,
+              verificationStatus: "not_found",
+            }),
+            email: createContactChannel({
+              value: null,
+              verificationStatus: "not_found",
+            }),
+            linkedin: null,
+          },
+          contactAvailability: {
+            hasCompanyPhone: Boolean(validPhone),
+            hasCompanyEmail: Boolean(validEmail),
+            hasPersonPhone: false,
+            hasPersonEmail: false,
+            companyContactReason: validPhone || validEmail
+              ? "Sourced from OpenStreetMap public directory tags"
+              : "No contact phone or email published in OpenStreetMap for this venue",
+            personContactReason: "OpenStreetMap indexes physical business venues; decision maker contacts require a configured enrichment provider.",
+          },
+          decisionMaker: null,
+          matchScore: Math.max(65, 92 - idx * 2),
           matchReasons: [
-            `Live online directory match: currently operating in ${cityName}`,
+            `Live online directory match: operating in ${cityName}`,
             `Verified physical corporate registration (${item.lat}, ${item.lon})`,
           ],
-          source: "Live OpenStreetMap Global Corporate Registry",
-          lastVerifiedAt: new Date().toISOString(),
+          source: "OpenStreetMap",
+          sourceUrl: osmUrl,
+          lastVerifiedAt: retrievedAt,
           permissionStatus: "Public Business Registry (Live)",
           isDuplicate: false,
         };
-        obj.prospectKey = computeProspectKey(obj);
-        return obj;
+        return normalizeProspectContact(obj);
       });
+
+      diagnostics.itemsCount = items.length;
+      diagnostics.durationMs = Date.now() - startTime;
+      return { items, diagnostics };
     }
+
+    diagnostics.durationMs = Date.now() - startTime;
+    return { items: [], diagnostics };
   } catch (err) {
-    console.warn("[TargetIntelligence] Live online directory fetch error:", err.message);
+    diagnostics.status = "ERROR";
+    diagnostics.error = err.message;
+    diagnostics.durationMs = Date.now() - startTime;
+    return { items: [], diagnostics };
   }
-  return [];
 }
 
 // @desc    Get Target Intelligence Search & Import Quota
@@ -736,10 +960,11 @@ Return ONLY a valid JSON object matching this schema:
   }
 };
 
-// @desc    Discover & Score Prospect Accounts / People via Live Online Search
+// @desc    Discover & Score Prospect Accounts / People via Configured Data Sources
 // @route   POST /api/target-intelligence/search
 // @access  Protected (Manager, Owner, Super Admin)
 export const searchProspects = async (req, res) => {
+  const searchStartTime = Date.now();
   try {
     const {
       prompt,
@@ -756,164 +981,196 @@ export const searchProspects = async (req, res) => {
 
     let prospects = [];
     const userPrompt = (prompt || "").trim();
+    let providerUsed = "None";
+    let osmDiagnostics = {
+      provider: "OpenStreetMap Nominatim",
+      status: "SKIPPED",
+      isTimeout: false,
+      isRateLimited: false,
+      error: null,
+    };
 
-    // 1. Primary: Real-time Live Discovery with Google Gemini
-    if (apiKey) {
-      for (const candidateModel of CANDIDATE_GEMINI_MODELS) {
-        try {
-          const genAI = new GoogleGenerativeAI(apiKey);
-          const model = genAI.getGenerativeModel({
-            model: candidateModel,
-            generationConfig: { responseMimeType: "application/json" },
-          });
+    // 1. Primary: Query actual configured directory data source (OpenStreetMap)
+    const directoryResult = await fetchLiveOnlineDirectory(
+      userPrompt || industry,
+      city
+    );
+    osmDiagnostics = directoryResult.diagnostics || osmDiagnostics;
+    const sourcedItems = directoryResult.items || [];
 
-          const searchContext = userPrompt
-            ? `User search request: "${userPrompt}"`
-            : `Search criteria: Industry: "${industry || 'B2B Business'}", City: "${city || 'India'}"`;
+    if (sourcedItems.length > 0) {
+      providerUsed = "OpenStreetMap Nominatim";
+      prospects = verifyAndReconcileProspects(sourcedItems, userPrompt || industry, city);
 
-          let scopeInstruction = "";
-          if (searchType === "companies") {
-            scopeInstruction = `FOCUS: Strictly discover and return REAL, verified B2B corporate enterprise accounts.
-Every item MUST represent a corporate organization (NOT an individual person):
-- "entityType": "company"
-- "companyName": Full legal or trade name of the company
-- "industry": Sector
-- "companySize": Headcount scale (e.g. 50-200 employees)
-- "annualRevenue": Operating revenue estimate
-- "location": Locality, City, State, Country
-- "phone": Official corporate phone / landline (from Justdial/Google business directory)
-- "email": Official corporate contact email
-- "website": Official company website URL
-- "linkedin": Official company LinkedIn page (https://www.linkedin.com/company/...) ONLY IF VERIFIED, else ""
-- "socialLinks": { "twitter": "...", "facebook": "...", "instagram": "...", "youtube": "..." }
-- "decisionMaker": { "name": "Executive Name", "title": "Title" }`;
-          } else if (searchType === "people") {
-            scopeInstruction = `FOCUS: Strictly discover and return REAL individual professionals, decision makers, founders, and executives.
-Every item MUST represent an individual person (NOT a generic company card):
-- "entityType": "person"
-- "personName": Full Name of the individual
-- "title": Exact job title / role (e.g. Founder & CEO, Director of Operations, Managing Director)
-- "companyName": Current organization / company they lead or work at
-- "location": City, State of the person/company
-- "directPhone": Their direct contact phone / mobile if publicly available, else ""
-- "directEmail": Their direct executive email if publicly available, else ""
-- "companyPhone": Company's office board line / phone from Justdial/directory (used as fallback so rep can reach them)
-- "companyEmail": Company's corporate email (used as fallback)
-- "linkedin": Their personal LinkedIn profile URL (https://www.linkedin.com/in/...)
-- "website": Their company's official website`;
-          } else {
-            scopeInstruction = `FOCUS: Return a balanced mix of verified corporate companies and key decision makers / executive leaders matching the criteria.
-Mark each item with "entityType": "company" or "entityType": "person".`;
-          }
+      // 2. Use Gemini responsibly for ranking and ICP fit analysis ONLY (never for generating contacts)
+      if (apiKey && prospects.length > 0) {
+        for (const candidateModel of CANDIDATE_GEMINI_MODELS) {
+          try {
+            const genAI = new GoogleGenerativeAI(apiKey);
+            const model = genAI.getGenerativeModel({
+              model: candidateModel,
+              generationConfig: { responseMimeType: "application/json" },
+            });
 
-          const promptInstruction = `You are an authoritative Indian & global B2B corporate directory intelligence engine utilizing verified public business registries including Justdial, Indiamart, Google Business profiles, and MCA/corporate records.
-${searchContext}
-${city && city !== "All" ? `- Target City / Region: ${city}` : "- Target Region: India / Global as relevant"}
-${industry && industry !== "All" ? `- Target Industry: ${industry}` : ""}
-${companySize && companySize !== "Any Size" ? `- Target Company Size: ${companySize}` : ""}
-${roles && Array.isArray(roles) && roles.length > 0 ? `- Target Decision Maker Roles: ${roles.join(", ")}` : ""}
+            const candidateSummaries = prospects.slice(0, 15).map((p) => ({
+              companyName: p.companyName,
+              industry: p.industry,
+              location: p.location,
+              website: p.website || "",
+            }));
 
-${scopeInstruction}
+            const rankingInstruction = `You are a B2B sales ICP matching engine.
+Evaluate how closely each of these sourced real-world business listings matches the sales criteria:
+- Criteria prompt: "${userPrompt}"
+- Target Industry: "${industry || 'B2B'}"
+- Target Need: "${need || 'Sales Pipeline Growth'}"
+- Target City: "${city || 'Any'}"
 
-DIRECTORY RETRIEVAL PRIORITY (JUSTDIAL & BUSINESS REGISTRIES):
-- Prioritize real operating business listings, phone contacts, and physical localities as indexed on Justdial, Indiamart, and Google Business Directory.
-- For phone numbers: Return the real public contact phone number (including city landline STD code like +91 40 ..., +91 80 ..., +91 22 ..., or verified business mobile +91 ...).
-- For location: Include the exact locality / commercial hub / industrial estate (e.g. Madhapur, Balanagar, Cherlapally, Whitefield, Andheri, Guindy, etc.).
-- STRICT ACCURACY ON COMPANY LINKEDIN: If entityType is 'company', provide official company LinkedIn page (https://www.linkedin.com/company/...) ONLY IF IT ACTUALLY EXISTS. If no verified company LinkedIn is available on the directory profile, strictly return "". DO NOT GUESS OR INVENT LINKEDIN URLS.
-- If social media profiles exist (Twitter/X, Facebook, Instagram, YouTube), return them in "socialLinks". If not available, leave them empty.
-- For decision makers / people: Return real verified founders, proprietors, managing directors, or executive leadership.
+Candidate listings:
+${JSON.stringify(candidateSummaries, null, 2)}
 
-VERIFIED LEADERSHIP KNOWLEDGE & GROUNDING:
-- Petsfolio: Founder and CEO is Shiva Kumar Pabboju. Headquarters: Madhapur, Hyderabad, Telangana, India. Website: https://www.petsfolio.com. Official Phone: +91 79978 87788. Email: contact@petsfolio.com. LinkedIn: https://www.linkedin.com/company/petsfolio.
-- Heads Up For Tails (HUFT): Founder is Rashi Sanon Narang. Headquarters: New Delhi, India. Website: https://headsupfortails.com. Official Phone: +91 11 4118 7878. Email: hello@headsupfortails.com. LinkedIn: https://www.linkedin.com/company/heads-up-for-tails.
-- Supertails: Co-Founder & CEO is Varun Sadana. Headquarters: Bengaluru, Karnataka, India. Website: https://supertails.com. Official Phone: +91 80 4726 3100. Email: support@supertails.com. LinkedIn: https://www.linkedin.com/company/supertails.
-- Wiggles: Founder & CEO is Anushka Iyer. Headquarters: Pune, Maharashtra, India. Website: https://wiggles.in. Official Phone: +91 84119 98877. Email: support@wiggles.in. LinkedIn: https://www.linkedin.com/company/wiggles-in.
-- Zigly: CEO is Ambarish Sikarwar. Headquarters: New Delhi, India. Website: https://www.zigly.com. Official Phone: +91 80108 89900. Email: care@zigly.com. LinkedIn: https://www.linkedin.com/company/ziglyofficial.
-- Just Dogs: Co-Founder is Ashish Anthony. Headquarters: Ahmedabad, Gujarat, India. Website: https://justdogsstore.com. Official Phone: +91 96010 33333. Email: care@justdogsstore.com. LinkedIn: https://www.linkedin.com/company/justdogs.
-- DCC Animal Hospital: Director is Dr. Vinod Sharma. Headquarters: Gurugram, Delhi NCR, India. Website: https://dccpets.in. Official Phone: +91 93115 60101. Email: info@dccpets.in. LinkedIn: https://www.linkedin.com/company/dcc-animal-hospital.
-
-STRICT ACCURACY & CONTACT REQUIREMENTS:
-- CONTACT DETAILS ARE PARAMOUNT: Phone numbers and emails MUST BE GENUINE AND VERIFIED from public directories.
-- NEVER invent dummy, placeholder, or repeating numbers like "+91 90000 00000", "+91 91000 00000", or "123456789". If a direct mobile is not publicly published, provide the verified corporate board line or office contact.
-- Provide genuine official executive or corporate emails (e.g. contact@..., info@..., or first.last@...). DO NOT use example.com, test.com, or placeholder emails.
-- Every company or person returned MUST be a REAL, actively existing entity.
-- If the user searched for "petsfolio", return Petsfolio with founder Shiva Kumar Pabboju and phone +91 79978 87788.
-
-Return a JSON array of 12 to 24 real, currently operating entities matching this schema:
+Return ONLY a JSON array with updated match scores (60-98) and 2-3 specific evidence-based reasons explaining the business fit:
 [
   {
-    "id": "ti-prospect-1",
-    "entityType": "company", // or "person"
-    "companyName": "Exact Real Company Name",
-    "personName": "Real Person Name (especially if entityType is person)",
-    "title": "Verified Job Title (e.g. Founder & CEO / Managing Director)",
-    "industry": "Real specific industry",
-    "location": "Locality or HQ, City, State, Country",
-    "city": "City",
-    "website": "https://www.realcompany.com",
-    "companySize": "Real employee count (e.g. 50-200 employees)",
-    "annualRevenue": "Real estimate or Active Operating Enterprise",
-    "decisionMaker": {
-      "name": "Real Executive / Founder Name",
-      "title": "Real Title",
-      "email": "real.email@company.com",
-      "phone": "+91 40 ... or verified directory phone",
-      "linkedin": "https://www.linkedin.com/in/real-profile"
-    },
-    "email": "contact@company.com",
-    "phone": "+91 ...",
-    "linkedin": "https://www.linkedin.com/company/realcompany (ONLY if verified, else '')",
-    "socialLinks": {
-      "linkedin": "https://www.linkedin.com/company/realcompany (if verified, else '')",
-      "twitter": "https://x.com/... (if available)",
-      "facebook": "https://facebook.com/... (if available)",
-      "instagram": "https://instagram.com/... (if available)",
-      "youtube": "https://youtube.com/... (if available)"
-    },
-    "matchScore": 95,
-    "matchReasons": [
-      "Verified real-world operating company/leader",
-      "Official corporate registration and website verified",
-      "Verified direct outreach and directory contact channels"
-    ],
-    "source": "Justdial & Verified Business Directory",
-    "lastVerifiedAt": "${new Date().toISOString()}",
-    "permissionStatus": "Public Business Registry (Verified)"
+    "companyName": "Exact Company Name",
+    "matchScore": 92,
+    "matchReasons": ["Specific reason 1", "Specific reason 2"]
   }
-]`;
+]
+CRITICAL SAFETY & FACTUALITY RULE: DO NOT generate, invent, or include any contact details, phone numbers, or email addresses.`;
 
-          const result = await model.generateContent(promptInstruction);
-          const responseText = result.response.text();
+            const rankResult = await model.generateContent(rankingInstruction);
+            const rankText = rankResult.response.text();
+            if (rankText) {
+              const parsedRank = JSON.parse(rankText);
+              if (Array.isArray(parsedRank)) {
+                const rankMap = new Map();
+                parsedRank.forEach((r) => {
+                  if (r.companyName) rankMap.set(r.companyName.toLowerCase().trim(), r);
+                });
 
-          if (responseText) {
-            const parsed = JSON.parse(responseText);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              prospects = verifyAndReconcileProspects(parsed, userPrompt || industry, city);
-              break;
+                prospects.forEach((p) => {
+                  const match = rankMap.get((p.companyName || "").toLowerCase().trim());
+                  if (match) {
+                    if (typeof match.matchScore === "number") {
+                      p.matchScore = Math.max(match.matchScore, p.matchScore || 0);
+                    }
+                    if (Array.isArray(match.matchReasons) && match.matchReasons.length > 0) {
+                      p.matchReasons = match.matchReasons;
+                    }
+                  }
+                });
+
+                providerUsed = "OpenStreetMap Nominatim + Gemini ICP Ranking";
+                break;
+              }
             }
+          } catch (rankErr) {
+            console.warn(`[TargetIntelligence] Gemini ranking (${candidateModel}) error:`, rankErr.message);
           }
-        } catch (geminiErr) {
-          console.warn(`[TargetIntelligence] Live Gemini search (${candidateModel}) error:`, geminiErr.message);
+        }
+      }
+    } else {
+      // Sourced directory returned 0 results. Check if prompt targets verified registry or market accounts.
+      prospects = verifyAndReconcileProspects([], userPrompt || industry, city);
+      if (prospects.length > 0) {
+        providerUsed = "Verified Corporate Registry";
+      } else if (apiKey) {
+        // Broad market intelligence discovery for companies ONLY when no directory records matched.
+        // Factual contact details are strictly kept unavailable because no enrichment provider is configured.
+        for (const candidateModel of CANDIDATE_GEMINI_MODELS) {
+          try {
+            const genAI = new GoogleGenerativeAI(apiKey);
+            const model = genAI.getGenerativeModel({
+              model: candidateModel,
+              generationConfig: { responseMimeType: "application/json" },
+            });
+
+            const marketInstruction = `You are a B2B market researcher. Identify 6 to 12 well-known operating enterprise accounts matching:
+- User query: "${userPrompt}"
+- Target Industry: "${industry || 'B2B'}"
+- Target Location: "${city || 'India'}"
+
+Return ONLY a JSON array of company accounts matching this schema:
+[
+  {
+    "companyName": "Real Company Legal or Trade Name",
+    "industry": "Specific Industry",
+    "location": "City, State, Country",
+    "city": "${city && city !== 'All' ? city : 'India'}",
+    "website": "https://www.company.com",
+    "companySize": "e.g. 50-200 employees",
+    "annualRevenue": "Operating Enterprise Scale",
+    "matchReasons": ["Why this enterprise matches the requested criteria"]
+  }
+]
+CRITICAL PRIVACY & FACTUALITY RULE:
+DO NOT provide, guess, or invent any phone numbers, email addresses, or personal contact details.
+Contact details must strictly remain absent.`;
+
+            const marketResult = await model.generateContent(marketInstruction);
+            const marketText = marketResult.response.text();
+            if (marketText) {
+              const parsedMarket = JSON.parse(marketText);
+              if (Array.isArray(parsedMarket) && parsedMarket.length > 0) {
+                const nowIso = new Date().toISOString();
+                prospects = parsedMarket.map((m, idx) => ({
+                  id: `ti-market-${Date.now()}-${idx + 1}`,
+                  entityType: "company",
+                  companyName: m.companyName,
+                  industry: m.industry || industry || "Commercial Enterprise",
+                  location: m.location || `${city}, India`,
+                  city: m.city || city || "India",
+                  website: validateUrl(m.website) || "",
+                  companySize: m.companySize || "Active Enterprise",
+                  annualRevenue: m.annualRevenue || "Operating Enterprise",
+                  companyContact: {
+                    phone: createContactChannel({ value: null, verificationStatus: "unavailable" }),
+                    email: createContactChannel({ value: null, verificationStatus: "unavailable" }),
+                    website: validateUrl(m.website) || null,
+                    linkedin: null,
+                  },
+                  personContact: {
+                    name: null,
+                    title: null,
+                    phone: createContactChannel({ value: null, verificationStatus: "unavailable" }),
+                    email: createContactChannel({ value: null, verificationStatus: "unavailable" }),
+                    linkedin: null,
+                  },
+                  contactAvailability: {
+                    hasCompanyPhone: false,
+                    hasCompanyEmail: false,
+                    hasPersonPhone: false,
+                    hasPersonEmail: false,
+                    companyContactReason: "Firmographics identified via Market Intelligence. No company contact provider configured.",
+                    personContactReason: "No external B2B contact enrichment provider configured for this organization.",
+                  },
+                  decisionMaker: null,
+                  matchScore: 88 - idx * 2,
+                  matchReasons: Array.isArray(m.matchReasons) ? m.matchReasons : ["Operating enterprise in target industry"],
+                  source: "Market Intelligence (AI-Assisted)",
+                  sourceUrl: null,
+                  lastVerifiedAt: nowIso,
+                  permissionStatus: "Public Business Profile (Unenriched)",
+                  isDuplicate: false,
+                }));
+
+                providerUsed = "Market Intelligence (AI-Assisted)";
+                break;
+              }
+            }
+          } catch (marketErr) {
+            console.warn(`[TargetIntelligence] Market intelligence (${candidateModel}) error:`, marketErr.message);
+          }
         }
       }
     }
 
-    // 2. Secondary: Real-time Live Online Directory Search (Zero Dummy Data)
-    if (prospects.length === 0) {
-      const liveDirectoryResults = await fetchLiveOnlineDirectory(
-        userPrompt || industry,
-        city
-      );
-      if (liveDirectoryResults.length > 0) {
-        prospects = verifyAndReconcileProspects(liveDirectoryResults, userPrompt || industry, city);
-      }
-    }
-
-    // Ensure all prospects have sanitized contact details and canonical keys
+    // Ensure all prospects pass through strict contact normalization and canonical keying
     prospects = prospects.map((p) => {
-      const sanitized = sanitizeContactDetails(p);
-      sanitized.prospectKey = computeProspectKey(sanitized);
-      return sanitized;
+      const normalized = normalizeProspectContact(p);
+      normalized.prospectKey = computeProspectKey(normalized);
+      return normalized;
     });
 
     // 3. Resolution Check against ResolvedProspect Collection
@@ -981,6 +1238,39 @@ Return a JSON array of 12 to 24 real, currently operating entities matching this
       }
     }
 
+    const durationMs = Date.now() - searchStartTime;
+
+    // Diagnostics safely structured without logging PII or credentials
+    const diagnostics = {
+      providerUsed,
+      enrichmentProviderConfigured: false,
+      contactEnrichmentStatus: "UNAVAILABLE_NO_PROVIDER_CONFIGURED",
+      executionTimeMs: durationMs,
+      resultCount: prospects.length,
+      status: prospects.length > 0 ? "SUCCESS" : (osmDiagnostics.error ? "PROVIDER_ERROR" : "EMPTY"),
+      emptyReason: prospects.length === 0
+        ? (osmDiagnostics.isTimeout
+            ? "PROVIDER_TIMEOUT"
+            : osmDiagnostics.isRateLimited
+            ? "PROVIDER_RATE_LIMITED"
+            : osmDiagnostics.error
+            ? "PROVIDER_ERROR"
+            : "NO_MATCHING_BUSINESSES")
+        : null,
+      providerErrors: osmDiagnostics.error ? [osmDiagnostics.error] : [],
+      timeouts: osmDiagnostics.isTimeout,
+      rateLimited: osmDiagnostics.isRateLimited,
+      notice: "Contact coordinates require a configured directory or enrichment data provider. Personal executive coordinates remain unavailable without an approved enrichment provider.",
+    };
+
+    // Safe operational logging: NO PII and NO credentials
+    console.info(
+      `[TargetIntelligence] Search completed: query="${(userPrompt || industry || '').slice(0, 40)}", city="${city || 'All'}", results=${prospects.length}, provider="${providerUsed}", duration=${durationMs}ms`
+    );
+    if (osmDiagnostics.error) {
+      console.warn(`[TargetIntelligence] Directory provider notice: status=${osmDiagnostics.status}, error=${osmDiagnostics.error}`);
+    }
+
     res.status(200).json({
       success: true,
       data: {
@@ -988,12 +1278,21 @@ Return a JSON array of 12 to 24 real, currently operating entities matching this
         totalCount: prospects.length,
         searchType,
         prospects,
+        diagnostics,
         executedAt: new Date().toISOString(),
       },
     });
   } catch (err) {
-    console.error("[TargetIntelligence] searchProspects error:", err);
-    res.status(500).json({ success: false, message: "Failed to execute live online prospect search" });
+    console.error("[TargetIntelligence] searchProspects error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to execute live online prospect search",
+      diagnostics: {
+        status: "ERROR",
+        emptyReason: "INTERNAL_ERROR",
+        providerErrors: [err.message],
+      },
+    });
   }
 };
 
@@ -1015,12 +1314,12 @@ export const resolveProspect = async (req, res) => {
 
     const key = prospect.prospectKey || computeProspectKey(prospect);
     const company = (prospect.companyName || prospect.name || "Company").trim();
-    const person = (prospect.decisionMaker?.name || prospect.personName || prospect.name || "").trim();
-    const title = (prospect.decisionMaker?.title || prospect.title || "").trim();
-    const email = (prospect.decisionMaker?.email || prospect.email || "").trim();
-    const phone = (prospect.decisionMaker?.phone || prospect.phone || "").trim();
-    const website = (prospect.website || "").trim();
-    const linkedin = (prospect.decisionMaker?.linkedin || prospect.linkedin || "").trim();
+    const person = (prospect.personContact?.name || prospect.decisionMaker?.name || prospect.personName || prospect.name || "").trim();
+    const title = (prospect.personContact?.title || prospect.decisionMaker?.title || prospect.title || "").trim();
+    const email = (prospect.personContact?.email?.value || prospect.companyContact?.email?.value || prospect.decisionMaker?.email || prospect.email || "").trim();
+    const phone = (prospect.personContact?.phone?.value || prospect.companyContact?.phone?.value || prospect.decisionMaker?.phone || prospect.phone || "").trim();
+    const website = (prospect.companyContact?.website || prospect.website || "").trim();
+    const linkedin = (prospect.personContact?.linkedin || prospect.companyContact?.linkedin || prospect.decisionMaker?.linkedin || prospect.linkedin || "").trim();
     const location = (prospect.location || prospect.city || "").trim();
 
     const record = await ResolvedModel.findOneAndUpdate(
@@ -1205,8 +1504,14 @@ export const importToCrm = async (req, res) => {
     const results = [];
 
     for (const p of prospects) {
-      const contactPhone = (p.decisionMaker?.phone || p.phone || "").trim();
-      const contactEmail = (p.decisionMaker?.email || p.email || "").trim();
+      // Determine contact phones and emails with clear priority (direct person contact takes precedence if valid, else company contact)
+      const directPhone = (p.personContact?.phone?.value || p.directPhone || "").trim();
+      const companyPhone = (p.companyContact?.phone?.value || p.companyPhone || p.phone || "").trim();
+      const contactPhone = (directPhone || companyPhone || p.decisionMaker?.phone || "").trim();
+
+      const directEmail = (p.personContact?.email?.value || p.directEmail || "").trim();
+      const companyEmail = (p.companyContact?.email?.value || p.companyEmail || p.email || "").trim();
+      const contactEmail = (directEmail || companyEmail || p.decisionMaker?.email || "").trim();
 
       const digitsOnly = contactPhone.replace(/\D/g, "");
       if (!digitsOnly || digitsOnly.length < 8) {
@@ -1214,7 +1519,7 @@ export const importToCrm = async (req, res) => {
           prospectId: p.id,
           companyName: p.companyName,
           status: "failed",
-          reason: "Prospect lacks a verified contact phone number required by CRM lead schema",
+          reason: "Prospect lacks a contact phone number from any verified data source required by CRM lead schema",
         });
         continue;
       }
@@ -1222,7 +1527,15 @@ export const importToCrm = async (req, res) => {
       const orConditions = [];
       if (contactPhone) {
         orConditions.push({ phone: contactPhone });
-        orConditions.push({ phoneNormalized: contactPhone.replace(/\D/g, "") });
+        orConditions.push({ phoneNormalized: digitsOnly });
+      }
+      if (directPhone && directPhone !== contactPhone) {
+        orConditions.push({ phone: directPhone });
+        orConditions.push({ phoneNormalized: directPhone.replace(/\D/g, "") });
+      }
+      if (companyPhone && companyPhone !== contactPhone) {
+        orConditions.push({ phone: companyPhone });
+        orConditions.push({ phoneNormalized: companyPhone.replace(/\D/g, "") });
       }
       if (contactEmail) {
         orConditions.push({ email: contactEmail.toLowerCase() });
@@ -1237,6 +1550,26 @@ export const importToCrm = async (req, res) => {
       if (orConditions.length > 0) {
         existingLead = await LeadModel.findOne({ $or: orConditions });
       }
+
+      const compPhoneVal = p.companyContact?.phone?.value || "N/A";
+      const compPhoneSrc = p.companyContact?.phone?.sourceName || p.source || "None";
+      const compPhoneStat = p.companyContact?.phone?.verificationStatus || "N/A";
+      const compEmailVal = p.companyContact?.email?.value || "N/A";
+      const compEmailSrc = p.companyContact?.email?.sourceName || p.source || "None";
+      const compEmailStat = p.companyContact?.email?.verificationStatus || "N/A";
+
+      const personPhoneVal = p.personContact?.phone?.value || "N/A";
+      const personPhoneSrc = p.personContact?.phone?.sourceName || "None";
+      const personPhoneStat = p.personContact?.phone?.verificationStatus || "N/A";
+      const personEmailVal = p.personContact?.email?.value || "N/A";
+      const personEmailSrc = p.personContact?.email?.sourceName || "None";
+      const personEmailStat = p.personContact?.email?.verificationStatus || "N/A";
+
+      const retrievedTimestamp =
+        p.companyContact?.phone?.retrievedAt ||
+        p.companyContact?.email?.retrievedAt ||
+        p.lastVerifiedAt ||
+        new Date().toISOString();
 
       if (existingLead) {
         if (duplicateAction === "skip") {
@@ -1254,17 +1587,37 @@ export const importToCrm = async (req, res) => {
           const newTags = Array.isArray(tags) ? tags : ["AI Target Intelligence"];
           existingLead.tags = Array.from(new Set([...existingTags, ...newTags, "AI Target Enriched"]));
 
-          const enrichmentNote = `[Target Intelligence Enriched on ${new Date().toLocaleDateString()}]: Match Score ${p.matchScore || 0}%. Source: ${p.source || "Approved Directory"}.`;
+          const enrichmentNote = `[Target Intelligence Enriched on ${new Date().toLocaleDateString()}]: Match Score: ${p.matchScore || 0}%. Source: ${p.source || "Approved Directory"}. Retrieved: ${retrievedTimestamp}.
+- Company Contact: Phone: ${compPhoneVal} (Source: ${compPhoneSrc}, Status: ${compPhoneStat}), Email: ${compEmailVal} (Source: ${compEmailSrc}, Status: ${compEmailStat})
+- Person Contact: Phone: ${personPhoneVal} (Source: ${personPhoneSrc}, Status: ${personPhoneStat}), Email: ${personEmailVal} (Source: ${personEmailSrc}, Status: ${personEmailStat})`;
+
           existingLead.notes = existingLead.notes
             ? `${existingLead.notes}\n\n${enrichmentNote}`
             : enrichmentNote;
 
+          // DO NOT overwrite richer existing CRM data with lower-confidence enrichment!
+          // Only update email if existing lead has NO email and the prospect email is valid
           if (!existingLead.email && contactEmail) {
             existingLead.email = contactEmail;
           }
+          // Do not overwrite existingLead.phone if it already exists
           if (!existingLead.city && p.city) {
             existingLead.city = p.city;
           }
+
+          // Preserve structured provenance in aiQualification
+          existingLead.aiQualification = {
+            ...(existingLead.aiQualification || {}),
+            targetIntelligence: {
+              source: p.source || "Target Intelligence",
+              sourceUrl: p.sourceUrl || null,
+              retrievedAt: retrievedTimestamp,
+              companyContact: p.companyContact || null,
+              personContact: p.personContact || null,
+              matchScore: p.matchScore,
+              updatedAt: new Date().toISOString(),
+            },
+          };
 
           await existingLead.save();
           updatedLeads.push(existingLead);
@@ -1282,7 +1635,7 @@ export const importToCrm = async (req, res) => {
       }
 
       const leadDoc = new LeadModel({
-        name: p.decisionMaker?.name || p.personName || p.companyName,
+        name: p.personContact?.name || p.decisionMaker?.name || p.personName || p.companyName,
         company: p.companyName,
         phone: contactPhone,
         phoneNormalized: digitsOnly,
@@ -1293,7 +1646,20 @@ export const importToCrm = async (req, res) => {
         service: p.industry || "General Enquiry",
         city: p.city || "",
         tags: Array.isArray(tags) && tags.length > 0 ? tags : ["AI Target Intelligence"],
-        notes: `Imported via AI Target Intelligence. Match Score: ${p.matchScore || 0}%. Source: ${p.source || "Approved Directory"}.`,
+        notes: `Imported via AI Target Intelligence. Match Score: ${p.matchScore || 0}%. Source: ${p.source || "Approved Directory"}. Retrieved: ${retrievedTimestamp}.
+- Company Contact: Phone: ${compPhoneVal} (Source: ${compPhoneSrc}, Status: ${compPhoneStat}), Email: ${compEmailVal} (Source: ${compEmailSrc}, Status: ${compEmailStat})
+- Person Contact: Phone: ${personPhoneVal} (Source: ${personPhoneSrc}, Status: ${personPhoneStat}), Email: ${personEmailVal} (Source: ${personEmailSrc}, Status: ${personEmailStat})`,
+        aiQualification: {
+          targetIntelligence: {
+            source: p.source || "Target Intelligence",
+            sourceUrl: p.sourceUrl || null,
+            retrievedAt: retrievedTimestamp,
+            companyContact: p.companyContact || null,
+            personContact: p.personContact || null,
+            matchScore: p.matchScore,
+            importedAt: new Date().toISOString(),
+          },
+        },
       });
 
       await leadDoc.save();

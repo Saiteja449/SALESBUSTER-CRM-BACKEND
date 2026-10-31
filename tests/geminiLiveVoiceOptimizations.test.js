@@ -177,6 +177,7 @@ describe("CRM Live Function Declarations & Tool Grounding", () => {
     assert.ok(toolNames.includes("get_whatsapp_analytics"));
     assert.ok(toolNames.includes("get_org_integrations_and_config"));
     assert.ok(toolNames.includes("search_crm_documentation_and_features"));
-    assert.equal(CRM_LIVE_FUNCTION_DECLARATIONS.length, 8);
+    assert.ok(toolNames.includes("close_voice_session"));
+    assert.equal(CRM_LIVE_FUNCTION_DECLARATIONS.length, 9);
   });
 });

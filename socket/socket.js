@@ -363,6 +363,22 @@ export const initSocket = (server) => {
         }
       });
 
+      socket.on("bi_voice_pause", () => {
+        console.log(`[Socket Voice] bi_voice_pause received for socket ${socket.id}`);
+        if (socket.geminiLiveSession) {
+          socket.geminiLiveSession.pause();
+          socket.emit("bi_voice_status", { state: "paused" });
+        }
+      });
+
+      socket.on("bi_voice_resume", () => {
+        console.log(`[Socket Voice] bi_voice_resume received for socket ${socket.id}`);
+        if (socket.geminiLiveSession) {
+          socket.geminiLiveSession.resume();
+          socket.emit("bi_voice_status", { state: "listening" });
+        }
+      });
+
       socket.on("bi_voice_stop", () => {
         console.log(`[Socket Voice] bi_voice_stop received for socket ${socket.id}`);
         if (socket.geminiLiveSession) {

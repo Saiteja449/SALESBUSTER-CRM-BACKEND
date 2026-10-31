@@ -116,6 +116,19 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
       required: ["query"],
     },
   },
+  {
+    name: "close_voice_session",
+    description: "Terminates, exits, and closes the live voice session when the user says goodbye (e.g. 'okay bye', 'ok bye', 'bye', 'goodbye', 'bye bye', 'exit', 'close') or expresses they are finished talking.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        farewellMessage: {
+          type: "STRING",
+          description: "A warm, brief verbal parting message to the user before ending the session (e.g. 'Okay, goodbye! Have a great day!').",
+        },
+      },
+    },
+  },
 ];
 
 /**
@@ -155,6 +168,8 @@ export class GeminiLiveSessionManager {
     this.audioChunksInCount = 0;
     this.audioChunksOutCount = 0;
     this.audioBytesOutCount = 0;
+    this.isPaused = false;
+    this.isClosingRequested = false;
 
     // Correlated Timing Telemetry
     this.telemetry = new VoiceTelemetry({
@@ -171,6 +186,21 @@ export class GeminiLiveSessionManager {
       user,
     });
     this.toolsByName = toolsByName;
+
+    // Explicit Close Voice Session tool handler
+    this.toolsByName["close_voice_session"] = {
+      name: "close_voice_session",
+      invoke: async (args) => {
+        const farewell = args?.farewellMessage || "Goodbye! Have a great day!";
+        console.log(`[Gemini Live Gateway] close_voice_session invoked with farewell: "${farewell}"`);
+        this.isClosingRequested = true;
+        this.socket.emit("bi_voice_close_requested", {
+          reason: "user_farewell",
+          farewell,
+        });
+        return JSON.stringify({ success: true, status: "closing", farewell });
+      },
+    };
 
     // If running in event capture mode, bind both complete and progressive interim tools
     if (this.sessionMode === "event_capture") {
@@ -309,7 +339,9 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    - Phone numbers: CALL 'lookup_phone_number'
    - Overdue tasks and follow-ups: CALL 'get_followup_status'
    - WhatsApp unread chats: CALL 'get_whatsapp_analytics'
-   - Integrations and configurations: CALL 'get_org_integrations_and_config'`;
+   - Integrations and configurations: CALL 'get_org_integrations_and_config'
+4. FAREWELL & SESSION TERMINATION (CRITICAL):
+   - When the user says "okay bye", "ok bye", "bye", "goodbye", "bye bye", "exit", "close", "stop session", or indicates they are done talking, deliver a brief, polite parting farewell (e.g. "Okay, goodbye! Have a great day!" or "Goodbye! Let me know if you need anything else.") and IMMEDIATELY call the 'close_voice_session' tool.`;
     }
 
     const liveModel =
@@ -427,6 +459,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       get_whatsapp_analytics: "Inspecting WhatsApp chat status",
       get_org_integrations_and_config: "Verifying system configuration",
       search_crm_documentation_and_features: "Searching documentation",
+      close_voice_session: "Ending voice session",
     };
     return labels[toolName] || `Querying CRM tool (${toolName})`;
   }
@@ -590,6 +623,17 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           role: "user",
           text: userText,
         });
+
+        // Proactive regex check on user speech for exit / farewell phrases (e.g. "okay bye", "ok bye", "bye", "goodbye")
+        const EXIT_PHRASES_REGEX = /\b(okay\s*bye|ok\s*bye|good\s*bye|bye\s*bye|\bbye\b|exit\s+(?:voice|session)|close\s+(?:voice|session)|stop\s+(?:voice|session))\b/i;
+        if (EXIT_PHRASES_REGEX.test(userText) && !this.isClosingRequested) {
+          console.log(`[LiveVoice Farewell] User spoken exit phrase detected: "${userText}" -> emitting bi_voice_close_requested`);
+          this.isClosingRequested = true;
+          this.socket.emit("bi_voice_close_requested", {
+            reason: "user_farewell",
+            text: userText,
+          });
+        }
       }
 
       // Real-time text subtitle from outputTranscription (native channel for gemini-3.8-live)
@@ -619,7 +663,16 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
         this.socket.emit("bi_voice_turn_complete");
-        this.socket.emit("bi_voice_status", { state: "listening" });
+
+        if (this.isClosingRequested) {
+          console.log(`[LiveVoice Farewell] Turn complete after farewell -> closing session cleanly`);
+          setTimeout(() => {
+            this.close();
+            this.socket.emit("bi_voice_status", { state: "closed" });
+          }, 800);
+        } else {
+          this.socket.emit("bi_voice_status", { state: "listening" });
+        }
       }
     }
   }
@@ -628,7 +681,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    * Receives incoming PCM 16kHz audio chunk from user microphone and sends to Gemini
    */
   sendAudioChunk(base64Chunk) {
-    if (!base64Chunk) return;
+    if (!base64Chunk || this.isPaused) return;
 
     // Buffer chunks if session connection is still resolving
     if (!this.session || !this.isActive) {
@@ -683,6 +736,23 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
     } catch (err) {
       console.warn("[LiveVoice AudioIn] Error sending audio chunk to Gemini:", err.message);
     }
+  }
+
+  /**
+   * Pauses incoming audio chunks without severing WebSocket connection
+   */
+  pause() {
+    this.isPaused = true;
+    this.pendingAudioQueue = [];
+    console.log(`[Gemini Live Gateway] Live voice session paused for socket ${this.socket?.id}`);
+  }
+
+  /**
+   * Resumes incoming audio streaming
+   */
+  resume() {
+    this.isPaused = false;
+    console.log(`[Gemini Live Gateway] Live voice session resumed for socket ${this.socket?.id}`);
   }
 
   /**
