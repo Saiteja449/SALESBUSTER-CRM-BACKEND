@@ -108,6 +108,7 @@ export const captureAndSendLiveVoiceWhatsApp = async (req, res) => {
           extractedDetails: {
             customerName: extracted.customerName,
             companyName: extracted.companyName,
+            designation: extracted.designation || "",
             phone: cleanPhone,
             keyTopic: extracted.keyTopic,
           },
@@ -115,6 +116,7 @@ export const captureAndSendLiveVoiceWhatsApp = async (req, res) => {
         extractedDetails: {
           customerName: extracted.customerName,
           companyName: extracted.companyName,
+          designation: extracted.designation || "",
           phone: cleanPhone,
           keyTopic: extracted.keyTopic,
         },
@@ -165,6 +167,7 @@ export const captureAndSendLiveVoiceWhatsApp = async (req, res) => {
     // 5. Build Dynamic Personalized Template with SalesBuster AI Branding
     const customerName = extracted.customerName || "Valued Customer";
     const companyName = extracted.companyName || "your enterprise";
+    const designation = extracted.designation || "";
     const managerName = req.user?.name || "Sales Manager";
     const orgName = organization?.name || "SalesBuster";
     const topicText = extracted.keyTopic || "our discussion";
@@ -196,6 +199,7 @@ export const captureAndSendLiveVoiceWhatsApp = async (req, res) => {
           phone: cleanPhone,
           customerName,
           companyName,
+          designation,
           isLead: false, // Ensures it does NOT appear in active leads pipeline
           aiDisabled: true, // Permanently disables AI auto-replies for this prospect
           lastMessage: templateText,
@@ -236,6 +240,7 @@ export const captureAndSendLiveVoiceWhatsApp = async (req, res) => {
         phone: cleanPhone,
         customerName,
         companyName,
+        designation,
         isLead: false,
         lastMessage: templateText,
         lastMessageTime: now,
@@ -250,6 +255,7 @@ export const captureAndSendLiveVoiceWhatsApp = async (req, res) => {
       extracted: {
         customerName,
         companyName,
+        designation,
         spokenPhone: cleanPhone,
         phone: cleanPhone,
         keyTopic: extracted.keyTopic,
@@ -257,6 +263,7 @@ export const captureAndSendLiveVoiceWhatsApp = async (req, res) => {
       extractedDetails: {
         customerName,
         companyName,
+        designation,
         phone: cleanPhone,
         keyTopic: extracted.keyTopic,
       },

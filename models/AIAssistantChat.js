@@ -19,6 +19,10 @@ const messageSubSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    emailDraft: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
     timestamp: {
       type: Date,
       default: Date.now,
@@ -38,6 +42,10 @@ const aiAssistantChatSchema = new mongoose.Schema(
     title: {
       type: String,
       default: "New Conversation",
+    },
+    isVoice: {
+      type: Boolean,
+      default: false,
     },
     messages: [messageSubSchema],
   },

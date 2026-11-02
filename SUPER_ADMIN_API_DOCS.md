@@ -733,7 +733,7 @@ curl -X DELETE https://betaapi.salesbuster.ai/api/organizations/66dd1f5e8b4e7a2b
 Allows Sales Managers, Organization Owners, or Super Admins to partition an organization's fixed daily quota of **500 conversations/day** across the 3 AI channels:
 1. **`whatsappAi`**: Automated WhatsApp chatbot lead qualification replies.
 2. **`calls`**: Call recording audio transcriptions and sentiment analyses.
-3. **`biAnalyst`**: CRM business intelligence queries and Gemini Live real-time voice sessions. *(Requires active `biAnalyst` add-on)*.
+3. **`biAnalyst`**: CRM business intelligence queries. *(Requires active `biAnalyst` add-on; Voice agent calling sessions are exempt from BI agent credits)*.
 
 > [!IMPORTANT]
 > - Sum of `whatsappAi + calls + biAnalyst` cannot exceed **500**.

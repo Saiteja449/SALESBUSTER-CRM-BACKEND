@@ -41,7 +41,7 @@ const resolveAudioMimeType = (filePath, fallbackMime) => {
  * @param {string} filePath - Path to the local recorded audio file
  * @param {string} mimeType - Optional MIME type
  * @param {string} customApiKey - Optional organization-specific Gemini API Key
- * @returns {Promise<{ customerName: string, companyName: string, spokenPhone: string|null, keyTopic: string }>}
+ * @returns {Promise<{ customerName: string, companyName: string, designation: string, spokenPhone: string|null, keyTopic: string }>}
  */
 export const extractProspectDetailsFromVoice = async (
   filePath,
@@ -94,12 +94,13 @@ TASK:
 Identify and extract:
 1. customerName: The customer's spoken name or greeting (e.g. "Rahul", "Suresh Sharma", "Dr. Mehta", "Ramesh"). If no clear person name was spoken, return null.
 2. companyName: The business, shop, firm, or company name associated with the customer (e.g. "Apex Technologies", "Balaji Textiles", "Kiran Hospital"). If none was mentioned, return null.
-3. spokenPhone: The customer's 10-digit mobile or WhatsApp number verbally spoken, dictated, or exchanged anywhere in the conversation.
+3. designation: The customer's spoken job title, role, or designation (e.g. "Managing Director", "Founder", "CEO", "Owner", "Procurement Manager", "Operations Head", "Partner", "Doctor", "Purchase In-charge", "Manager"). If not mentioned, return null.
+4. spokenPhone: The customer's 10-digit mobile or WhatsApp number verbally spoken, dictated, or exchanged anywhere in the conversation.
    - May be spoken as digits or words in English, Hindi, or Telugu (e.g. "nine eight seven six five four three two one zero", "double nine, eight seven six...", "mera number 9876543210", "na number note cheyandi 9876543210").
    - Convert spoken number words into a continuous numeric digit string (e.g. "9876543210").
    - If country code (+91 or 91) is mentioned, include it or return the 10 digits.
    - If no valid phone number was spoken, return null.
-4. keyTopic: A short 3-6 word summary of the service or product discussed.
+5. keyTopic: A short 3-6 word summary of the service or product discussed.
 
 CRITICAL FORMAT REQUIREMENT:
 Respond ONLY with a valid, raw JSON object and nothing else. Do NOT include markdown code blocks, backticks, or explanatory text.
@@ -149,6 +150,10 @@ Example format:
       ? parsed.companyName.trim()
       : null;
 
+    const designation = parsed.designation && parsed.designation !== "null"
+      ? parsed.designation.trim()
+      : "";
+
     if (!customerName && !companyName) {
       throw new Error("Could not identify customer name or company in the audio recording. Please ensure clear speech and record again.");
     }
@@ -165,6 +170,7 @@ Example format:
     return {
       customerName: customerName || "Valued Customer",
       companyName: companyName || "",
+      designation: designation || "",
       spokenPhone: cleanSpokenPhone,
       keyTopic: (parsed.keyTopic || "our discussion").trim(),
     };

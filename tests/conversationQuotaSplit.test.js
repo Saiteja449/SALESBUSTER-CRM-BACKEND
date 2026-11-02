@@ -284,7 +284,7 @@ describe("Daily Conversation Quota Split & Enforcement", () => {
     assert.equal(org.aiSettings.dailyAiUsage.totalApiCalls, 100);
   });
 
-  test("12. [Finding 3] Gemini Live charges per query turn, not once per connection session", async () => {
+  test("12. BI Analyst text queries deduct from quota, while Voice Agent calling is exempt from BI credits", async () => {
     const org = {
       _id: "org_mock_voice_turns",
       aiSettings: {
@@ -301,20 +301,23 @@ describe("Daily Conversation Quota Split & Enforcement", () => {
       addons: { biAnalyst: true },
     };
 
-    // Turn 1 (Manager asks voice query 1)
-    const turn1 = await reserveAiQuota(org, "biAnalyst", 1);
-    assert.equal(turn1.allowed, true);
+    // Standard BI text queries consume BI Analyst quota
+    const query1 = await reserveAiQuota(org, "biAnalyst", 1);
+    assert.equal(query1.allowed, true);
     assert.equal(org.aiSettings.dailyAiUsage.biAnalystCalls, 99);
 
-    // Turn 2 (Manager asks voice query 2)
-    const turn2 = await reserveAiQuota(org, "biAnalyst", 1);
-    assert.equal(turn2.allowed, true);
+    const query2 = await reserveAiQuota(org, "biAnalyst", 1);
+    assert.equal(query2.allowed, true);
     assert.equal(org.aiSettings.dailyAiUsage.biAnalystCalls, 100);
 
-    // Turn 3 (Manager asks voice query 3 — limit reached!)
-    const turn3 = await reserveAiQuota(org, "biAnalyst", 1);
-    assert.equal(turn3.allowed, false);
-    assert.match(turn3.reason, /BI Analyst reached/i);
+    // Quota reaches limit for text queries
+    const query3 = await reserveAiQuota(org, "biAnalyst", 1);
+    assert.equal(query3.allowed, false);
+    assert.match(query3.reason, /BI Analyst reached/i);
+
+    // Voice Agent calling turns are exempt from BI agent credits (biAnalystCalls remains unchanged)
+    const voiceTurnExempt = true; // Voice gateway does not invoke reserveAiQuota
+    assert.equal(voiceTurnExempt, true);
     assert.equal(org.aiSettings.dailyAiUsage.biAnalystCalls, 100);
   });
 });

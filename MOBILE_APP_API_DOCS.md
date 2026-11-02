@@ -976,7 +976,7 @@ curl -X PUT https://betaapi.salesbuster.ai/api/organizations/my-org/quota-split 
 > [!IMPORTANT]
 > - **Access Level**: Restricted strictly to **Sales Managers**, **Organization Owners**, and **Super Admins**.
 > - **Add-on Required**: The organization must have `addons.biAnalyst: true`.
-> - **Quota Enforcement**: Every text query or Gemini Live voice turn atomically reserves **1 unit** from the organization's `biAnalyst` daily quota.
+> - **Quota Enforcement**: Every text query atomically reserves **1 unit** from the organization's `biAnalyst` daily quota. Voice agent calling turns are exempt from BI agent credit deductions.
 
 ---
 

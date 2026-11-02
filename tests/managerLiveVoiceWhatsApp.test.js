@@ -10,6 +10,7 @@ test("Manager Live Voice Capture & WhatsApp Template Tests", async (t) => {
       phone: "919876543210",
       customerName: "Ramesh Kumar",
       companyName: "Balaji Traders",
+      designation: "Managing Director",
       isLead: false,
       aiDisabled: true,
       lastMessage: "Hello Ramesh, it was a pleasure speaking with you regarding Balaji Traders.",
@@ -22,6 +23,7 @@ test("Manager Live Voice Capture & WhatsApp Template Tests", async (t) => {
     assert.equal(prospectConv.aiDisabled, true, "AI should be permanently disabled");
     assert.equal(prospectConv.customerName, "Ramesh Kumar");
     assert.equal(prospectConv.companyName, "Balaji Traders");
+    assert.equal(prospectConv.designation, "Managing Director");
     assert.equal(prospectConv.phone, "919876543210");
   });
 
@@ -86,6 +88,7 @@ test("Manager Live Voice Capture & WhatsApp Template Tests", async (t) => {
     const extractedDetails = {
       customerName: "Ramesh Kumar",
       companyName: "Balaji Traders",
+      designation: "Managing Director",
       keyTopic: "pricing details",
     };
 
@@ -109,6 +112,7 @@ test("Manager Live Voice Capture & WhatsApp Template Tests", async (t) => {
     assert.ok(controllerResponse.duplicateWarning, "duplicateWarning should be true for mobile modal");
     assert.ok(controllerResponse.data?.lastSentAt, "data.lastSentAt should be populated for mobile display");
     assert.equal(controllerResponse.data?.extractedDetails?.customerName, "Ramesh Kumar");
+    assert.equal(controllerResponse.data?.extractedDetails?.designation, "Managing Director");
   });
 
   await t.test("6. Non-lead conversation query supports lookup by conversation _id or phone", () => {
@@ -166,6 +170,7 @@ test("Manager Live Voice Capture & WhatsApp Template Tests", async (t) => {
     const voiceExtracted = {
       customerName: "Venkatesh Rao",
       companyName: "Rao Enterprises",
+      designation: "Chief Executive Officer",
       spokenPhone: "9876543210",
       keyTopic: "CRM Automation",
     };

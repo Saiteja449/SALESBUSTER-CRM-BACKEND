@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { GoogleGenAI } from "@google/genai";
 import { buildAssistantTools } from "./tools/index.js";
 import { getISTDateBoundaries } from "./dateUtils.js";
@@ -7,7 +8,9 @@ import { reserveAiQuota } from "../../services/aiUsageService.js";
 import { VoiceTelemetry } from "./voiceTelemetry.js";
 import {
   createEventCaptureTool,
+  createEventInterimTool,
   EVENT_CAPTURE_TOOL_DECLARATION,
+  EVENT_INTERIM_TOOL_DECLARATION,
 } from "./tools/eventCaptureTool.js";
 
 /**
@@ -114,6 +117,54 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
       required: ["query"],
     },
   },
+  {
+    name: "compose_salesperson_report_email",
+    description: "Composes a daily, weekly, monthly, or custom date sales performance report email for a specific salesperson or the entire team, and stages it for mandatory user confirmation. MUST be called first when asked to email or send reports.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        period: {
+          type: "STRING",
+          description: "Report period: 'today' (daily), 'yesterday', 'this_week' (weekly), 'this_month' (monthly), 'last_month', 'last_7_days', 'last_30_days', 'custom', or 'all_time'",
+        },
+        salespersonNameOrId: {
+          type: "STRING",
+          description: "Name or ID of salesperson (e.g. 'Ramesh', 'Priya'). Use 'all' or leave empty with sendToAll: true for all reps.",
+        },
+        sendToAll: {
+          type: "BOOLEAN",
+          description: "Set to true to compose and send report emails to all active sales reps.",
+        },
+        customStart: {
+          type: "STRING",
+          description: "YYYY-MM-DD custom start date when period is 'custom'",
+        },
+        customEnd: {
+          type: "STRING",
+          description: "YYYY-MM-DD custom end date when period is 'custom'",
+        },
+      },
+      required: ["period"],
+    },
+  },
+  {
+    name: "confirm_send_email_report",
+    description: "Dispatches or cancels the composed report email after explicit human confirmation from the user (e.g., 'yes, send it', 'send the email', 'confirm', or 'no, cancel it', 'don't send').",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        draftId: {
+          type: "STRING",
+          description: "The draft ID of the report email (optional if only one pending draft exists)",
+        },
+        confirmed: {
+          type: "BOOLEAN",
+          description: "true if user agreed to send; false if user declined or cancelled",
+        },
+      },
+      required: ["confirmed"],
+    },
+  },
 ];
 
 /**
@@ -131,6 +182,7 @@ export class GeminiLiveSessionManager {
     eventId = null,
     eventName = null,
     silentMode = false,
+    chatId = null,
   }) {
     this.socket = socket;
     this.user = user;
@@ -141,6 +193,10 @@ export class GeminiLiveSessionManager {
     this.eventId = eventId;
     this.eventName = eventName;
     this.silentMode = Boolean(silentMode);
+    this.chatId = chatId;
+    this.currentTurnUserText = "";
+    this.currentTurnAssistantText = "";
+    this.currentTurnToolsUsed = [];
     this.session = null;
     this.isActive = false;
     this.toolsByName = {};
@@ -167,10 +223,11 @@ export class GeminiLiveSessionManager {
       tenantModels,
       organization,
       user,
+      socket: this.socket,
     });
     this.toolsByName = toolsByName;
 
-    // If running in event capture mode, bind the event contact trigger tool
+    // If running in event capture mode, bind both complete and progressive interim tools
     if (this.sessionMode === "event_capture") {
       const eventTool = createEventCaptureTool({
         socket: this.socket,
@@ -180,29 +237,24 @@ export class GeminiLiveSessionManager {
         organization: this.organization,
       });
       this.toolsByName[eventTool.name] = eventTool;
+
+      const interimTool = createEventInterimTool({
+        socket: this.socket,
+        eventId: this.eventId,
+        eventName: this.eventName,
+        user: this.user,
+        organization: this.organization,
+      });
+      this.toolsByName[interimTool.name] = interimTool;
     }
   }
 
   /**
-   * Ensures 1 unit of BI Analyst conversation quota is atomically reserved for the current voice query turn.
+   * Voice agent calling turns are exempt from BI Analyst quota deductions.
+   * Ensures voice queries proceed without deducting from the organization's daily BI credits.
    */
   async ensureTurnQuota() {
-    if (this.isTurnReserved) return true;
-    const orgId = this.organization?._id;
-    if (!orgId) return true;
-
-    const reservation = await reserveAiQuota(orgId, "biAnalyst", 1);
-    if (!reservation.allowed) {
-      console.warn(`[Gemini Live Gateway] Quota exceeded for org ${orgId}: ${reservation.reason}`);
-      this.socket.emit("bi_voice_error", {
-        message: reservation.reason || "Daily quota limit reached for BI Analyst voice queries.",
-        quotaExceeded: true,
-      });
-      this.socket.emit("bi_voice_turn_complete");
-      this.close();
-      return false;
-    }
-
+    // Voice agent calling is exempt from BI agent credit deductions
     this.isTurnReserved = true;
     return true;
   }
@@ -234,45 +286,54 @@ export class GeminiLiveSessionManager {
     if (this.sessionMode === "event_capture") {
       const currentEvent = this.eventName || "our event";
       systemPrompt = `You are the SalesBuster Event Intelligence Ear for the event "${currentEvent}".
-You are listening passively to an in-person conversation between sales representative ${managerName} (${orgName}${repPhone ? `, Phone: ${repPhone}` : ""}) and an event attendee.
+You are listening passively to an in-person business conversation between sales representative ${managerName} (${orgName}${repPhone ? `, Phone: ${repPhone}` : ""}) and one or more event attendees.
 
-CRITICAL OPERATIONAL RULES:
+CRITICAL OPERATIONAL & SPEAKER SAFEGUARD RULES:
 1. SILENT LISTENER MODE (MANDATORY):
    - You MUST remain COMPLETELY SILENT.
    - NEVER speak aloud, generate audible voice audio, or respond to the attendee.
 
-2. SPEAKER DIFFERENTIATION & NEGATIVE FILTER (CRITICAL):
-   - The person holding this mobile phone is the sales representative: "${managerName}" representing "${orgName}"${repPhone ? ` (Phone: ${repPhone})` : ""}.
-   - NEVER capture "${managerName}" as the contact name.
-   - NEVER capture "${orgName}" as the company name.
-   ${repPhone ? `- NEVER capture "${repPhone}" as the attendee's phone number.` : ""}
-   - You are EXCLUSIVELY capturing the EXTERNAL EVENT ATTENDEE / VISITOR who is speaking with ${managerName}.
-   - Distinguish speaker roles through dialogue context:
-     * When ${managerName} introduces themselves (e.g. "Hi, I am ${managerName} from ${orgName}"), IGNORE those host details.
-     * When ${managerName} asks questions (e.g. "May I know your name / company / number?"), the person answering is the attendee.
-     * When the attendee introduces themselves (e.g. "I am [Name] from [Company]", "My number is [Phone]"), capture THOSE attendee details.
-     * If multiple names are mentioned (e.g. "I am [Name A], but call my partner [Name B] on [Phone]"), attribute the contact to the person directly associated with the phone number.
+2. MULTI-SPEAKER & MULTI-PARTY CONVERSATION SAFEGUARDS (3+ SPEAKERS):
+   - At exhibitions and business meetings, 3 or more people may speak (Host Sales Rep, Primary Lead, Lead's Colleague/Partner, bystanders).
+   - HOST REP SHIELD (CRITICAL):
+     * The person holding this mobile device is sales representative ${managerName} (${orgName}${repPhone ? `, Phone: ${repPhone}` : ""}).
+     * NEVER capture ${managerName} as the contact name.
+     * NEVER capture ${orgName} as the company name.
+     ${repPhone ? `* NEVER capture ${repPhone} as the contact phone.` : ""}
+   - PRIMARY PROSPECT IDENTIFICATION & PHONE-NUMBER BINDING:
+     * When 2 or more attendees speak together (e.g. Ramesh introduces himself and colleague Suresh), ALWAYS anchor the contact name to the specific person whose phone number is confirmed for WhatsApp follow-up.
+     * Example: If Ramesh says "I am Ramesh, but please WhatsApp my partner Suresh on 9876543210", capture Name: "Suresh", Phone: "9876543210", with Ramesh noted in the summary.
+   - BYSTANDER & AMBIENT NOISE FILTERING:
+     * Completely ignore background passersby, conversations from adjacent expo booths, or phone calls happening nearby that are not addressing ${managerName}.
+   - MULTI-PERSON SUMMARY:
+     * In the summary, record all key participants (e.g. "Met with Ramesh [Director] and Suresh [Tech Lead]; requested software demo proposal..."), while attributing the primary contact fields to the verified phone owner.
 
-3. MULTILINGUAL RECOGNITION:
-   - Understand English, Hindi, Telugu, Tamil, Marathi, and Hinglish code-switching naturally spoken in Indian business events.
+3. REAL-TIME PROGRESSIVE FILLING (update_contact_draft):
+   - As you listen, IMMEDIATELY call 'update_contact_draft' whenever ANY single contact detail is spoken:
+     * Name mentioned -> call update_contact_draft with { name }.
+     * Company mentioned -> call update_contact_draft with { companyName }.
+     * Designation or job title mentioned -> call update_contact_draft with { designation }.
+     * Phone digits dictated -> call update_contact_draft with { phone }.
+     * Topic or requirement discussed -> call update_contact_draft with { summary, suggestedMessage }.
+   - This progressive tool call updates the mobile screen in real time so the rep sees fields populating live!
 
-4. REAL-TIME CAPTURE TRIGGER:
-   - ONLY execute the tool 'trigger_contact_review' when ALL THREE core contact details have been completely and clearly spoken:
+4. COMPLETE CAPTURE TRIGGER (trigger_contact_review):
+   - Call 'trigger_contact_review' ONLY when ALL THREE core contact details have been completely and clearly spoken:
      1. Attendee's full Name (MUST NOT be ${managerName}).
      2. A complete 10-digit mobile phone number (digits only, e.g. "9876543210"${repPhone ? `, MUST NOT be ${repPhone}` : ""}).
      3. Attendee's Company / Business name (MUST NOT be ${orgName}).
-   - DO NOT trigger the tool when only one or two details are spoken. Wait patiently until the conversation has revealed the Name, 10-digit Phone, and Company.
    - Extract:
-     * name: Attendee's full name.
+     * name: Primary attendee's full name.
      * phone: Exactly 10-digit Indian mobile number (e.g. "9876543210").
      * companyName: Attendee's company/business name.
-     * summary: 1-2 sentence discussion summary or requirement.
+     * designation: Attendee's job title, role, or designation if heard (e.g. "Managing Director", "Owner", "CEO").
+     * summary: 1-2 sentence discussion summary including any companion names.
      * suggestedMessage: A warm, personalized WhatsApp follow-up greeting from ${managerName} (${orgName}) referencing ${currentEvent}.
 
 5. STRICT ZERO HALLUCINATION:
-   - If any required detail (Attendee Name, full 10-digit Phone, or Company) has NOT been spoken yet by the attendee, DO NOT call 'trigger_contact_review'. Never invent or guess phone numbers or companies.`;
+   - If any required detail has NOT been spoken, do not invent or guess. Extract strictly what was clearly uttered.`;
 
-      functionDeclarations = [EVENT_CAPTURE_TOOL_DECLARATION, ...CRM_LIVE_FUNCTION_DECLARATIONS];
+      functionDeclarations = [EVENT_CAPTURE_TOOL_DECLARATION, EVENT_INTERIM_TOOL_DECLARATION, ...CRM_LIVE_FUNCTION_DECLARATIONS];
     } else {
       systemPrompt = `You are the executive AI Voice CRM Assistant for "${orgName}", talking directly with ${managerName} (Sales Manager) in real-time.
 You have instant access to the live MongoDB database of the CRM via specialized tools.
@@ -303,7 +364,18 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    - Phone numbers: CALL 'lookup_phone_number'
    - Overdue tasks and follow-ups: CALL 'get_followup_status'
    - WhatsApp unread chats: CALL 'get_whatsapp_analytics'
-   - Integrations and configurations: CALL 'get_org_integrations_and_config'`;
+   - Integrations and configurations: CALL 'get_org_integrations_and_config'
+   - Composing sales report emails: CALL 'compose_salesperson_report_email'
+   - Confirming or cancelling email report send: CALL 'confirm_send_email_report'
+
+4. EMAIL REPORT ACTIONS & MANDATORY HUMAN CONFIRMATION (CRITICAL):
+   - When the user asks to email or send a report (daily, yesterday, weekly, monthly, custom dates, or all-time) to sales rep(s):
+     * Step 1: ALWAYS call 'compose_salesperson_report_email' first. NEVER claim an email is sent without asking for confirmation!
+     * Step 2: Once 'compose_salesperson_report_email' finishes, state the recipient name, recipient email, time period, and key stats (leads, conversions, deal value, calls) in spoken voice, and EXPLICITLY ask the user: "Would you like me to send this email now?"
+     * Step 3: Wait for user verbal confirmation:
+       - If they say "yes", "send it", "confirm", "send", "go ahead": Call 'confirm_send_email_report' with confirmed: true.
+       - If they say "no", "cancel", "don't send", "discard": Call 'confirm_send_email_report' with confirmed: false.
+       - Then announce the result conversationally.`;
     }
 
     const liveModel =
@@ -409,6 +481,42 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
   }
 
   /**
+   * Handles interactive confirmation/cancellation from UI buttons
+   */
+  async handleActionConfirmation({ draftId, confirmed }) {
+    try {
+      const confirmTool = this.toolsByName["confirm_send_email_report"];
+      if (!confirmTool) {
+        console.warn("[GeminiLiveSessionManager] confirm_send_email_report tool not found");
+        return { status: "error", message: "Confirmation tool not available." };
+      }
+
+      console.log(`[GeminiLiveSessionManager] Executing UI confirmation for draftId ${draftId}, confirmed: ${confirmed}`);
+      const rawResult = await confirmTool.invoke({ draftId, confirmed });
+      const result = typeof rawResult === "string" ? JSON.parse(rawResult) : rawResult;
+
+      // In real-time voice, let Gemini know the user made a choice via the UI
+      if (this.session && this.isActive) {
+        const textPrompt = confirmed
+          ? "The user clicked 'Send Email' in the CRM screen. The report email was dispatched successfully. Inform the user in 1 short spoken sentence that their email was sent."
+          : "The user clicked 'Cancel' in the CRM screen. The report email was discarded. Acknowledge this cancellation in 1 short spoken sentence.";
+        try {
+          this.session.sendRealtimeInput({
+            text: textPrompt,
+          });
+        } catch (promptErr) {
+          console.warn("[GeminiLiveSessionManager] Could not send prompt injection to Gemini:", promptErr.message);
+        }
+      }
+
+      return result;
+    } catch (err) {
+      console.error("[GeminiLiveSessionManager] Error handling action confirmation:", err);
+      return { status: "error", message: err.message };
+    }
+  }
+
+  /**
    * Friendly label generator for CRM tools in UI
    */
   getFriendlyToolLabel(toolName) {
@@ -421,6 +529,8 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       get_whatsapp_analytics: "Inspecting WhatsApp chat status",
       get_org_integrations_and_config: "Verifying system configuration",
       search_crm_documentation_and_features: "Searching documentation",
+      compose_salesperson_report_email: "Composing performance report email draft",
+      confirm_send_email_report: "Processing report email dispatch",
     };
     return labels[toolName] || `Querying CRM tool (${toolName})`;
   }
@@ -449,6 +559,11 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       if (!hasQuota) return;
 
       const functionCalls = serverMsg.toolCall.functionCalls;
+      for (const fc of functionCalls) {
+        if (!this.currentTurnToolsUsed.includes(fc.name)) {
+          this.currentTurnToolsUsed.push(fc.name);
+        }
+      }
       const isParallel = functionCalls.length > 1;
       const firstToolName = functionCalls[0].name;
       const friendlyLabel = isParallel
@@ -567,6 +682,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           }
           // Real-time text subtitle
           if (part.text) {
+            this.currentTurnAssistantText += part.text;
             console.log(`[LiveVoice TextPart] "${part.text.slice(0, 80)}"`);
             this.socket.emit("bi_voice_transcript", {
               role: "assistant",
@@ -579,6 +695,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       // Real-time user speech transcription (supported by gemini-3.8-live)
       const userText = content.inputTranscription?.text || content.interimInputTranscription?.text;
       if (userText) {
+        this.currentTurnUserText = (this.currentTurnUserText ? this.currentTurnUserText + " " : "") + userText;
         console.log(`[LiveVoice Transcription] User speech recognized: "${userText}"`);
         this.socket.emit("bi_voice_transcript", {
           role: "user",
@@ -591,6 +708,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         if (this.currentTurnId) {
           this.telemetry.recordFirstProviderResponse(this.currentTurnId);
         }
+        this.currentTurnAssistantText += (this.currentTurnAssistantText ? " " : "") + content.outputTranscription.text;
         console.log(`[LiveVoice Transcription] Assistant subtitle: "${content.outputTranscription.text}"`);
         this.socket.emit("bi_voice_transcript", {
           role: "assistant",
@@ -612,6 +730,13 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         this.audioBytesOutCount = 0;
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
+        // Voice Conversation is ephemeral real-time voice and does not pollute chat history
+        if (this.sessionMode === "crm_assistant") {
+          this.currentTurnUserText = "";
+          this.currentTurnAssistantText = "";
+          this.currentTurnToolsUsed = [];
+        }
+
         this.socket.emit("bi_voice_turn_complete");
         this.socket.emit("bi_voice_status", { state: "listening" });
       }

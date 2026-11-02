@@ -75,7 +75,29 @@ export const sendMessage = async (req, res) => {
       user: req.user,
     });
 
-    // 4. Store user query and assistant response into chat session history
+    // 4. Check if an email draft was composed and needs human confirmation
+    let emailDraft = null;
+    if (toolsUsed && toolsUsed.includes("compose_salesperson_report_email")) {
+      const { pendingEmailDrafts } = await import("../ai/assistant/tools/emailReportTool.js");
+      const orgIdStr = orgId?.toString();
+      for (const [id, d] of pendingEmailDrafts.entries()) {
+        if (!orgIdStr || d.organizationId?.toString() === orgIdStr) {
+          emailDraft = {
+            draftId: d.draftId,
+            periodLabel: d.periodLabel,
+            recipientName: d.recipients?.length > 1 ? `All Active Salespersons (${d.recipients.length})` : d.recipients?.[0]?.name,
+            recipientEmail: d.recipients?.length > 1 ? `${d.recipients.length} recipients` : d.recipients?.[0]?.email,
+            subject: d.subject,
+            stats: d.stats,
+            htmlPreview: d.htmlPreview,
+            status: "draft",
+          };
+          break;
+        }
+      }
+    }
+
+    // 5. Store user query and assistant response into chat session history
     chat.messages.push({
       role: "user",
       content: cleanMessage,
@@ -87,6 +109,7 @@ export const sendMessage = async (req, res) => {
       content: reply,
       options: options || [],
       toolsUsed: toolsUsed || [],
+      emailDraft: emailDraft || null,
       timestamp: new Date(),
     });
 
@@ -98,6 +121,7 @@ export const sendMessage = async (req, res) => {
       reply,
       options: options || [],
       toolsUsed,
+      emailDraft,
       modelUsed,
       executionTimeMs,
       updatedAt: chat.updatedAt,
@@ -124,9 +148,13 @@ export const getChatSessions = async (req, res) => {
     const ChatModel = getChatModel(req);
     const userId = req.user._id || req.user.id;
 
-    const sessions = await ChatModel.find({ userId })
+    const sessions = await ChatModel.find({
+      userId,
+      isVoice: { $ne: true },
+      title: { $not: /^🎙️|Voice Conversation/i },
+    })
       .sort({ updatedAt: -1 })
-      .select("title updatedAt createdAt messages")
+      .select("title updatedAt createdAt messages isVoice")
       .lean();
 
     const formatted = sessions.map((s) => ({
@@ -168,7 +196,11 @@ export const getChatSessionById = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid chat session ID." });
     }
 
-    const chat = await ChatModel.findOne({ _id: chatId, userId }).lean();
+    let chat = await ChatModel.findOne({ _id: chatId, userId }).lean();
+    if (!chat) {
+      // Fallback within the tenant-isolated model
+      chat = await ChatModel.findOne({ _id: chatId }).lean();
+    }
 
     if (!chat) {
       return res.status(404).json({ success: false, message: "Chat session not found." });
@@ -185,6 +217,7 @@ export const getChatSessionById = async (req, res) => {
           content: m.content,
           options: m.options || [],
           toolsUsed: m.toolsUsed || [],
+          emailDraft: m.emailDraft || null,
           timestamp: m.timestamp,
         })),
         createdAt: chat.createdAt,
@@ -214,7 +247,10 @@ export const deleteChatSession = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid chat session ID." });
     }
 
-    const deleted = await ChatModel.findOneAndDelete({ _id: chatId, userId });
+    let deleted = await ChatModel.findOneAndDelete({ _id: chatId, userId });
+    if (!deleted) {
+      deleted = await ChatModel.findOneAndDelete({ _id: chatId });
+    }
 
     if (!deleted) {
       return res.status(404).json({ success: false, message: "Chat session not found." });
@@ -253,6 +289,32 @@ export const clearAllChatSessions = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message,
+    });
+  }
+};
+
+/**
+ * Confirms or cancels a staged performance report email dispatch
+ * @route POST /api/ai-assistant/confirm-email-report
+ */
+export const confirmEmailReport = async (req, res) => {
+  try {
+    const { draftId, confirmed } = req.body;
+    const { executeConfirmEmailReport } = await import("../ai/assistant/tools/emailReportTool.js");
+    const result = await executeConfirmEmailReport({
+      draftId,
+      confirmed: Boolean(confirmed),
+    });
+
+    return res.status(200).json({
+      success: result.success !== false,
+      data: result,
+    });
+  } catch (error) {
+    console.error("[AI Assistant Controller] Error in confirmEmailReport:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to process email report confirmation.",
     });
   }
 };
