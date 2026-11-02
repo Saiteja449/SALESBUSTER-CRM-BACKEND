@@ -6,6 +6,7 @@ import {
   getChatSessionById,
   deleteChatSession,
   clearAllChatSessions,
+  confirmEmailReport,
 } from "../controllers/aiAssistantController.js";
 
 import { requireAddon } from "../middleware/addonMiddleware.js";
@@ -39,6 +40,7 @@ router.use(requireAddon("biAnalyst"));
 
 // Chat & History Endpoints
 router.post("/chat", sendMessage);
+router.post("/confirm-email-report", confirmEmailReport);
 router.get("/sessions", getChatSessions);
 router.get("/sessions/:chatId", getChatSessionById);
 router.delete("/sessions/:chatId", deleteChatSession);

@@ -269,7 +269,7 @@ export const initSocket = (server) => {
       // =========================================================================
       // BI ANALYST - GEMINI MULTIMODAL LIVE REAL-TIME VOICE CHAT
       // =========================================================================
-      socket.on("bi_voice_start", async ({ voiceName = "Aoede" } = {}) => {
+      socket.on("bi_voice_start", async ({ voiceName = "Aoede", chatId = null } = {}) => {
         try {
           console.log(`[Socket Voice] bi_voice_start requested by user ${socket.user?.id || socket.user?._id} (${socket.user?.name}), role: "${socket.user?.role}", voice: "${voiceName}" on socket ${socket.id}`);
           const roleNormalized = String(socket.user?.role || "").toLowerCase().trim();
@@ -336,6 +336,7 @@ export const initSocket = (server) => {
             organization,
             tenantModels,
             voiceName,
+            chatId,
           });
           socket.geminiLiveSession = liveSession;
 
@@ -368,6 +369,24 @@ export const initSocket = (server) => {
         if (socket.geminiLiveSession) {
           socket.geminiLiveSession.close();
           socket.geminiLiveSession = null;
+        }
+      });
+
+      socket.on("bi_voice_action_confirm", async ({ action, draftId, confirmed }, callback) => {
+        try {
+          console.log(`[Socket Voice] bi_voice_action_confirm received on socket ${socket.id}: draftId=${draftId}, confirmed=${confirmed}`);
+          if (socket.geminiLiveSession) {
+            const res = await socket.geminiLiveSession.handleActionConfirmation({ draftId, confirmed });
+            if (typeof callback === "function") callback({ success: true, result: res });
+          } else {
+            console.log(`[Socket Voice] bi_voice_action_confirm fallback to executeConfirmEmailReport`);
+            const { executeConfirmEmailReport } = await import("../ai/assistant/tools/emailReportTool.js");
+            const res = await executeConfirmEmailReport({ draftId, confirmed, socket });
+            if (typeof callback === "function") callback({ success: res.success !== false, result: res });
+          }
+        } catch (actionErr) {
+          console.error(`[Socket Voice] Error handling action confirmation:`, actionErr);
+          if (typeof callback === "function") callback({ success: false, error: actionErr.message });
         }
       });
 

@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { GoogleGenAI } from "@google/genai";
 import { buildAssistantTools } from "./tools/index.js";
 import { getISTDateBoundaries } from "./dateUtils.js";
@@ -116,6 +117,54 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
       required: ["query"],
     },
   },
+  {
+    name: "compose_salesperson_report_email",
+    description: "Composes a daily, weekly, monthly, or custom date sales performance report email for a specific salesperson or the entire team, and stages it for mandatory user confirmation. MUST be called first when asked to email or send reports.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        period: {
+          type: "STRING",
+          description: "Report period: 'today' (daily), 'yesterday', 'this_week' (weekly), 'this_month' (monthly), 'last_month', 'last_7_days', 'last_30_days', 'custom', or 'all_time'",
+        },
+        salespersonNameOrId: {
+          type: "STRING",
+          description: "Name or ID of salesperson (e.g. 'Ramesh', 'Priya'). Use 'all' or leave empty with sendToAll: true for all reps.",
+        },
+        sendToAll: {
+          type: "BOOLEAN",
+          description: "Set to true to compose and send report emails to all active sales reps.",
+        },
+        customStart: {
+          type: "STRING",
+          description: "YYYY-MM-DD custom start date when period is 'custom'",
+        },
+        customEnd: {
+          type: "STRING",
+          description: "YYYY-MM-DD custom end date when period is 'custom'",
+        },
+      },
+      required: ["period"],
+    },
+  },
+  {
+    name: "confirm_send_email_report",
+    description: "Dispatches or cancels the composed report email after explicit human confirmation from the user (e.g., 'yes, send it', 'send the email', 'confirm', or 'no, cancel it', 'don't send').",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        draftId: {
+          type: "STRING",
+          description: "The draft ID of the report email (optional if only one pending draft exists)",
+        },
+        confirmed: {
+          type: "BOOLEAN",
+          description: "true if user agreed to send; false if user declined or cancelled",
+        },
+      },
+      required: ["confirmed"],
+    },
+  },
 ];
 
 /**
@@ -133,6 +182,7 @@ export class GeminiLiveSessionManager {
     eventId = null,
     eventName = null,
     silentMode = false,
+    chatId = null,
   }) {
     this.socket = socket;
     this.user = user;
@@ -143,6 +193,10 @@ export class GeminiLiveSessionManager {
     this.eventId = eventId;
     this.eventName = eventName;
     this.silentMode = Boolean(silentMode);
+    this.chatId = chatId;
+    this.currentTurnUserText = "";
+    this.currentTurnAssistantText = "";
+    this.currentTurnToolsUsed = [];
     this.session = null;
     this.isActive = false;
     this.toolsByName = {};
@@ -169,6 +223,7 @@ export class GeminiLiveSessionManager {
       tenantModels,
       organization,
       user,
+      socket: this.socket,
     });
     this.toolsByName = toolsByName;
 
@@ -309,7 +364,18 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    - Phone numbers: CALL 'lookup_phone_number'
    - Overdue tasks and follow-ups: CALL 'get_followup_status'
    - WhatsApp unread chats: CALL 'get_whatsapp_analytics'
-   - Integrations and configurations: CALL 'get_org_integrations_and_config'`;
+   - Integrations and configurations: CALL 'get_org_integrations_and_config'
+   - Composing sales report emails: CALL 'compose_salesperson_report_email'
+   - Confirming or cancelling email report send: CALL 'confirm_send_email_report'
+
+4. EMAIL REPORT ACTIONS & MANDATORY HUMAN CONFIRMATION (CRITICAL):
+   - When the user asks to email or send a report (daily, yesterday, weekly, monthly, custom dates, or all-time) to sales rep(s):
+     * Step 1: ALWAYS call 'compose_salesperson_report_email' first. NEVER claim an email is sent without asking for confirmation!
+     * Step 2: Once 'compose_salesperson_report_email' finishes, state the recipient name, recipient email, time period, and key stats (leads, conversions, deal value, calls) in spoken voice, and EXPLICITLY ask the user: "Would you like me to send this email now?"
+     * Step 3: Wait for user verbal confirmation:
+       - If they say "yes", "send it", "confirm", "send", "go ahead": Call 'confirm_send_email_report' with confirmed: true.
+       - If they say "no", "cancel", "don't send", "discard": Call 'confirm_send_email_report' with confirmed: false.
+       - Then announce the result conversationally.`;
     }
 
     const liveModel =
@@ -415,6 +481,42 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
   }
 
   /**
+   * Handles interactive confirmation/cancellation from UI buttons
+   */
+  async handleActionConfirmation({ draftId, confirmed }) {
+    try {
+      const confirmTool = this.toolsByName["confirm_send_email_report"];
+      if (!confirmTool) {
+        console.warn("[GeminiLiveSessionManager] confirm_send_email_report tool not found");
+        return { status: "error", message: "Confirmation tool not available." };
+      }
+
+      console.log(`[GeminiLiveSessionManager] Executing UI confirmation for draftId ${draftId}, confirmed: ${confirmed}`);
+      const rawResult = await confirmTool.invoke({ draftId, confirmed });
+      const result = typeof rawResult === "string" ? JSON.parse(rawResult) : rawResult;
+
+      // In real-time voice, let Gemini know the user made a choice via the UI
+      if (this.session && this.isActive) {
+        const textPrompt = confirmed
+          ? "The user clicked 'Send Email' in the CRM screen. The report email was dispatched successfully. Inform the user in 1 short spoken sentence that their email was sent."
+          : "The user clicked 'Cancel' in the CRM screen. The report email was discarded. Acknowledge this cancellation in 1 short spoken sentence.";
+        try {
+          this.session.sendRealtimeInput({
+            text: textPrompt,
+          });
+        } catch (promptErr) {
+          console.warn("[GeminiLiveSessionManager] Could not send prompt injection to Gemini:", promptErr.message);
+        }
+      }
+
+      return result;
+    } catch (err) {
+      console.error("[GeminiLiveSessionManager] Error handling action confirmation:", err);
+      return { status: "error", message: err.message };
+    }
+  }
+
+  /**
    * Friendly label generator for CRM tools in UI
    */
   getFriendlyToolLabel(toolName) {
@@ -427,6 +529,8 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       get_whatsapp_analytics: "Inspecting WhatsApp chat status",
       get_org_integrations_and_config: "Verifying system configuration",
       search_crm_documentation_and_features: "Searching documentation",
+      compose_salesperson_report_email: "Composing performance report email draft",
+      confirm_send_email_report: "Processing report email dispatch",
     };
     return labels[toolName] || `Querying CRM tool (${toolName})`;
   }
@@ -455,6 +559,11 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       if (!hasQuota) return;
 
       const functionCalls = serverMsg.toolCall.functionCalls;
+      for (const fc of functionCalls) {
+        if (!this.currentTurnToolsUsed.includes(fc.name)) {
+          this.currentTurnToolsUsed.push(fc.name);
+        }
+      }
       const isParallel = functionCalls.length > 1;
       const firstToolName = functionCalls[0].name;
       const friendlyLabel = isParallel
@@ -573,6 +682,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           }
           // Real-time text subtitle
           if (part.text) {
+            this.currentTurnAssistantText += part.text;
             console.log(`[LiveVoice TextPart] "${part.text.slice(0, 80)}"`);
             this.socket.emit("bi_voice_transcript", {
               role: "assistant",
@@ -585,6 +695,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       // Real-time user speech transcription (supported by gemini-3.8-live)
       const userText = content.inputTranscription?.text || content.interimInputTranscription?.text;
       if (userText) {
+        this.currentTurnUserText = (this.currentTurnUserText ? this.currentTurnUserText + " " : "") + userText;
         console.log(`[LiveVoice Transcription] User speech recognized: "${userText}"`);
         this.socket.emit("bi_voice_transcript", {
           role: "user",
@@ -597,6 +708,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         if (this.currentTurnId) {
           this.telemetry.recordFirstProviderResponse(this.currentTurnId);
         }
+        this.currentTurnAssistantText += (this.currentTurnAssistantText ? " " : "") + content.outputTranscription.text;
         console.log(`[LiveVoice Transcription] Assistant subtitle: "${content.outputTranscription.text}"`);
         this.socket.emit("bi_voice_transcript", {
           role: "assistant",
@@ -618,6 +730,13 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         this.audioBytesOutCount = 0;
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
+        // Voice Conversation is ephemeral real-time voice and does not pollute chat history
+        if (this.sessionMode === "crm_assistant") {
+          this.currentTurnUserText = "";
+          this.currentTurnAssistantText = "";
+          this.currentTurnToolsUsed = [];
+        }
+
         this.socket.emit("bi_voice_turn_complete");
         this.socket.emit("bi_voice_status", { state: "listening" });
       }
