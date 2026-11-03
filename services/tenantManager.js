@@ -22,6 +22,12 @@ import WhatsAppOptOut from "../models/WhatsAppOptOut.js";
 import AIAssistantChat from "../models/AIAssistantChat.js";
 import Event from "../models/Event.js";
 import EventContact from "../models/EventContact.js";
+import ResolvedProspect from "../models/ResolvedProspect.js";
+import TargetSearch from "../models/TargetSearch.js";
+import TargetCompany from "../models/TargetCompany.js";
+import TargetContact from "../models/TargetContact.js";
+import TargetList from "../models/TargetList.js";
+import ProviderUsage from "../models/ProviderUsage.js";
 import Organization, { organizationSchema } from "../models/Organization.js";
 import AuthUser, { authUserSchema } from "../models/AuthUser.js";
 import AppRelease, { appReleaseSchema } from "../models/AppRelease.js";
@@ -112,6 +118,24 @@ export const getTenantModels = (tenantDbName) => {
     EventContact:
       db.models.EventContact ||
       db.model("EventContact", EventContact.schema),
+    ResolvedProspect:
+      db.models.ResolvedProspect ||
+      db.model("ResolvedProspect", ResolvedProspect.schema),
+    TargetSearch:
+      db.models.TargetSearch ||
+      db.model("TargetSearch", TargetSearch.schema),
+    TargetCompany:
+      db.models.TargetCompany ||
+      db.model("TargetCompany", TargetCompany.schema),
+    TargetContact:
+      db.models.TargetContact ||
+      db.model("TargetContact", TargetContact.schema),
+    TargetList:
+      db.models.TargetList ||
+      db.model("TargetList", TargetList.schema),
+    ProviderUsage:
+      db.models.ProviderUsage ||
+      db.model("ProviderUsage", ProviderUsage.schema),
     db,
   };
 };

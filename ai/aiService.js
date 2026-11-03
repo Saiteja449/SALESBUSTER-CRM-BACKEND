@@ -645,7 +645,7 @@ export const generateAIResponse = async (
     }
 
     const modelGeminiPrimary = new ChatGoogleGenerativeAI({
-      model: "gemini-3.1-flash-lite",
+      model: "gemini-3.5-flash-lite",
       temperature: 0,
       maxOutputTokens: 1500,
       apiKey: geminiApiKey,
@@ -813,7 +813,7 @@ Latest Message: ${incomingText}`;
       leadId,
       prompt: systemPrompt + "\n\nUser Message: " + incomingText,
       response: JSON.stringify(parsed, null, 2),
-      model: "gemini-3.1-flash-lite (Dynamic Multi-Tenant RAG)",
+      model: "gemini-3.5-flash-lite (Dynamic Multi-Tenant RAG)",
       tokensUsed: 0,
     });
 

@@ -321,9 +321,9 @@ export const connectWhatsApp = async (param1, param2, param3) => {
       const { state, saveCreds } = await useMongoDBAuthState(sessionId, models.WhatsAppAuthState);
       const { version, isLatest } = await fetchLatestBaileysVersion();
 
-      console.log(
-        `Initializing WhatsApp connection for ${sessionId} (org: ${sessions[sessionId]?.organizationId || "default"}) via Baileys... (Version: ${version.join(".")})`,
-      );
+      // console.log(
+      //   `Initializing WhatsApp connection for ${sessionId} (org: ${sessions[sessionId]?.organizationId || "default"}) via Baileys... (Version: ${version.join(".")})`,
+      // );
       updateSessionStatus(sessionId, "connecting");
 
       // Note: printQRInTerminal is intentionally omitted as it is deprecated in modern Baileys
@@ -399,17 +399,17 @@ export const connectWhatsApp = async (param1, param2, param3) => {
 
         const { connection, lastDisconnect, qr } = update;
 
-        console.log(
-          `Baileys connection.update [${sessionId}]:`,
-          JSON.stringify({
-            connection,
-            qr: qr ? "[QR data present]" : undefined,
-            lastDisconnect: lastDisconnect?.error?.message,
-          }),
-        );
+        // console.log(
+        //   `Baileys connection.update [${sessionId}]:`,
+        //   JSON.stringify({
+        //     connection,
+        //     qr: qr ? "[QR data present]" : undefined,
+        //     lastDisconnect: lastDisconnect?.error?.message,
+        //   }),
+        // );
 
         if (qr) {
-          console.log(`New WhatsApp QR code generated for ${sessionId}. Please scan.`);
+          // console.log(`New WhatsApp QR code generated for ${sessionId}. Please scan.`);
           updateSessionStatus(sessionId, "qr", qr);
         }
 
@@ -946,6 +946,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
     });
 
     let isNewLead = false;
+    let statusChangedFromMissedCall = false;
     let assignedRepName = "Sales Representative";
 
     // Detect if this is a rep's personal session — used for direct assignment and message tagging
@@ -1132,9 +1133,51 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
         }
       }
 
+      // Detect if customer is replying to a lead currently in "Missed Call" status
+      const currentStatusLower = String(lead.status || "").trim().toLowerCase();
+      if (!fromMe && currentStatusLower === "missed call") {
+        updatedFields.status = "New";
+        lead.status = "New";
+        if (lead.isOldLead) {
+          updatedFields.isOldLead = false;
+          lead.isOldLead = false;
+        }
+        const replySnippet = textContent ? textContent.substring(0, 80) : "Media/Attachment";
+        const replyNote = `[WhatsApp Reply] Customer replied to missed call follow-up message: "${replySnippet}". Moved from Missed Call to New Leads.`;
+        updatedFields.notes = lead.notes ? `${replyNote}\n${lead.notes}` : replyNote;
+        lead.notes = updatedFields.notes;
+        statusChangedFromMissedCall = true;
+
+        console.log(
+          `[Missed Call -> New Lead] Lead ${lead._id} (${lead.phone}) replied on WhatsApp. Transitioned status from 'Missed Call' to 'New'.`
+        );
+      }
+
       await LeadModel.findByIdAndUpdate(lead._id, {
         $set: updatedFields,
       });
+
+      if (statusChangedFromMissedCall) {
+        try {
+          const assignedUserId = lead.assignedTo
+            ? (typeof lead.assignedTo === "object" ? lead.assignedTo._id || lead.assignedTo.id : lead.assignedTo).toString()
+            : null;
+          const targetUsers = [];
+          if (assignedUserId && assignedUserId !== "Unassigned") {
+            targetUsers.push(assignedUserId);
+          }
+
+          await NotificationModel.create({
+            title: "Missed Call Lead Replied on WhatsApp",
+            message: `${lead.name || lead.phone} replied to missed call follow-up message and was moved to New Leads.`,
+            type: "new_lead",
+            targetRoles: ["sales manager"],
+            targetUsers: targetUsers,
+          });
+        } catch (nErr) {
+          console.warn("[WhatsApp] Notification error for missed call reply:", nErr.message);
+        }
+      }
     }
 
     // 3. Create message record — include session traceability fields
@@ -1242,6 +1285,19 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
           io.to(`user_${assignedUserId}`).emit("whatsapp_new_lead", newLeadAlertPayload);
         }
         console.log(`[DEBUG] Emitted whatsapp_new_lead alert for ${lead.phone} (${lead.name})`);
+      }
+
+      if (statusChangedFromMissedCall) {
+        const leadObj = typeof lead.toObject === "function" ? lead.toObject() : { ...lead };
+        leadObj.status = "New";
+        if (orgId) {
+          io.to(`org_${orgId}`).emit("lead_updated", { leadId: lead._id, lead: leadObj });
+        }
+        if (assignedUserId) {
+          io.to(`user_${assignedUserId}`).emit("lead_updated", { leadId: lead._id, lead: leadObj });
+        }
+        io.to(lead._id.toString()).emit("lead_updated", { leadId: lead._id, lead: leadObj });
+        console.log(`[DEBUG] Emitted lead_updated for missed call reply transition to New Leads for ${lead.phone}`);
       }
     }
 
@@ -2756,7 +2812,7 @@ export const updateSystemSettings = async (
  * saved WhatsApp sessions from each tenant database.
  */
 export const initAllOrganizationWhatsAppConnections = async () => {
-  console.log("[WhatsApp] Initializing WhatsApp connections for organizations...");
+  // console.log("[WhatsApp] Initializing WhatsApp connections for organizations...");
   try {
     const { Organization } = getMasterModels();
     const organizations = await Organization.find({ status: { $ne: "suspended" } });
@@ -2857,7 +2913,7 @@ export const initAllOrganizationWhatsAppConnections = async () => {
  * that have valid saved credentials in their tenant database.
  */
 export const startWhatsAppWatchdog = () => {
-  console.log(`[WhatsApp Watchdog] Starting WhatsApp connection watchdog service (${WATCHDOG_INTERVAL_MS / 1000}s interval)...`);
+  // console.log(`[WhatsApp Watchdog] Starting WhatsApp connection watchdog service (${WATCHDOG_INTERVAL_MS / 1000}s interval)...`);
   
   setInterval(async () => {
     try {

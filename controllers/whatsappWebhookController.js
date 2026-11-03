@@ -283,7 +283,7 @@ const processStatusUpdates = async (statuses, tenantModels, org) => {
  * Handles inbound customer messages, opt-outs, and triggers AI responses within the 24h window.
  */
 const processInboundMessages = async (messages, contacts, tenantModels, org) => {
-  const { Lead, Message, Conversation, WhatsAppOptOut } = tenantModels;
+  const { Lead, Message, Conversation, WhatsAppOptOut, Notification } = tenantModels;
   const io = getIO();
   const contactMap = {};
 
@@ -378,6 +378,24 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
       continue;
     }
 
+    // Detect if customer is replying to a lead currently in "Missed Call" status
+    let statusChangedFromMissedCall = false;
+    const currentStatusLower = String(lead.status || "").trim().toLowerCase();
+    if (currentStatusLower === "missed call") {
+      lead.status = "New";
+      if (lead.isOldLead) {
+        lead.isOldLead = false;
+      }
+      const snippet = messageText ? messageText.substring(0, 80) : "Attachment";
+      const replyNote = `[WhatsApp Reply] Customer replied to missed call follow-up message: "${snippet}". Moved from Missed Call to New Leads.`;
+      lead.notes = lead.notes ? `${replyNote}\n${lead.notes}` : replyNote;
+      statusChangedFromMissedCall = true;
+
+      console.log(
+        `[WhatsAppWebhook] Lead ${lead._id} (${cleanPhone}) replied on WhatsApp. Transitioned status from 'Missed Call' to 'New'.`
+      );
+    }
+
     await lead.save();
 
     // 4. Save incoming message in tenant Message collection
@@ -413,6 +431,33 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
         lastMessage: messageText,
         lastMessageTime: now,
       });
+
+      if (statusChangedFromMissedCall) {
+        io.to(`org_${org._id}`).emit("lead_updated", { leadId: lead._id, lead });
+        if (lead.assignedTo && lead.assignedTo !== "Unassigned") {
+          const assignedId = typeof lead.assignedTo === "object" ? lead.assignedTo._id || lead.assignedTo.id : lead.assignedTo;
+          if (assignedId) {
+            io.to(`user_${assignedId}`).emit("lead_updated", { leadId: lead._id, lead });
+          }
+        }
+      }
+    }
+
+    if (statusChangedFromMissedCall && Notification) {
+      try {
+        const assignedId = lead.assignedTo && lead.assignedTo !== "Unassigned"
+          ? (typeof lead.assignedTo === "object" ? lead.assignedTo._id || lead.assignedTo.id : lead.assignedTo)
+          : null;
+        await Notification.create({
+          title: "Missed Call Lead Replied on WhatsApp",
+          message: `${lead.name || lead.phone} replied to missed call follow-up message and was moved to New Leads.`,
+          type: "new_lead",
+          targetRoles: ["sales manager"],
+          targetUsers: assignedId ? [assignedId] : [],
+        });
+      } catch (nErr) {
+        console.warn("[WhatsAppWebhook] Notification error for missed call reply:", nErr.message);
+      }
     }
 
     // 5. Inbound AI Auto-Reply Check

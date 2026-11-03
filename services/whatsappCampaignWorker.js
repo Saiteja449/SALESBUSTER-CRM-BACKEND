@@ -56,12 +56,12 @@ export const buildTemplateComponents = (campaign, recipient) => {
 export const processCampaignQueue = async (campaignId, tenantDbName, organizationId) => {
   const campaignKey = `${tenantDbName}_${campaignId}`;
   if (runningCampaignWorkers.has(campaignKey)) {
-    console.log(`[CampaignWorker] Campaign ${campaignId} is already being processed.`);
+    // console.log(`[CampaignWorker] Campaign ${campaignId} is already being processed.`);
     return;
   }
 
   runningCampaignWorkers.add(campaignKey);
-  console.log(`[CampaignWorker] Starting worker for campaign ${campaignId} (Tenant: ${tenantDbName})`);
+  // console.log(`[CampaignWorker] Starting worker for campaign ${campaignId} (Tenant: ${tenantDbName})`);
 
   try {
     const tenantModels = getTenantModels(tenantDbName);
@@ -70,7 +70,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
 
     const org = await Organization.findById(organizationId);
     if (!org || !org.whatsappCloudSettings?.isConfigured) {
-      console.error(`[CampaignWorker] Organization ${organizationId} does not have WhatsApp Cloud API configured.`);
+      // console.error(`[CampaignWorker] Organization ${organizationId} does not have WhatsApp Cloud API configured.`);
       await WhatsAppCampaign.findByIdAndUpdate(campaignId, {
         status: "Failed",
       });
@@ -78,7 +78,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
     }
 
     if (!org.addons?.whatsappCampaigns) {
-      console.error(`[CampaignWorker] Organization ${organizationId} does not have WhatsApp Campaigns add-on active.`);
+      // console.error(`[CampaignWorker] Organization ${organizationId} does not have WhatsApp Campaigns add-on active.`);
       await WhatsAppCampaign.findByIdAndUpdate(campaignId, {
         status: "Paused",
         statusNote: "Campaign paused: WhatsApp Campaigns add-on is disabled for this organization.",
@@ -89,7 +89,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
     const { phoneNumberId, accessTokenEncrypted } = org.whatsappCloudSettings;
     const accessToken = decryptApiKey(accessTokenEncrypted);
     if (!accessToken) {
-      console.error(`[CampaignWorker] Failed to decrypt access token for organization ${organizationId}.`);
+      // console.error(`[CampaignWorker] Failed to decrypt access token for organization ${organizationId}.`);
       await WhatsAppCampaign.findByIdAndUpdate(campaignId, {
         status: "Failed",
       });
@@ -136,7 +136,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
         !currentCampaign ||
         (currentCampaign.status !== "Running" && currentCampaign.status !== "Scheduled")
       ) {
-        console.log(`[CampaignWorker] Campaign ${campaignId} status is ${currentCampaign?.status || "null"}. Stopping worker loop.`);
+        // console.log(`[CampaignWorker] Campaign ${campaignId} status is ${currentCampaign?.status || "null"}. Stopping worker loop.`);
         break;
       }
 
@@ -181,9 +181,9 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
             new Date(freshCampaign.recurringSchedule.nextRunAt).getTime() > Date.now();
 
           if (hasUpcomingRun) {
-            console.log(
-              `[CampaignWorker] Batch finished for recurring campaign ${campaignId}. Transitioning back to Scheduled for next run at ${freshCampaign.recurringSchedule.nextRunAt}.`
-            );
+            // console.log(
+            //   `[CampaignWorker] Batch finished for recurring campaign ${campaignId}. Transitioning back to Scheduled for next run at ${freshCampaign.recurringSchedule.nextRunAt}.`
+            // );
             await WhatsAppCampaign.findByIdAndUpdate(campaignId, {
               status: "Scheduled",
             });
@@ -197,7 +197,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
               });
             }
           } else {
-            console.log(`[CampaignWorker] All recipients processed for campaign ${campaignId}. Marking completed.`);
+            // console.log(`[CampaignWorker] All recipients processed for campaign ${campaignId}. Marking completed.`);
             await WhatsAppCampaign.findByIdAndUpdate(campaignId, {
               status: "Completed",
               completedAt: new Date(),
@@ -321,10 +321,10 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
               { upsert: true }
             );
           } catch (msgErr) {
-            console.warn(
-              `[CampaignWorker] Failed to sync message to conversation for lead ${recipient.leadId}:`,
-              msgErr.message
-            );
+            // console.warn(
+            //   `[CampaignWorker] Failed to sync message to conversation for lead ${recipient.leadId}:`,
+            //   msgErr.message
+            // );
           }
         }
 
@@ -345,16 +345,16 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
         const metaCode = err.meta?.code || err.code || null;
         const metaMessage = err.meta?.message || err.message || "Failed to send";
 
-        console.error(
-          `[CampaignWorker] Error sending to ${recipient.recipientPhone} (Code: ${metaCode}):`,
-          metaMessage
-        );
+        // console.error(
+        //   `[CampaignWorker] Error sending to ${recipient.recipientPhone} (Code: ${metaCode}):`,
+        //   metaMessage
+        // );
 
         // A. Meta Rate Limit Hit (130429 or 80007)
         if (metaCode === 130429 || metaCode === 80007) {
           consecutiveRateLimits++;
           const backoffDelay = Math.min(60000, 15000 * consecutiveRateLimits);
-          console.warn(`[CampaignWorker] Meta rate limit hit. Backing off for ${backoffDelay}ms...`);
+          // console.warn(`[CampaignWorker] Meta rate limit hit. Backing off for ${backoffDelay}ms...`);
 
           // Release recipient lock so it can be retried
           await WhatsAppCampaignRecipient.findByIdAndUpdate(recipient._id, {
@@ -369,7 +369,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
 
         // B. Tier Limit or Quality Score Block (131049) -> PAUSE CAMPAIGN IMMEDIATELY
         if (metaCode === 131049) {
-          console.error(`[CampaignWorker] Meta tier or quality limit exceeded (131049). Pausing campaign immediately.`);
+          // console.error(`[CampaignWorker] Meta tier or quality limit exceeded (131049). Pausing campaign immediately.`);
           await WhatsAppCampaign.findByIdAndUpdate(campaignId, {
             status: "Paused",
           });
@@ -444,10 +444,10 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
       await sleep(delayMs);
     }
   } catch (workerErr) {
-    console.error(`[CampaignWorker] Fatal worker error for campaign ${campaignId}:`, workerErr);
+    // console.error(`[CampaignWorker] Fatal worker error for campaign ${campaignId}:`, workerErr);
   } finally {
     runningCampaignWorkers.delete(campaignKey);
-    console.log(`[CampaignWorker] Finished worker cycle for campaign ${campaignId}`);
+    // console.log(`[CampaignWorker] Finished worker cycle for campaign ${campaignId}`);
   }
 };
 
@@ -462,7 +462,7 @@ export const resumeInterruptedCampaigns = async () => {
       "whatsappCloudSettings.isConfigured": true,
     }).select("_id tenantDbName");
 
-    console.log(`[CampaignWorker] Checking for interrupted campaigns across ${organizations.length} organizations...`);
+    // console.log(`[CampaignWorker] Checking for interrupted campaigns across ${organizations.length} organizations...`);
 
     for (const org of organizations) {
       if (!org.tenantDbName) continue;
@@ -498,10 +498,10 @@ export const resumeInterruptedCampaigns = async () => {
           );
         }
       } catch (tenantErr) {
-        console.warn(`[CampaignWorker] Error inspecting tenant ${org.tenantDbName}:`, tenantErr.message);
+        // console.warn(`[CampaignWorker] Error inspecting tenant ${org.tenantDbName}:`, tenantErr.message);
       }
     }
   } catch (err) {
-    console.error("[CampaignWorker] Error in resumeInterruptedCampaigns:", err);
+    // console.error("[CampaignWorker] Error in resumeInterruptedCampaigns:", err);
   }
 };
