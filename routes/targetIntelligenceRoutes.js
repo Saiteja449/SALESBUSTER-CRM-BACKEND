@@ -7,8 +7,18 @@ import {
   searchProspects,
   resolveProspect,
   unresolveProspect,
+  bulkResolveProspects,
   getResolvedProspects,
-  importToCrm,
+  getSearches,
+  getCompanies,
+  getCompanyById,
+  enrichCompany,
+  exportProspects,
+  getTargetLists,
+  createTargetList,
+  updateTargetList,
+  deleteTargetList,
+  getProviderStatus,
 } from "../controllers/targetIntelligenceController.js";
 
 const router = express.Router();
@@ -39,16 +49,33 @@ router.use(protect);
 router.use(requireSalesManagerOrOwner);
 router.use(requireAddon("targetIntelligence"));
 
+// Quota & Health
 router.get("/quota", getQuota);
+router.get("/providers/status", getProviderStatus);
+
+// Search & Prompt Interpretation
 router.post("/interpret-prompt", interpretPrompt);
 router.post("/search", searchProspects);
+router.get("/searches", getSearches);
 
-// Resolution endpoints (Replacing legacy CRM import with permanent resolution tracking)
+// Companies & Enrichment
+router.get("/companies", getCompanies);
+router.get("/companies/:id", getCompanyById);
+router.post("/companies/:id/enrich", enrichCompany);
+
+// Resolution Tracking
 router.post("/resolve", resolveProspect);
 router.post("/unresolve", unresolveProspect);
+router.post("/bulk-resolve", bulkResolveProspects);
 router.get("/resolved-list", getResolvedProspects);
 
-// Retained for legacy backward compatibility if needed
-router.post("/import-to-crm", importToCrm);
+// Export (Excel / CSV)
+router.post("/export", exportProspects);
+
+// Target Lists
+router.get("/lists", getTargetLists);
+router.post("/lists", createTargetList);
+router.patch("/lists/:id", updateTargetList);
+router.delete("/lists/:id", deleteTargetList);
 
 export default router;

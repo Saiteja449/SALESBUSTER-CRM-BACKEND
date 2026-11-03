@@ -28,7 +28,7 @@ export const socketAuthMiddleware = (socket, next) => {
     socket.user = decoded;
     next();
   } catch (err) {
-    console.warn(`[Socket Security] Connection rejected: ${err.message}`);
+    // console.warn(`[Socket Security] Connection rejected: ${err.message}`);
     return next(new Error("Authentication error: Invalid or expired token"));
   }
 };
@@ -47,9 +47,9 @@ export const handleJoinLeadChat = async (socket, leadId, options = {}) => {
 
     // Security: Fail-closed if tenant model cannot be resolved
     if (!LeadModel) {
-      console.warn(
-        `[Socket Security] Access denied: LeadModel could not be resolved for user ${socket.user.id}`
-      );
+      // console.warn(
+      //   `[Socket Security] Access denied: LeadModel could not be resolved for user ${socket.user.id}`
+      // );
       socket.emit("security_error", {
         message: "Access denied. Tenant context could not be resolved.",
       });
@@ -58,7 +58,7 @@ export const handleJoinLeadChat = async (socket, leadId, options = {}) => {
 
     const lead = await LeadModel.findById(leadId).select("assignedTo").lean();
     if (!lead) {
-      console.warn(`[Socket Security] Lead ${leadId} not found for join_lead_chat`);
+      // console.warn(`[Socket Security] Lead ${leadId} not found for join_lead_chat`);
       socket.emit("security_error", {
         message: "Access denied. Lead not found.",
       });
@@ -74,9 +74,9 @@ export const handleJoinLeadChat = async (socket, leadId, options = {}) => {
         (repName && lead.assignedTo === repName);
 
       if (!isAssigned) {
-        console.warn(
-          `[Socket Security] Rep ${repId} denied join to unassigned lead chat: ${leadId}`
-        );
+        // console.warn(
+        //   `[Socket Security] Rep ${repId} denied join to unassigned lead chat: ${leadId}`
+        // );
         socket.emit("security_error", {
           message: "Access denied. You are not assigned to this conversation.",
         });
@@ -85,9 +85,9 @@ export const handleJoinLeadChat = async (socket, leadId, options = {}) => {
     }
 
     socket.join(leadId);
-    console.log(`Socket ${socket.id} joined room: ${leadId}`);
+    // console.log(`Socket ${socket.id} joined room: ${leadId}`);
   } catch (err) {
-    console.error(`[Socket Security] Error in join_lead_chat for ${leadId}:`, err.message);
+    // console.error(`[Socket Security] Error in join_lead_chat for ${leadId}:`, err.message);
     socket.emit("security_error", {
       message: "Internal error verifying lead room access.",
     });
@@ -132,13 +132,13 @@ export const handleJoinOrganization = (socket, orgId) => {
       socket.join(`org_${cleanOrgId}_admins`);
     }
 
-    console.log(
-      `Socket ${socket.id} (user: ${userId}, role: ${userRole}) joined organization room: ${roomName}`
-    );
+    // console.log(
+    //   `Socket ${socket.id} (user: ${userId}, role: ${userRole}) joined organization room: ${roomName}`
+    // );
   } else {
-    console.warn(
-      `[Socket Security] Access denied: User ${socket.user.id} tried to join foreign org room: ${cleanOrgId}`
-    );
+    // console.warn(
+    //   `[Socket Security] Access denied: User ${socket.user.id} tried to join foreign org room: ${cleanOrgId}`
+    // );
     socket.emit("security_error", { message: "Access denied to organization room." });
   }
 };
@@ -176,16 +176,16 @@ export const initSocket = (server) => {
         socket.join(`org_${userOrgId}_admins`);
       }
 
-      console.log(
-        `Socket.IO client connected on namespace '${socket.nsp.name}': ${socket.id} (user: ${userId})`
-      );
+      // console.log(
+      //   `Socket.IO client connected on namespace '${socket.nsp.name}': ${socket.id} (user: ${userId})`
+      // );
 
       socket.on("join_lead_chat", (leadId) => handleJoinLeadChat(socket, leadId));
 
       socket.on("leave_lead_chat", (leadId) => {
         if (leadId) {
           socket.leave(leadId);
-          console.log(`Socket ${socket.id} left room: ${leadId}`);
+          // console.log(`Socket ${socket.id} left room: ${leadId}`);
         }
       });
 
@@ -196,7 +196,7 @@ export const initSocket = (server) => {
           const cleanOrgId = String(orgId).replace(/^org_/, "").trim();
           const roomName = `org_${cleanOrgId}`;
           socket.leave(roomName);
-          console.log(`Socket ${socket.id} left organization room: ${roomName}`);
+          // console.log(`Socket ${socket.id} left organization room: ${roomName}`);
         }
       });
 
@@ -205,7 +205,7 @@ export const initSocket = (server) => {
       // =========================================================================
       socket.on("event_voice_start", async ({ eventId, eventName, voiceName = "Aoede" } = {}) => {
         try {
-          console.log(`[Socket Voice] event_voice_start requested for event "${eventName || eventId}" on socket ${socket.id}`);
+          // console.log(`[Socket Voice] event_voice_start requested for event "${eventName || eventId}" on socket ${socket.id}`);
 
           // Close any pre-existing session on this socket
           if (socket.geminiLiveSession) {
@@ -245,7 +245,7 @@ export const initSocket = (server) => {
             socket.geminiLiveSession.close();
             socket.geminiLiveSession = null;
           }
-          console.error(`[Socket Voice] Error starting Event Voice session for socket ${socket.id}:`, err);
+          // console.error(`[Socket Voice] Error starting Event Voice session for socket ${socket.id}:`, err);
           socket.emit("bi_voice_error", {
             message: err.message || "Failed to initialize Gemini Live Event Voice session.",
           });
@@ -259,7 +259,7 @@ export const initSocket = (server) => {
       });
 
       socket.on("event_voice_stop", () => {
-        console.log(`[Socket Voice] event_voice_stop received for socket ${socket.id}`);
+        // console.log(`[Socket Voice] event_voice_stop received for socket ${socket.id}`);
         if (socket.geminiLiveSession) {
           socket.geminiLiveSession.close();
           socket.geminiLiveSession = null;
@@ -271,7 +271,7 @@ export const initSocket = (server) => {
       // =========================================================================
       socket.on("bi_voice_start", async ({ voiceName = "Aoede", chatId = null } = {}) => {
         try {
-          console.log(`[Socket Voice] bi_voice_start requested by user ${socket.user?.id || socket.user?._id} (${socket.user?.name}), role: "${socket.user?.role}", voice: "${voiceName}" on socket ${socket.id}`);
+          // console.log(`[Socket Voice] bi_voice_start requested by user ${socket.user?.id || socket.user?._id} (${socket.user?.name}), role: "${socket.user?.role}", voice: "${voiceName}" on socket ${socket.id}`);
           const roleNormalized = String(socket.user?.role || "").toLowerCase().trim();
           const isAuthorized =
             roleNormalized === "super_admin" ||
@@ -284,7 +284,7 @@ export const initSocket = (server) => {
             Boolean(socket.user?.isManager);
 
           if (!isAuthorized) {
-            console.warn(`[Socket Voice] Access denied: User ${socket.user?.id} with role "${socket.user?.role}" is not authorized for Voice BI Analyst`);
+            // console.warn(`[Socket Voice] Access denied: User ${socket.user?.id} with role "${socket.user?.role}" is not authorized for Voice BI Analyst`);
             socket.emit("bi_voice_error", {
               message: "Unauthorized. Voice BI Analyst is restricted to Sales Managers.",
             });
@@ -301,7 +301,7 @@ export const initSocket = (server) => {
           const tenantDbName = socket.user?.tenantDbName;
           const tenantModels = tenantDbName ? getTenantModels(tenantDbName) : null;
           if (!tenantModels) {
-            console.error(`[Socket Voice] Failed to resolve tenant database for tenantDbName: "${tenantDbName}"`);
+            // console.error(`[Socket Voice] Failed to resolve tenant database for tenantDbName: "${tenantDbName}"`);
             socket.emit("bi_voice_error", {
               message: "Tenant database context could not be resolved.",
             });
@@ -318,7 +318,7 @@ export const initSocket = (server) => {
             roleNormalized === "owner";
 
           if (!isSuperAdmin && !Boolean(organization?.addons?.biAnalyst)) {
-            console.warn(`[Socket Voice] BI Analyst add-on not active for org ${orgId}`);
+            // console.warn(`[Socket Voice] BI Analyst add-on not active for org ${orgId}`);
             socket.emit("bi_voice_error", {
               message:
                 "The BI Analyst add-on is not active for your organization. Please contact your administrator to enable this feature.",
@@ -346,7 +346,7 @@ export const initSocket = (server) => {
             socket.geminiLiveSession.close();
             socket.geminiLiveSession = null;
           }
-          console.error(`[Socket Voice] Error starting BI voice session for socket ${socket.id}:`, err);
+          // console.error(`[Socket Voice] Error starting BI voice session for socket ${socket.id}:`, err);
           socket.emit("bi_voice_error", {
             message: err.message || "Failed to initialize Gemini Live voice session.",
           });
@@ -359,13 +359,13 @@ export const initSocket = (server) => {
         } else {
           if (!socket._hasWarnedNoSession) {
             socket._hasWarnedNoSession = true;
-            console.warn(`[Socket Voice] bi_voice_audio_in received but no geminiLiveSession on socket ${socket.id}`);
+            // console.warn(`[Socket Voice] bi_voice_audio_in received but no geminiLiveSession on socket ${socket.id}`);
           }
         }
       });
 
       socket.on("bi_voice_stop", () => {
-        console.log(`[Socket Voice] bi_voice_stop received for socket ${socket.id}`);
+        // console.log(`[Socket Voice] bi_voice_stop received for socket ${socket.id}`);
         if (socket.geminiLiveSession) {
           socket.geminiLiveSession.close();
           socket.geminiLiveSession = null;
@@ -374,29 +374,29 @@ export const initSocket = (server) => {
 
       socket.on("bi_voice_action_confirm", async ({ action, draftId, confirmed }, callback) => {
         try {
-          console.log(`[Socket Voice] bi_voice_action_confirm received on socket ${socket.id}: draftId=${draftId}, confirmed=${confirmed}`);
+          // console.log(`[Socket Voice] bi_voice_action_confirm received on socket ${socket.id}: draftId=${draftId}, confirmed=${confirmed}`);
           if (socket.geminiLiveSession) {
             const res = await socket.geminiLiveSession.handleActionConfirmation({ draftId, confirmed });
             if (typeof callback === "function") callback({ success: true, result: res });
           } else {
-            console.log(`[Socket Voice] bi_voice_action_confirm fallback to executeConfirmEmailReport`);
+            // console.log(`[Socket Voice] bi_voice_action_confirm fallback to executeConfirmEmailReport`);
             const { executeConfirmEmailReport } = await import("../ai/assistant/tools/emailReportTool.js");
             const res = await executeConfirmEmailReport({ draftId, confirmed, socket });
             if (typeof callback === "function") callback({ success: res.success !== false, result: res });
           }
         } catch (actionErr) {
-          console.error(`[Socket Voice] Error handling action confirmation:`, actionErr);
+          // console.error(`[Socket Voice] Error handling action confirmation:`, actionErr);
           if (typeof callback === "function") callback({ success: false, error: actionErr.message });
         }
       });
 
       socket.on("disconnect", () => {
         if (socket.geminiLiveSession) {
-          console.log(`[Socket Voice] Client disconnected (${socket.id}). Closing active voice session.`);
+          // console.log(`[Socket Voice] Client disconnected (${socket.id}). Closing active voice session.`);
           socket.geminiLiveSession.close();
           socket.geminiLiveSession = null;
         }
-        console.log(`Socket.IO client disconnected: ${socket.id}`);
+        // console.log(`Socket.IO client disconnected: ${socket.id}`);
       });
     });
   };

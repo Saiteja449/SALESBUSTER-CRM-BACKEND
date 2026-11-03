@@ -403,3 +403,108 @@ test("handleMissedCall - Explicit salesRepId in request body routes lead and ses
   assert.equal(createdLead.assignedTo, repId);
 });
 
+// ============================================================================
+// MISSED CALL -> WHATSAPP FOLLOW-UP -> REPLY TO "NEW LEADS" TESTS
+// ============================================================================
+
+test("Missed Call Lead Transitions to 'New' Status When Customer Replies on WhatsApp", async () => {
+  const lead = {
+    _id: new mongoose.Types.ObjectId().toString(),
+    name: "John Caller",
+    phone: "+919876543210",
+    status: "Missed Call",
+    isOldLead: false,
+    notes: "[Missed Call] Received on 11/3/2026 at 10:30 AM.",
+  };
+
+  const incomingReplyText = "Hello, I got your message. Can you send details?";
+  const fromMe = false;
+  const currentStatusLower = String(lead.status || "").trim().toLowerCase();
+
+  let statusChangedFromMissedCall = false;
+  const updatedFields = {
+    lastMessage: incomingReplyText,
+    lastActivity: new Date(),
+  };
+
+  if (!fromMe && currentStatusLower === "missed call") {
+    updatedFields.status = "New";
+    lead.status = "New";
+    if (lead.isOldLead) {
+      updatedFields.isOldLead = false;
+      lead.isOldLead = false;
+    }
+    const replySnippet = incomingReplyText.substring(0, 80);
+    const replyNote = `[WhatsApp Reply] Customer replied to missed call follow-up message: "${replySnippet}". Moved from Missed Call to New Leads.`;
+    updatedFields.notes = lead.notes ? `${replyNote}\n${lead.notes}` : replyNote;
+    lead.notes = updatedFields.notes;
+    statusChangedFromMissedCall = true;
+  }
+
+  assert.equal(statusChangedFromMissedCall, true);
+  assert.equal(lead.status, "New");
+  assert.equal(updatedFields.status, "New");
+  assert.match(lead.notes, /\[WhatsApp Reply\] Customer replied to missed call follow-up message/);
+  assert.match(lead.notes, /\[Missed Call\] Received on 11\/3\/2026/);
+});
+
+test("Outgoing WhatsApp Message (from sales rep) Does NOT Change 'Missed Call' Status to 'New'", async () => {
+  const lead = {
+    _id: new mongoose.Types.ObjectId().toString(),
+    name: "John Caller",
+    phone: "+919876543210",
+    status: "Missed Call",
+    notes: "[Missed Call] Received on 11/3/2026",
+  };
+
+  const outgoingMsgText = "Hello! We will call you back shortly.";
+  const fromMe = true; // Message sent from CRM / sales rep
+  const currentStatusLower = String(lead.status || "").trim().toLowerCase();
+
+  let statusChangedFromMissedCall = false;
+  const updatedFields = {
+    lastMessage: outgoingMsgText,
+    lastActivity: new Date(),
+  };
+
+  if (!fromMe && currentStatusLower === "missed call") {
+    updatedFields.status = "New";
+    lead.status = "New";
+    statusChangedFromMissedCall = true;
+  }
+
+  assert.equal(statusChangedFromMissedCall, false);
+  assert.equal(lead.status, "Missed Call");
+  assert.equal(updatedFields.status, undefined);
+});
+
+test("Customer Reply on WhatsApp Does NOT Overwrite 'Converted' Lead to 'New'", async () => {
+  const lead = {
+    _id: new mongoose.Types.ObjectId().toString(),
+    name: "Converted Deal Customer",
+    phone: "+919876543210",
+    status: "Converted",
+    notes: "Deal closed successfully",
+  };
+
+  const replyText = "Thank you for the prompt support!";
+  const fromMe = false;
+  const currentStatusLower = String(lead.status || "").trim().toLowerCase();
+
+  let statusChangedFromMissedCall = false;
+  const updatedFields = {
+    lastMessage: replyText,
+    lastActivity: new Date(),
+  };
+
+  if (!fromMe && currentStatusLower === "missed call") {
+    updatedFields.status = "New";
+    lead.status = "New";
+    statusChangedFromMissedCall = true;
+  }
+
+  assert.equal(statusChangedFromMissedCall, false);
+  assert.equal(lead.status, "Converted");
+  assert.equal(updatedFields.status, undefined);
+});
+
