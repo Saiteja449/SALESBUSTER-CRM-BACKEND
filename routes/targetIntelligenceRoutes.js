@@ -1,5 +1,5 @@
 import express from "express";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
 import { requireAddon } from "../middleware/addonMiddleware.js";
 import {
   getQuota,
@@ -46,6 +46,7 @@ export const requireSalesManagerOrOwner = (req, res, next) => {
 
 // All Target Intelligence routes require auth, Sales Manager / Owner role, and the targetIntelligence add-on
 router.use(protect);
+router.use(requireCrmAccount);
 router.use(requireSalesManagerOrOwner);
 router.use(requireAddon("targetIntelligence"));
 

@@ -296,7 +296,20 @@ export const provisionOrganization = async (req, res) => {
 export const getOrganizations = async (req, res) => {
   try {
     const { Organization } = getMasterModels();
-    const organizations = await Organization.find().sort({ createdAt: -1 });
+    const { accountType } = req.query;
+
+    const filter = {};
+    if (accountType === "guest") {
+      filter.accountType = "guest";
+    } else if (accountType === "crm") {
+      filter.$or = [
+        { accountType: "crm" },
+        { accountType: { $exists: false } },
+        { accountType: null },
+      ];
+    }
+
+    const organizations = await Organization.find(filter).sort({ createdAt: -1 });
 
     // Populate live seat usage for each organization
     const orgsWithMetrics = await Promise.all(
@@ -320,6 +333,7 @@ export const getOrganizations = async (req, res) => {
 
         return {
           ...org.toJSON(),
+          accountType: org.accountType || "crm",
           whatsappLineLimit: org.whatsappLineLimit || 1,
           whatsappConnectionMode: (org.whatsappLineLimit || 1) === 2 ? "double" : "single",
           usedSeats,
@@ -2028,3 +2042,121 @@ export const updateQuotaSplit = async (req, res) => {
   }
 };
 
+
+
+// @desc    Upgrade a guest organization to a full CRM subscription
+// @route   POST /api/organizations/:id/upgrade-guest
+// @access  Protected (Super Admin)
+export const upgradeGuestOrganization = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      seats = 1,
+      subscriptionPlan = "monthly",
+      months,
+      subscriptionStartDate,
+      amountPaid = 0,
+      pricingPerSeat,
+      paymentMethod = "Manual",
+      addons = {},
+      notes,
+    } = req.body || {};
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(id);
+
+    if (!org) {
+      return res.status(404).json({
+        success: false,
+        code: "ORGANIZATION_NOT_FOUND",
+        message: "Organization not found",
+      });
+    }
+
+    // Idempotency: If already CRM, return safe success without repeating side effects
+    if (org.accountType === "crm") {
+      return res.status(200).json({
+        success: true,
+        message: "Organization is already upgraded to CRM.",
+        data: org,
+      });
+    }
+
+    const seatCount = parseInt(seats, 10);
+    if (isNaN(seatCount) || seatCount < 1) {
+      return res.status(400).json({
+        success: false,
+        code: "VALIDATION_ERROR",
+        message: "Seats must be a positive integer of at least 1.",
+      });
+    }
+
+    const paidAmount = Number(amountPaid);
+    if (isNaN(paidAmount) || paidAmount < 0) {
+      return res.status(400).json({
+        success: false,
+        code: "VALIDATION_ERROR",
+        message: "Amount paid cannot be negative.",
+      });
+    }
+
+    let normalizedPlan = (subscriptionPlan || "monthly").toLowerCase().trim();
+    if (normalizedPlan === "annual") normalizedPlan = "annually";
+    const allowedPlans = ["monthly", "quarterly", "annually"];
+    if (!allowedPlans.includes(normalizedPlan)) {
+      return res.status(400).json({
+        success: false,
+        code: "VALIDATION_ERROR",
+        message: `Invalid subscriptionPlan '${subscriptionPlan}'. Allowed values: ${allowedPlans.join(", ")}.`,
+      });
+    }
+
+    const durationMonths =
+      months != null && !isNaN(parseInt(months, 10))
+        ? Math.max(1, parseInt(months, 10))
+        : getDurationMonthsForPlan(normalizedPlan);
+
+    const startDate = subscriptionStartDate
+      ? new Date(subscriptionStartDate)
+      : new Date();
+    const endDate = calculateSubscriptionEndDate(startDate, durationMonths);
+
+    // In-place upgrade: preserve existing tenantDbName, ownerId, email, events, contacts!
+    org.accountType = "crm";
+    org.seats = seatCount;
+    org.amountPaid = paidAmount;
+    org.pricingPerSeat =
+      pricingPerSeat != null
+        ? Number(pricingPerSeat)
+        : Math.round(paidAmount / seatCount);
+    org.paymentMethod = paymentMethod;
+    org.subscriptionPlan = normalizedPlan;
+    org.subscriptionStartDate = startDate;
+    org.subscriptionEndDate = endDate;
+    if (notes) {
+      org.notes = (org.notes ? org.notes + "\n" : "") + notes;
+    }
+    if (addons) {
+      org.addons = {
+        whatsappCampaigns: Boolean(addons.whatsappCampaigns ?? org.addons?.whatsappCampaigns),
+        biAnalyst: Boolean(addons.biAnalyst ?? org.addons?.biAnalyst),
+        targetIntelligence: Boolean(addons.targetIntelligence ?? org.addons?.targetIntelligence),
+      };
+    }
+
+    await org.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Guest organization successfully upgraded to CRM.",
+      data: org,
+    });
+  } catch (error) {
+    console.error("[upgradeGuestOrganization] Error upgrading organization:", error);
+    return res.status(500).json({
+      success: false,
+      code: "SERVER_ERROR",
+      message: "Server error while upgrading guest organization.",
+    });
+  }
+};

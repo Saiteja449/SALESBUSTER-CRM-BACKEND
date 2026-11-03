@@ -6,12 +6,13 @@ import {
   getAIFollowups,
   handleAIFollowup,
 } from "../controllers/followupController.js";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
 // All follow-up routes require authentication
 router.use(protect);
+router.use(requireCrmAccount);
 
 // Specialized AI follow-up endpoints (must be defined before /:id)
 router.get("/ai", getAIFollowups);

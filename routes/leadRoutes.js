@@ -15,7 +15,7 @@ import {
   handleMissedCall,
   handleInboundCall,
 } from "../controllers/leadController.js";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
@@ -94,39 +94,40 @@ const handleExcelUpload = (req, res, next) => {
 };
 
 // 1. Bulk import (Protected)
-router.post("/import-excel", protect, handleExcelUpload, importExcelLeads);
+router.post("/import-excel", protect, requireCrmAccount, handleExcelUpload, importExcelLeads);
 
 // 2. Leads listing & creation (Protected)
 router
   .route("/")
-  .get(protect, getLeads)
-  .post(protect, handleRecordingUpload, createLead);
+  .get(protect, requireCrmAccount, getLeads)
+  .post(protect, requireCrmAccount, handleRecordingUpload, createLead);
 
 // 3. Paginated leads (Protected)
-router.route("/paginated").get(protect, getPaginatedLeads);
+router.route("/paginated").get(protect, requireCrmAccount, getPaginatedLeads);
 
 // 4. External status webhook (Public integration endpoint, protected by secret verification)
 router.post("/webhook/status", updateStatusByWebhook);
 
 // 5. Missed Call Background Handler (Protected - Auto-schedules in Today's Follow-up & sends WhatsApp)
-router.post("/missed-call", protect, handleMissedCall);
+router.post("/missed-call", protect, requireCrmAccount, handleMissedCall);
 
 // 6. Inbound Call Lead Handler (Protected - Auto-resolves/reassigns to receiving sales rep)
-router.post("/inbound-call", protect, handleInboundCall);
+router.post("/inbound-call", protect, requireCrmAccount, handleInboundCall);
 
 // 6. Individual lead management & recording operations (Protected)
 router
   .route("/:id")
-  .put(protect, handleRecordingUpload, updateLead)
-  .delete(protect, deleteLead);
+  .put(protect, requireCrmAccount, handleRecordingUpload, updateLead)
+  .delete(protect, requireCrmAccount, deleteLead);
 
 router.post(
   "/:id/recordings",
   protect,
+  requireCrmAccount,
   handleRecordingUpload,
   uploadRecordingForLead
 );
 
-router.post("/:id/analyze-recording/:recordingId", protect, analyzeRecording);
+router.post("/:id/analyze-recording/:recordingId", protect, requireCrmAccount, analyzeRecording);
 
 export default router;

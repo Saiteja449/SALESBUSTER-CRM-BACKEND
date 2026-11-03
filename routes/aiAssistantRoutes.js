@@ -1,5 +1,5 @@
 import express from "express";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
 import {
   sendMessage,
   getChatSessions,
@@ -35,6 +35,7 @@ export const requireSalesManager = (req, res, next) => {
 
 // All assistant routes require authentication, Sales Manager role, and the biAnalyst add-on
 router.use(protect);
+router.use(requireCrmAccount);
 router.use(requireSalesManager);
 router.use(requireAddon("biAnalyst"));
 

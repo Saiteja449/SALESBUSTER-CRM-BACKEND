@@ -32,10 +32,24 @@ import Organization, { organizationSchema } from "../models/Organization.js";
 import AuthUser, { authUserSchema } from "../models/AuthUser.js";
 import AppRelease, { appReleaseSchema } from "../models/AppRelease.js";
 
+let _masterModelsOverride = null;
+let _tenantModelsOverride = null;
+
+export const setMasterModelsMock = (mockFn) => {
+  _masterModelsOverride = mockFn;
+};
+
+export const setTenantModelsMock = (mockFn) => {
+  _tenantModelsOverride = mockFn;
+};
+
 /**
  * Gets master database connection and models
  */
 export const getMasterModels = () => {
+  if (typeof _masterModelsOverride === "function") {
+    return _masterModelsOverride();
+  }
   const masterDbName = process.env.MASTER_DB_NAME || "salesbuster_master";
   const masterDb = mongoose.connection.useDb(masterDbName);
 
@@ -70,6 +84,9 @@ export const getTenantConnection = (tenantDbName) => {
  * Registers and returns all models scoped to the specified tenant database
  */
 export const getTenantModels = (tenantDbName) => {
+  if (typeof _tenantModelsOverride === "function") {
+    return _tenantModelsOverride(tenantDbName);
+  }
   const db = getTenantConnection(tenantDbName);
 
   return {

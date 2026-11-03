@@ -1,6 +1,6 @@
 import express from "express";
 import multer from "multer";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
 import {
   getCloudStatus,
   connectCloudAccount,
@@ -53,6 +53,7 @@ const upload = multer({
 
 // All WhatsApp Cloud routes require authentication, manager/owner privileges, and the whatsappCampaigns add-on
 router.use(protect);
+router.use(requireCrmAccount);
 router.use(requireManagerOrOwner);
 router.use(requireAddon("whatsappCampaigns"));
 

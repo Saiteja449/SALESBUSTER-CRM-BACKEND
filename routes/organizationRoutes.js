@@ -20,6 +20,7 @@ import {
   deleteKnowledgeDoc,
   getOrgAISettings,
   updateOrgAISettings,
+  upgradeGuestOrganization,
   uploadOrgKnowledgeDoc,
   deleteOrgKnowledgeDoc,
   getOrganizationServices,
@@ -156,6 +157,7 @@ router.patch("/:id/status", verifySuperAdmin, toggleStatus);
 router.post("/:id/resend-welcome", verifySuperAdmin, resendWelcomeEmail);
 router.put("/:id/whatsapp-limit", verifySuperAdmin, updateOrganizationWhatsAppLimit);
 router.put("/:id/addons", verifySuperAdmin, updateOrganizationAddons);
+router.post("/:id/upgrade-guest", verifySuperAdmin, upgradeGuestOrganization);
 
 // Super Admin AI Settings & Knowledge Base APIs
 router.get("/:id/ai-settings", verifySuperAdmin, getOrgAISettings);
