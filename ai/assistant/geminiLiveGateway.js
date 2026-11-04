@@ -409,8 +409,11 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
     ].filter(Boolean);
 
     const transcriptionMode = (process.env.VOICE_TRANSCRIPTION_MODE || "basic").toLowerCase().trim();
+    // Event capture needs verbatim captions for CRM field extraction. Keep
+    // language and vocabulary hints enabled in this mode even when the general
+    // assistant is configured for basic transcription.
     const inputAudioTranscription =
-      transcriptionMode === "enhanced"
+      transcriptionMode === "enhanced" || this.sessionMode === "event_capture"
         ? {
             languageCodes: voiceLanguages,
             customVocabulary: customVocab,
