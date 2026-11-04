@@ -81,7 +81,7 @@ const eventSchema = new mongoose.Schema(
 );
 
 // Pre-save hook to synchronize venue & location
-eventSchema.pre("save", function (next) {
+eventSchema.pre("save", function () {
   if (this.venue && !this.location) {
     this.location = this.venue;
   } else if (this.location && !this.venue) {
@@ -90,7 +90,7 @@ eventSchema.pre("save", function (next) {
   if (!this.whatsappTemplate && this.description) {
     this.whatsappTemplate = this.description;
   }
-  next();
+
 });
 
 // Index for listing events by organization and recency

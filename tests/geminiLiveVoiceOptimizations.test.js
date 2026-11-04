@@ -167,7 +167,7 @@ describe("Safe Concurrent Tool Execution for Gemini Live", () => {
 });
 
 describe("CRM Live Function Declarations & Tool Grounding", () => {
-  test("1. CRM declarations cover all 8 executive tools with required parameter schemas", () => {
+  test("1. CRM declarations cover all 10 executive tools with required parameter schemas", () => {
     const toolNames = CRM_LIVE_FUNCTION_DECLARATIONS.map((t) => t.name);
     assert.ok(toolNames.includes("get_dashboard_kpis"));
     assert.ok(toolNames.includes("get_salesperson_performance"));
@@ -177,6 +177,72 @@ describe("CRM Live Function Declarations & Tool Grounding", () => {
     assert.ok(toolNames.includes("get_whatsapp_analytics"));
     assert.ok(toolNames.includes("get_org_integrations_and_config"));
     assert.ok(toolNames.includes("search_crm_documentation_and_features"));
-    assert.equal(CRM_LIVE_FUNCTION_DECLARATIONS.length, 8);
+    assert.ok(toolNames.includes("compose_salesperson_report_email"));
+    assert.ok(toolNames.includes("confirm_send_email_report"));
+    assert.equal(CRM_LIVE_FUNCTION_DECLARATIONS.length, 10);
+  });
+});
+
+describe("Gemini Live Gateway - Interim & Final User Speech Separation", () => {
+  test("Gateway emits bi_voice_transcript_interim for hypotheses and bi_voice_transcript_final for committed segments", async () => {
+    const { GeminiLiveSessionManager } = await import("../ai/assistant/geminiLiveGateway.js");
+
+    const emittedEvents = [];
+    const mockSocket = {
+      id: "test_sock_1",
+      emit: (event, payload) => {
+        emittedEvents.push({ event, payload });
+      },
+    };
+
+    const manager = new GeminiLiveSessionManager({
+      socket: mockSocket,
+      user: { id: "u1", name: "Sales Rep" },
+      organization: { _id: "o1", name: "Test Org" },
+      tenantModels: {},
+    });
+
+    // 1. Receive interim transcript hypothesis
+    await manager.handleServerMessage({
+      serverContent: {
+        interimInputTranscription: { text: "Hello I am" },
+      },
+    });
+
+    assert.equal(emittedEvents.length, 1);
+    assert.equal(emittedEvents[0].event, "bi_voice_transcript_interim");
+    assert.equal(emittedEvents[0].payload.text, "Hello I am");
+    // Crucial: currentTurnUserText must NOT accumulate interim hypothesis
+    assert.equal(manager.currentTurnUserText, "");
+
+    // 2. Receive final committed segment
+    await manager.handleServerMessage({
+      serverContent: {
+        inputTranscription: { text: "Hello I am Ramesh" },
+      },
+    });
+
+    assert.equal(emittedEvents.length, 2);
+    assert.equal(emittedEvents[1].event, "bi_voice_transcript_final");
+    assert.equal(emittedEvents[1].payload.text, "Hello I am Ramesh");
+    assert.equal(manager.currentTurnUserText, "Hello I am Ramesh");
+
+    // 3. Receive second final segment (concatenated exactly as received)
+    await manager.handleServerMessage({
+      serverContent: {
+        inputTranscription: { text: " from Acme" },
+      },
+    });
+
+    assert.equal(manager.currentTurnUserText, "Hello I am Ramesh from Acme");
+
+    // 4. Turn complete normalizes whitespace
+    await manager.handleServerMessage({
+      serverContent: {
+        turnComplete: true,
+      },
+    });
+
+    assert.ok(emittedEvents.some((e) => e.event === "bi_voice_turn_complete"));
   });
 });

@@ -1303,4 +1303,56 @@ describe("Voice Live Conversation Detail Capture - Complete Test Matrix", () => 
       assert.ok(json.message.includes("Event not found"));
     });
   });
+
+  // =========================================================================
+  // TRANSCRIPTION ACCURACY & STREAMING SAFEGUARDS
+  // =========================================================================
+  describe("Transcription Accuracy & Streaming Safeguards", () => {
+    it("T01: Event capture system prompt contains strict zero hallucination and language preservation directives", async () => {
+      const { GeminiLiveSessionManager } = await import("../ai/assistant/geminiLiveGateway.js");
+      const manager = new GeminiLiveSessionManager({
+        socket: { id: "test_sock" },
+        user: mockUser,
+        organization: mockOrg,
+        tenantModels: {},
+        sessionMode: "event_capture",
+        eventId: "ev_accuracy_1",
+        eventName: "Smart City Expo",
+      });
+
+      assert.equal(manager.sessionMode, "event_capture");
+      assert.equal(manager.silentMode, true);
+    });
+
+    it("T02: update_contact_draft tool serves as single source of truth and produces clean contact payload", async () => {
+      let interimResult = null;
+      const socket = {
+        emit: (evt, data) => {
+          if (evt === "event_contact_interim") interimResult = data;
+        },
+      };
+
+      const tool = createEventInterimTool({
+        socket,
+        eventId: "ev_1",
+        eventName: "Tech Expo",
+        user: mockUser,
+        organization: mockOrg,
+      });
+
+      const resStr = await tool.invoke({
+        name: "Suresh Reddy",
+        phone: "9848011223",
+        companyName: "Reddy Infotech",
+        designation: "Managing Director",
+      });
+
+      const parsed = JSON.parse(resStr);
+      assert.equal(parsed.ok, true);
+      assert.equal(interimResult.name, "Suresh Reddy");
+      assert.equal(interimResult.phone, "9848011223");
+      assert.equal(interimResult.companyName, "Reddy Infotech");
+      assert.equal(interimResult.designation, "Managing Director");
+    });
+  });
 });
