@@ -192,7 +192,7 @@ export class GeminiLiveSessionManager {
     this.sessionMode = sessionMode;
     this.eventId = eventId;
     this.eventName = eventName;
-    this.silentMode = Boolean(silentMode);
+    this.silentMode = sessionMode === "event_capture" ? true : Boolean(silentMode);
     this.chatId = chatId;
     this.currentTurnUserText = "";
     this.currentTurnAssistantText = "";
@@ -331,8 +331,11 @@ CRITICAL OPERATIONAL & SPEAKER SAFEGUARD RULES:
      * summary: 1-2 sentence discussion summary including any companion names.
      * suggestedMessage: A warm, personalized WhatsApp follow-up greeting from ${managerName} (${orgName}) referencing ${currentEvent}.
 
-5. STRICT ZERO HALLUCINATION:
-   - If any required detail has NOT been spoken, do not invent or guess. Extract strictly what was clearly uttered.`;
+5. STRICT ZERO HALLUCINATION & MULTILINGUAL TRANSCRIPTION RULES:
+   - Transcribe strictly in the language actually spoken; NEVER translate attendee words into another language.
+   - Fully support English, Hindi, and Telugu code-switching (Hinglish and Tenglish).
+   - Do NOT guess unclear names, numbers, or company names.
+   - When a value or detail is unclear or absent, leave the field empty rather than inventing or hallucinating it.`;
 
       functionDeclarations = [EVENT_CAPTURE_TOOL_DECLARATION, EVENT_INTERIM_TOOL_DECLARATION, ...CRM_LIVE_FUNCTION_DECLARATIONS];
     } else {
@@ -385,6 +388,24 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
 
     console.log(`[Gemini Live Gateway] Connecting user ${this.user?.id} to model ${liveModel} (Mode: ${this.sessionMode}, Silent: ${this.silentMode})`);
 
+    const defaultVoiceLanguages = ["en-IN", "hi-IN", "te-IN"];
+    const voiceLanguages = process.env.VOICE_INPUT_LANGUAGES
+      ? process.env.VOICE_INPUT_LANGUAGES.split(",").map((l) => l.trim()).filter(Boolean)
+      : (this.organization?.aiSettings?.voiceLanguages || defaultVoiceLanguages);
+
+    const customVocab = [
+      this.eventName,
+      orgName,
+      managerName,
+      "WhatsApp",
+      "SalesBuster",
+      "Managing Director",
+      "Purchase Head",
+      "CEO",
+      "Owner",
+      "Director",
+    ].filter(Boolean);
+
     const config = {
       responseModalities: ["AUDIO"],
       speechConfig: {
@@ -394,7 +415,10 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           },
         },
       },
-      inputAudioTranscription: {},
+      inputAudioTranscription: {
+        languageCodes: voiceLanguages,
+        customVocabulary: customVocab,
+      },
       outputAudioTranscription: {},
       systemInstruction: {
         parts: [{ text: systemPrompt }],
@@ -694,13 +718,29 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       }
 
       // Real-time user speech transcription (supported by gemini-3.8-live)
-      const userText = content.inputTranscription?.text || content.interimInputTranscription?.text;
-      if (userText) {
-        this.currentTurnUserText = (this.currentTurnUserText ? this.currentTurnUserText + " " : "") + userText;
-        console.log(`[LiveVoice Transcription] User speech recognized: "${userText}"`);
-        this.socket.emit("bi_voice_transcript", {
+      if (content.inputTranscription || content.interimInputTranscription) {
+        console.log(
+          `[VOICE-DIAG] Gateway raw transcription [${new Date().toISOString()}]: interim=${Boolean(content.interimInputTranscription)}, final=${Boolean(content.inputTranscription)}, text="${content.inputTranscription?.text || content.interimInputTranscription?.text}", finished=${content.inputTranscription?.finished ?? content.interimInputTranscription?.finished}`
+        );
+      }
+      // Interim user speech hypothesis (replaceable preview)
+      if (content.interimInputTranscription?.text) {
+        const interimText = content.interimInputTranscription.text;
+        this.socket.emit("bi_voice_transcript_interim", {
           role: "user",
-          text: userText,
+          text: interimText,
+        });
+      }
+
+      // Final committed user speech segment
+      if (content.inputTranscription?.text) {
+        const finalText = content.inputTranscription.text;
+        // Concatenate exactly as received without extra artificial spaces
+        this.currentTurnUserText = (this.currentTurnUserText || "") + finalText;
+        console.log(`[LiveVoice Transcription] User speech committed: "${finalText}"`);
+        this.socket.emit("bi_voice_transcript_final", {
+          role: "user",
+          text: finalText,
         });
       }
 
@@ -731,6 +771,9 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         this.audioBytesOutCount = 0;
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
+        if (this.currentTurnUserText) {
+          this.currentTurnUserText = this.currentTurnUserText.trim().replace(/\s+/g, " ");
+        }
         // Voice Conversation is ephemeral real-time voice and does not pollute chat history
         if (this.sessionMode === "crm_assistant") {
           this.currentTurnUserText = "";
