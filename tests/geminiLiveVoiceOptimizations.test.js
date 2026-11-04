@@ -245,4 +245,56 @@ describe("Gemini Live Gateway - Interim & Final User Speech Separation", () => {
 
     assert.ok(emittedEvents.some((e) => e.event === "bi_voice_turn_complete"));
   });
+
+  test("Gateway watchdog emits bi_voice_no_response after 8s of forwarded chunks and resets on server message", async () => {
+    const { GeminiLiveSessionManager } = await import("../ai/assistant/geminiLiveGateway.js");
+
+    const emittedEvents = [];
+    const mockSocket = {
+      id: "test_sock_watchdog",
+      emit: (event, payload) => {
+        emittedEvents.push({ event, payload });
+      },
+    };
+
+    const manager = new GeminiLiveSessionManager({
+      socket: mockSocket,
+      user: { id: "u1", name: "Sales Rep" },
+      organization: { _id: "o1", name: "Test Org" },
+      tenantModels: {},
+    });
+
+    const sentAudioChunks = [];
+    manager.session = {
+      sendRealtimeInput: (input) => {
+        sentAudioChunks.push(input);
+      },
+    };
+    manager.isActive = true;
+
+    // Send first chunk at t0
+    const base64Sample = Buffer.from(new Uint8Array(1024)).toString("base64");
+    manager.sendAudioChunk(base64Sample);
+    assert.equal(emittedEvents.filter((e) => e.event === "bi_voice_no_response").length, 0);
+
+    // Fast-forward forwardedChunksStartTime by 8.5 seconds
+    manager.forwardedChunksStartTime = Date.now() - 8500;
+    manager.sendAudioChunk(base64Sample);
+
+    const noResponseEvents = emittedEvents.filter((e) => e.event === "bi_voice_no_response");
+    assert.equal(noResponseEvents.length, 1);
+    assert.ok(noResponseEvents[0].payload.secondsWithoutResponse >= 8);
+
+    // Calling again within 15 seconds should be throttled (at most once per 15s)
+    manager.sendAudioChunk(base64Sample);
+    assert.equal(emittedEvents.filter((e) => e.event === "bi_voice_no_response").length, 1);
+
+    // Any server message resets the watchdog
+    await manager.handleServerMessage({ setupComplete: true });
+    assert.equal(manager.forwardedChunksStartTime, null);
+
+    // Chunks start accumulating again
+    manager.sendAudioChunk(base64Sample);
+    assert.ok(manager.forwardedChunksStartTime !== null);
+  });
 });

@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, StartSensitivity, EndSensitivity } from "@google/genai";
 import { buildAssistantTools } from "./tools/index.js";
 import { getISTDateBoundaries } from "./dateUtils.js";
 import { executeToolCall } from "./toolRunner.js";
@@ -209,6 +209,8 @@ export class GeminiLiveSessionManager {
     this.audioChunksInCount = 0;
     this.audioChunksOutCount = 0;
     this.audioBytesOutCount = 0;
+    this.forwardedChunksStartTime = null;
+    this.lastNoResponseEmittedAt = 0;
 
     // Correlated Timing Telemetry
     this.telemetry = new VoiceTelemetry({
@@ -406,6 +408,29 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       "Director",
     ].filter(Boolean);
 
+    const transcriptionMode = (process.env.VOICE_TRANSCRIPTION_MODE || "basic").toLowerCase().trim();
+    const inputAudioTranscription =
+      transcriptionMode === "enhanced"
+        ? {
+            languageCodes: voiceLanguages,
+            customVocabulary: customVocab,
+          }
+        : {};
+
+    const realtimeInputConfig =
+      this.sessionMode === "event_capture"
+        ? {
+            automaticActivityDetection: {
+              startOfSpeechSensitivity:
+                StartSensitivity?.START_SENSITIVITY_HIGH || "START_SENSITIVITY_HIGH",
+              endOfSpeechSensitivity:
+                EndSensitivity?.END_SENSITIVITY_LOW || "END_SENSITIVITY_LOW",
+              prefixPaddingMs: 100,
+              silenceDurationMs: 800,
+            },
+          }
+        : undefined;
+
     const config = {
       responseModalities: ["AUDIO"],
       speechConfig: {
@@ -415,10 +440,8 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           },
         },
       },
-      inputAudioTranscription: {
-        languageCodes: voiceLanguages,
-        customVocabulary: customVocab,
-      },
+      inputAudioTranscription,
+      ...(realtimeInputConfig ? { realtimeInputConfig } : {}),
       outputAudioTranscription: {},
       systemInstruction: {
         parts: [{ text: systemPrompt }],
@@ -565,6 +588,9 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    */
   async handleServerMessage(serverMsg) {
     if (!serverMsg) return;
+
+    // Reset watchdog on ANY server message
+    this.forwardedChunksStartTime = null;
 
     if (serverMsg.setupComplete) {
       console.log(`[LiveVoice Setup] setupComplete received from Gemini Live API for socket ${this.socket.id}`);
@@ -717,15 +743,15 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         }
       }
 
-      // Real-time user speech transcription (supported by gemini-3.8-live)
-      if (content.inputTranscription || content.interimInputTranscription) {
-        console.log(
-          `[VOICE-DIAG] Gateway raw transcription [${new Date().toISOString()}]: interim=${Boolean(content.interimInputTranscription)}, final=${Boolean(content.inputTranscription)}, text="${content.inputTranscription?.text || content.interimInputTranscription?.text}", finished=${content.inputTranscription?.finished ?? content.interimInputTranscription?.finished}`
-        );
-      }
+      // Real-time user speech transcription (defensively checking both interim and final)
+      const rawInterim = content.interimInputTranscription || serverMsg.interimInputTranscription;
+      const rawFinal = content.inputTranscription || serverMsg.inputTranscription;
+
+      const interimText = typeof rawInterim?.text === "string" ? rawInterim.text : null;
+      const finalText = typeof rawFinal?.text === "string" ? rawFinal.text : null;
+
       // Interim user speech hypothesis (replaceable preview)
-      if (content.interimInputTranscription?.text) {
-        const interimText = content.interimInputTranscription.text;
+      if (interimText && (!rawInterim?.finished || !finalText)) {
         this.socket.emit("bi_voice_transcript_interim", {
           role: "user",
           text: interimText,
@@ -733,14 +759,20 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       }
 
       // Final committed user speech segment
-      if (content.inputTranscription?.text) {
-        const finalText = content.inputTranscription.text;
-        // Concatenate exactly as received without extra artificial spaces
+      if (finalText) {
         this.currentTurnUserText = (this.currentTurnUserText || "") + finalText;
         console.log(`[LiveVoice Transcription] User speech committed: "${finalText}"`);
         this.socket.emit("bi_voice_transcript_final", {
           role: "user",
           text: finalText,
+        });
+      } else if (rawInterim?.finished && interimText) {
+        // Defensive fallback: if server marked interim as finished without separate inputTranscription
+        this.currentTurnUserText = (this.currentTurnUserText || "") + interimText;
+        console.log(`[LiveVoice Transcription] User speech committed from finished interim: "${interimText}"`);
+        this.socket.emit("bi_voice_transcript_final", {
+          role: "user",
+          text: interimText,
         });
       }
 
@@ -769,6 +801,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         this.audioChunksInCount = 0;
         this.audioChunksOutCount = 0;
         this.audioBytesOutCount = 0;
+        this.forwardedChunksStartTime = null;
         this.isSpeakingEmitted = false;
         this.isTurnReserved = false;
         if (this.currentTurnUserText) {
@@ -843,6 +876,22 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           data: base64Chunk,
         },
       });
+
+      // Watchdog: emit bi_voice_no_response when chunks forwarded for >= 8s without server response
+      const now = Date.now();
+      if (!this.forwardedChunksStartTime) {
+        this.forwardedChunksStartTime = now;
+      } else {
+        const secondsWithoutResponse = (now - this.forwardedChunksStartTime) / 1000;
+        if (secondsWithoutResponse >= 8) {
+          if (!this.lastNoResponseEmittedAt || (now - this.lastNoResponseEmittedAt) >= 15000) {
+            this.lastNoResponseEmittedAt = now;
+            this.socket.emit("bi_voice_no_response", {
+              secondsWithoutResponse: Math.round(secondsWithoutResponse),
+            });
+          }
+        }
+      }
     } catch (err) {
       console.warn("[LiveVoice AudioIn] Error sending audio chunk to Gemini:", err.message);
     }
@@ -857,6 +906,8 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
     this.audioChunksInCount = 0;
     this.audioChunksOutCount = 0;
     this.audioBytesOutCount = 0;
+    this.forwardedChunksStartTime = null;
+    this.lastNoResponseEmittedAt = 0;
     if (this.currentTurnId) {
       this.telemetry.endTurn(this.currentTurnId);
       this.currentTurnId = null;
