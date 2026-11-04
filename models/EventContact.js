@@ -44,6 +44,15 @@ const eventContactSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    attachments: [
+      {
+        name: { type: String, default: "" },
+        type: { type: String, default: "" },
+        size: { type: Number, default: 0 },
+        url: { type: String, default: "" },
+        uri: { type: String, default: "" },
+      },
+    ],
     aiExtracted: {
       type: Object,
       default: () => ({}),
@@ -86,4 +95,3 @@ eventContactSchema.index({ eventId: 1, phone: 1 });
 
 const EventContact = mongoose.model("EventContact", eventContactSchema);
 export default EventContact;
-

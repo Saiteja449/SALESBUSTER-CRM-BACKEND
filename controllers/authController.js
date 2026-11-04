@@ -120,6 +120,26 @@ export const login = async (req, res) => {
       }
     }
 
+    // Guest accounts are mobile-only and forbidden from web login
+    const isGuestAccount =
+      user.accountType === "guest" ||
+      organizationData?.accountType === "guest";
+
+    const clientPlatform = (
+      req.headers["x-client-platform"] ||
+      req.headers["x-client-type"] ||
+      req.body.clientType ||
+      ""
+    ).toLowerCase();
+
+    if (isGuestAccount && clientPlatform === "web") {
+      return res.status(403).json({
+        success: false,
+        code: "GUEST_WEB_ACCESS_DENIED",
+        message: "Guest accounts are mobile-only and do not have web access. Please log in using the SalesBuster mobile app.",
+      });
+    }
+
     // 4. Generate JWT with tenant database & organization metadata
     const token = generateToken({
       id: user._id,
