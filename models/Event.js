@@ -8,7 +8,12 @@ const eventSchema = new mongoose.Schema(
       trim: true,
       maxlength: [150, "Event name cannot exceed 150 characters"],
     },
-    description: {
+    venue: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    location: {
       type: String,
       trim: true,
       default: "",
@@ -17,11 +22,30 @@ const eventSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
-    location: {
+    time: {
       type: String,
       trim: true,
       default: "",
     },
+    whatsappTemplate: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    description: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    attachments: [
+      {
+        name: { type: String, default: "" },
+        type: { type: String, default: "" },
+        size: { type: Number, default: 0 },
+        url: { type: String, default: "" },
+        uri: { type: String, default: "" },
+      },
+    ],
     status: {
       type: String,
       enum: ["active", "completed", "archived"],
@@ -56,9 +80,21 @@ const eventSchema = new mongoose.Schema(
   }
 );
 
+// Pre-save hook to synchronize venue & location
+eventSchema.pre("save", function (next) {
+  if (this.venue && !this.location) {
+    this.location = this.venue;
+  } else if (this.location && !this.venue) {
+    this.venue = this.location;
+  }
+  if (!this.whatsappTemplate && this.description) {
+    this.whatsappTemplate = this.description;
+  }
+  next();
+});
+
 // Index for listing events by organization and recency
 eventSchema.index({ status: 1, createdAt: -1 });
 
 const Event = mongoose.model("Event", eventSchema);
 export default Event;
-

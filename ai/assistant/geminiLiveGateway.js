@@ -317,7 +317,8 @@ CRITICAL OPERATIONAL & SPEAKER SAFEGUARD RULES:
      * Topic or requirement discussed -> call update_contact_draft with { summary, suggestedMessage }.
    - This progressive tool call updates the mobile screen in real time so the rep sees fields populating live!
 
-4. COMPLETE CAPTURE TRIGGER (trigger_contact_review):
+4. NON-TRIGGERING CONTINUOUS CAPTURE (trigger_contact_review):
+   - You MUST CONTINUE listening passively and never stop the session or trigger modal interruptions.
    - Call 'trigger_contact_review' ONLY when ALL THREE core contact details have been completely and clearly spoken:
      1. Attendee's full Name (MUST NOT be ${managerName}).
      2. A complete 10-digit mobile phone number (digits only, e.g. "9876543210"${repPhone ? `, MUST NOT be ${repPhone}` : ""}).

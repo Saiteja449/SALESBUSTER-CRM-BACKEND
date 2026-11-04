@@ -220,7 +220,17 @@ export const getEvents = async (req, res) => {
 export const createEvent = async (req, res) => {
   try {
     const { Event } = req.tenantModels;
-    const { name, description, eventDate, location } = req.body;
+    const {
+      name,
+      venue,
+      location,
+      eventDate,
+      time,
+      whatsappTemplate,
+      description,
+      attachments,
+      status,
+    } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({
@@ -230,15 +240,42 @@ export const createEvent = async (req, res) => {
     }
 
     const orgId = req.user?.organizationId || req.organization?._id;
+    const finalLocation = (venue || location || "").trim();
+
+    // Sanitize eventDate
+    let parsedEventDate = new Date();
+    if (eventDate) {
+      const d = new Date(eventDate);
+      if (!isNaN(d.getTime())) {
+        parsedEventDate = d;
+      }
+    }
+
+    // Sanitize attachments
+    const sanitizedAttachments = Array.isArray(attachments)
+      ? attachments.map((att) => ({
+          name: typeof att?.name === "string" ? att.name.trim() : "file",
+          type: typeof att?.type === "string" ? att.type.trim() : "application/octet-stream",
+          size: typeof att?.size === "number" ? att.size : 0,
+          url: typeof att?.url === "string" ? att.url.trim() : "",
+          uri: typeof att?.uri === "string" ? att.uri.trim() : "",
+        }))
+      : [];
+
+    const finalTemplate = (whatsappTemplate || description || "").trim();
 
     const newEvent = await Event.create({
       name: name.trim(),
-      description: (description || "").trim(),
-      eventDate: eventDate ? new Date(eventDate) : new Date(),
-      location: (location || "").trim(),
-      status: "active",
+      venue: finalLocation,
+      location: finalLocation,
+      eventDate: parsedEventDate,
+      time: (time || "").trim(),
+      whatsappTemplate: finalTemplate,
+      description: (description || finalTemplate).trim(),
+      attachments: sanitizedAttachments,
+      status: status && ["active", "completed", "archived"].includes(status) ? status : "active",
       organizationId: orgId,
-      createdBy: req.user?._id || null,
+      createdBy: req.user?._id || req.user?.id || null,
       createdByName: req.user?.name || "Manager",
       stats: {
         totalCaptured: 0,
@@ -256,6 +293,132 @@ export const createEvent = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: err.message || "Failed to create event.",
+    });
+  }
+};
+
+/**
+ * Update an existing event
+ * @route PUT /api/events/:id
+ */
+export const updateEvent = async (req, res) => {
+  try {
+    const { Event, EventContact } = req.tenantModels;
+    const { id } = req.params;
+    const {
+      name,
+      venue,
+      location,
+      eventDate,
+      time,
+      whatsappTemplate,
+      description,
+      attachments,
+      status,
+    } = req.body;
+
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({
+        success: false,
+        message: "Event not found.",
+      });
+    }
+
+    if (name !== undefined) event.name = name.trim();
+    if (venue !== undefined || location !== undefined) {
+      const finalLoc = (venue !== undefined ? venue : location || "").trim();
+      event.venue = finalLoc;
+      event.location = finalLoc;
+    }
+    if (eventDate !== undefined) {
+      const d = new Date(eventDate);
+      if (!isNaN(d.getTime())) event.eventDate = d;
+    }
+    if (time !== undefined) event.time = (time || "").trim();
+    if (whatsappTemplate !== undefined) event.whatsappTemplate = (whatsappTemplate || "").trim();
+    if (description !== undefined) event.description = (description || "").trim();
+    if (status !== undefined && ["active", "completed", "archived"].includes(status)) {
+      event.status = status;
+    }
+    if (Array.isArray(attachments)) {
+      event.attachments = attachments.map((att) => ({
+        name: typeof att?.name === "string" ? att.name.trim() : "file",
+        type: typeof att?.type === "string" ? att.type.trim() : "application/octet-stream",
+        size: typeof att?.size === "number" ? att.size : 0,
+        url: typeof att?.url === "string" ? att.url.trim() : "",
+        uri: typeof att?.uri === "string" ? att.uri.trim() : "",
+      }));
+    }
+
+    await event.save();
+
+    const totalCaptured = await EventContact.countDocuments({ eventId: event._id });
+    const whatsappSentCount = await EventContact.countDocuments({
+      eventId: event._id,
+      status: { $in: ["whatsapp_opened", "completed"] },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Event updated successfully.",
+      data: {
+        ...event.toObject(),
+        stats: {
+          totalCaptured,
+          whatsappSentCount,
+        },
+      },
+    });
+  } catch (err) {
+    console.error("[EventController] updateEvent error:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message || "Failed to update event.",
+    });
+  }
+};
+
+/**
+ * Delete or archive an event
+ * @route DELETE /api/events/:id
+ */
+export const deleteEvent = async (req, res) => {
+  try {
+    const { Event, EventContact } = req.tenantModels;
+    const { id } = req.params;
+
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({
+        success: false,
+        message: "Event not found.",
+      });
+    }
+
+    const contactsCount = await EventContact.countDocuments({ eventId: id });
+    if (contactsCount > 0) {
+      // Archive event if it already holds captured contacts
+      event.status = "archived";
+      await event.save();
+      return res.status(200).json({
+        success: true,
+        message: "Event has existing contacts and was archived.",
+        data: event,
+      });
+    }
+
+    await Event.findByIdAndDelete(id);
+    return res.status(200).json({
+      success: true,
+      message: "Event deleted successfully.",
+      data: { _id: id },
+    });
+  } catch (err) {
+    console.error("[EventController] deleteEvent error:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message || "Failed to delete event.",
     });
   }
 };
