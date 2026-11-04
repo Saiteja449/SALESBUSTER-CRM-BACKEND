@@ -41,7 +41,7 @@ export const EVENT_INTERIM_TOOL_DECLARATION = {
 export const EVENT_CAPTURE_TOOL_DECLARATION = {
   name: "trigger_contact_review",
   description:
-    "Triggers the completed contact review popup on mobile ONLY after all key attendee contact details are completely captured: full name, complete 10-digit mobile phone number, and company name.",
+    "Marks attendee contact details as completely captured for validation once all key details are spoken: full name, complete 10-digit mobile phone number, and company name. Operates non-intrusively without interrupting active listening.",
   parameters: {
     type: "OBJECT",
     properties: {
@@ -249,7 +249,7 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
 
     return JSON.stringify({
       ok: true,
-      message: "Contact review popup triggered successfully on rep mobile device.",
+      message: "Contact details marked complete in draft without interrupting active listening.",
       captured: {
         name: attendeeName,
         phone: cleanPhone,

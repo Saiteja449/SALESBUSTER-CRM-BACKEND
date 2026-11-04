@@ -83,6 +83,7 @@ export const protect = async (req, res, next) => {
       req.user.tenantDbName = tenantDbName;
       req.user.organizationId = decoded.organizationId || user.organizationId;
       req.user.isOrgOwner = decoded.isOrgOwner || user.isOrgOwner;
+      req.user.accountType = req.organization?.accountType || decoded.accountType || "crm";
 
       // Super admin is exempt from tenant organization suspension checks
       if (req.user.role !== "super_admin") {
@@ -115,7 +116,7 @@ export const protect = async (req, res, next) => {
             });
           }
 
-          if (req.organization.subscriptionEndDate) {
+          if (req.organization.accountType !== "guest" && req.organization.subscriptionEndDate) {
             const isExpired = new Date() > new Date(req.organization.subscriptionEndDate);
             if (isExpired) {
               return res.status(403).json({
@@ -276,6 +277,28 @@ export const requireSuperAdmin = (req, res, next) => {
   }
 
   return verifySuperAdmin(req, res, next);
+};
+
+/**
+ * Role/Account guard: blocks guest accounts from accessing CRM endpoints.
+ * Returns 403 UPGRADE_REQUIRED.
+ */
+export const requireCrmAccount = (req, res, next) => {
+  const accountType =
+    req.organization?.accountType ||
+    req.user?.accountType ||
+    req.userTokenData?.accountType ||
+    "crm";
+
+  if (accountType === "guest") {
+    return res.status(403).json({
+      success: false,
+      code: "UPGRADE_REQUIRED",
+      message: "A CRM plan is required for this feature.",
+    });
+  }
+
+  next();
 };
 
 // Aliases for compatibility

@@ -4,6 +4,8 @@ import {
   getEvents,
   createEvent,
   getEventById,
+  updateEvent,
+  deleteEvent,
   getEventContacts,
   createEventContact,
   updateContactStatus,
@@ -34,8 +36,13 @@ describe("Event & EventContact Architecture Unit Tests", () => {
       tenantModels: { Event: mockEventModel },
       body: {
         name: "Hyderabad Real Estate Conclave 2026",
-        description: "Annual real estate expo at Hitex",
-        location: "Hitex Hall 2",
+        venue: "Hitex Exhibition Center, Hall 2",
+        time: "10:30 AM",
+        whatsappTemplate: "Hi {name}! Great connecting at Hyderabad Real Estate Conclave 2026.",
+        attachments: [
+          { name: "brochure.pdf", type: "application/pdf", size: 102400 },
+          { name: "floor_plan.png", type: "image/png", size: 204800 },
+        ],
       },
       user: {
         _id: "user_manager_1",
@@ -58,8 +65,135 @@ describe("Event & EventContact Architecture Unit Tests", () => {
     assert.equal(statusCode, 201);
     assert.equal(jsonResponse.success, true);
     assert.equal(jsonResponse.data.name, "Hyderabad Real Estate Conclave 2026");
+    assert.equal(jsonResponse.data.venue, "Hitex Exhibition Center, Hall 2");
+    assert.equal(jsonResponse.data.location, "Hitex Exhibition Center, Hall 2");
+    assert.equal(jsonResponse.data.time, "10:30 AM");
+    assert.equal(jsonResponse.data.whatsappTemplate, "Hi {name}! Great connecting at Hyderabad Real Estate Conclave 2026.");
+    assert.equal(jsonResponse.data.attachments.length, 2);
     assert.equal(jsonResponse.data.stats.totalCaptured, 0);
     assert.equal(jsonResponse.data.stats.whatsappSentCount, 0);
+  });
+
+  it("updates an existing event with modified venue, template, and attachments", async () => {
+    let savedEvent = {
+      _id: "event_123",
+      name: "Old Name",
+      venue: "Old Venue",
+      location: "Old Venue",
+      time: "09:00 AM",
+      whatsappTemplate: "Old template",
+      attachments: [],
+      status: "active",
+      toObject() {
+        return { ...this };
+      },
+      async save() {
+        return this;
+      },
+    };
+
+    const mockEventModel = {
+      findById: async (id) => (id === "event_123" ? savedEvent : null),
+    };
+    const mockEventContactModel = {
+      countDocuments: async () => 5,
+    };
+
+    let statusCode = null;
+    let jsonResponse = null;
+    const req = {
+      params: { id: "event_123" },
+      tenantModels: { Event: mockEventModel, EventContact: mockEventContactModel },
+      body: {
+        name: "Updated Conclave 2026",
+        venue: "Jio World Garden, BKC",
+        time: "11:00 AM",
+        whatsappTemplate: "Hi {name}! New customized greeting.",
+        attachments: [{ name: "catalog.pdf", type: "application/pdf", size: 50000 }],
+      },
+    };
+    const res = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(data) {
+        jsonResponse = data;
+        return this;
+      },
+    };
+
+    await updateEvent(req, res);
+    assert.equal(statusCode, 200);
+    assert.equal(jsonResponse.success, true);
+    assert.equal(jsonResponse.data.name, "Updated Conclave 2026");
+    assert.equal(jsonResponse.data.venue, "Jio World Garden, BKC");
+    assert.equal(jsonResponse.data.location, "Jio World Garden, BKC");
+    assert.equal(jsonResponse.data.time, "11:00 AM");
+    assert.equal(jsonResponse.data.whatsappTemplate, "Hi {name}! New customized greeting.");
+    assert.equal(jsonResponse.data.attachments.length, 1);
+    assert.equal(jsonResponse.data.stats.totalCaptured, 5);
+  });
+
+  it("deletes event if no contacts exist or archives if contacts exist", async () => {
+    let deletedId = null;
+    let archivedEvent = {
+      _id: "event_with_contacts",
+      name: "Active Event",
+      status: "active",
+      async save() {
+        return this;
+      },
+    };
+
+    const mockEventModel = {
+      findById: async (id) => {
+        if (id === "event_with_contacts") return archivedEvent;
+        if (id === "event_empty") return { _id: id, status: "active" };
+        return null;
+      },
+      findByIdAndDelete: async (id) => {
+        deletedId = id;
+        return { _id: id };
+      },
+    };
+
+    // Case 1: Contacts exist -> should archive
+    let statusCode = null;
+    let jsonResponse = null;
+    await deleteEvent(
+      {
+        params: { id: "event_with_contacts" },
+        tenantModels: {
+          Event: mockEventModel,
+          EventContact: { countDocuments: async () => 3 },
+        },
+      },
+      {
+        status(c) { statusCode = c; return this; },
+        json(d) { jsonResponse = d; return this; },
+      }
+    );
+    assert.equal(statusCode, 200);
+    assert.equal(jsonResponse.success, true);
+    assert.equal(archivedEvent.status, "archived");
+
+    // Case 2: No contacts -> should delete
+    await deleteEvent(
+      {
+        params: { id: "event_empty" },
+        tenantModels: {
+          Event: mockEventModel,
+          EventContact: { countDocuments: async () => 0 },
+        },
+      },
+      {
+        status(c) { statusCode = c; return this; },
+        json(d) { jsonResponse = d; return this; },
+      }
+    );
+    assert.equal(statusCode, 200);
+    assert.equal(deletedId, "event_empty");
   });
 
   it("stores a contact strictly under an Event without touching Leads", async () => {

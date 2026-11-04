@@ -26,7 +26,7 @@ import {
   getCoexistenceStatus,
 } from "../controllers/whatsappCoexistenceController.js";
 import { captureAndSendLiveVoiceWhatsApp } from "../controllers/managerLiveVoiceController.js";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
 import { getMasterModels } from "../services/tenantManager.js";
 
 const router = express.Router();
@@ -191,6 +191,7 @@ const requireManagerOrOwner = (req, res, next) => {
 
 // Standard authenticated routes
 router.use(protect);
+router.use(requireCrmAccount);
 
 // Settings & Controls (Mutations restricted to manager/admin)
 router.get("/settings", getGlobalSettings);

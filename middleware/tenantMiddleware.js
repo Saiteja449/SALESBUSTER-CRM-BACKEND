@@ -170,7 +170,7 @@ export const checkSubscriptionActive = (req, res, next) => {
       });
     }
 
-    if (req.organization.subscriptionEndDate) {
+    if (req.organization.accountType !== "guest" && req.organization.subscriptionEndDate) {
       const isExpired = new Date() > new Date(req.organization.subscriptionEndDate);
       if (isExpired) {
         return res.status(403).json({
@@ -190,5 +190,5 @@ export const checkSubscriptionActive = (req, res, next) => {
   next();
 };
 
-export { requireSuperAdmin } from "./authMiddleware.js";
+export { requireSuperAdmin, requireCrmAccount } from "./authMiddleware.js";
 

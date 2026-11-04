@@ -159,9 +159,17 @@ const organizationSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    accountType: {
+      type: String,
+      enum: ["crm", "guest"],
+      default: "crm",
+      index: true,
+    },
     subscriptionEndDate: {
       type: Date,
-      required: true,
+      required: function () {
+        return this.accountType !== "guest";
+      },
       index: true,
     },
     status: {

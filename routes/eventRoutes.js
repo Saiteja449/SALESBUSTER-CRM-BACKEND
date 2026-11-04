@@ -4,6 +4,8 @@ import {
   getEvents,
   createEvent,
   getEventById,
+  updateEvent,
+  deleteEvent,
   getEventContacts,
   createEventContact,
   updateContactStatus,
@@ -22,6 +24,8 @@ router.post("/summarize-text", summarizeTranscript);
 router.get("/", getEvents);
 router.post("/", createEvent);
 router.get("/:id", getEventById);
+router.put("/:id", updateEvent);
+router.delete("/:id", deleteEvent);
 
 // 3. Contacts under Event (Strictly isolated from CRM Leads)
 router.get("/:id/contacts", getEventContacts);
