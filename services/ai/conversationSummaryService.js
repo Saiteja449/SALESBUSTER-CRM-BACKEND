@@ -8,8 +8,10 @@ import { createGeminiClient, GEMINI_MODELS } from "../../configs/gemini.js";
 
 /**
  * Generates a structured summary from transcript segments.
+ * Guarantees the entire conversation is analyzed by falling back to rawTranscript if segments are partial.
  * @param {Object} options
  * @param {Array<Object>} options.segments - Array of { speakerId, text }
+ * @param {string} [options.rawTranscript=""] - Complete full accumulated transcript
  * @param {Object} [options.contact] - Extracted contact details if available
  * @param {Object} [options.organization] - Tenant organization
  * @param {boolean} [options.isInterim=false] - Whether this is an interim periodic summary
@@ -17,11 +19,25 @@ import { createGeminiClient, GEMINI_MODELS } from "../../configs/gemini.js";
  */
 export async function generateConversationSummary({
   segments = [],
+  rawTranscript = "",
   contact = null,
   organization = null,
   isInterim = false,
 }) {
-  if (!Array.isArray(segments) || segments.length === 0) {
+  let formattedTranscript = "";
+
+  if (Array.isArray(segments) && segments.length > 0) {
+    formattedTranscript = segments
+      .map((s) => `${(s.speakerId || "Speaker").toUpperCase()}: ${s.text}`)
+      .join("\n");
+  }
+
+  // Ensure full conversation transcript is used if segments are shorter than rawTranscript
+  if (rawTranscript && rawTranscript.trim().length > formattedTranscript.length) {
+    formattedTranscript = rawTranscript.trim();
+  }
+
+  if (!formattedTranscript.trim()) {
     return {
       keyDiscussion: "No conversation content available to summarize.",
       topics: [],
@@ -31,18 +47,15 @@ export async function generateConversationSummary({
     };
   }
 
-  const formattedTranscript = segments
-    .map((s) => `${(s.speakerId || "Speaker").toUpperCase()}: ${s.text}`)
-    .join("\n");
-
   const prompt = `You are a Senior Business Conversation Analyst.
-Analyze the following conversation transcript.
-${isInterim ? "Provide a concise interim summary of the discussion in progress." : "Provide a comprehensive, factual final summary of the face-to-face conversation."}
+Analyze the following complete conversation transcript.
+${isInterim ? "Provide a concise interim summary of the discussion in progress." : "Provide a comprehensive, factual final summary covering the WHOLE face-to-face conversation from start to finish."}
 
 CRITICAL RULES:
-1. Do NOT invent, assume, or hallucinate discussions or commitments not present in the transcript.
-2. Clearly distinguish participants and attribute actions accurately.
-3. Highlight customer requirements, proposed solutions, decisions reached, and next steps.
+1. Summarize the COMPLETE conversation, not just the latest turn. Cover the opening introduction, the central discussion, and any conclusion.
+2. Do NOT invent, assume, or hallucinate discussions or commitments not present in the transcript.
+3. Clearly distinguish participants and attribute actions accurately.
+4. Highlight customer requirements, proposed solutions, decisions reached, and next steps.
 
 TRANSCRIPT:
 ${formattedTranscript}
@@ -94,4 +107,3 @@ Respond ONLY with a valid JSON object matching this schema:
 export default {
   generateConversationSummary,
 };
-

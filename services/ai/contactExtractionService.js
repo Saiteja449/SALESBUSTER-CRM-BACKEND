@@ -58,26 +58,26 @@ OUTPUT FORMAT:
 Respond ONLY with a valid JSON object matching this exact structure:
 {
   "selectedSpeakerId": "speaker_A",
-  "selectionReason": "Explanation of why this speaker was selected based on first explicit self-introduction",
+  "selectionReason": "Speaker A was the first attendee to introduce themselves saying 'My name is Rahul'",
   "contact": {
     "name": {
-      "value": "Rahul",
-      "evidence": "Hi, my name is Rahul",
+      "value": "Rahul Sharma",
+      "evidence": "My name is Rahul Sharma",
       "confidence": 0.98
     },
     "company": {
-      "value": "TCS",
-      "evidence": "I am a software developer at TCS",
-      "confidence": 0.96
+      "value": "Apex Technologies",
+      "evidence": "I am from Apex Technologies",
+      "confidence": 0.95
     },
     "designation": {
-      "value": "Software Developer",
-      "evidence": "I am a software developer at TCS",
-      "confidence": 0.95
+      "value": "Managing Director",
+      "evidence": "I am the Managing Director",
+      "confidence": 0.90
     },
     "phone": {
       "value": "9876543210",
-      "evidence": "My number is 9876543210",
+      "evidence": "You can reach me at 9876543210",
       "confidence": 0.99
     }
   },
@@ -97,16 +97,37 @@ Respond ONLY with a valid JSON object matching this exact structure:
  * Extracts structured contact details with speaker attribution from transcript segments.
  * @param {Object} options
  * @param {Array<Object>} options.segments - Array of { speakerId, text, startTime, endTime }
+ * @param {string} [options.rawTranscript=""] - Complete full accumulated transcript
  * @param {Object} [options.hostUser] - Host sales representative details
  * @param {Object} [options.organization] - Tenant organization
  * @returns {Promise<Object>} Structured contact extraction result
  */
 export async function extractSpeakerAwareContact({
   segments = [],
+  rawTranscript = "",
   hostUser = null,
   organization = null,
 }) {
-  if (!Array.isArray(segments) || segments.length === 0) {
+  let formattedTranscript = "";
+
+  if (Array.isArray(segments) && segments.length > 0) {
+    formattedTranscript = segments
+      .map((s) => {
+        const speakerTag = (s.speakerId || "speaker_A")
+          .replace("speaker_", "Speaker ")
+          .toUpperCase();
+        const timeTag =
+          typeof s.startTime === "number" ? ` [${s.startTime.toFixed(1)}s]` : "";
+        return `${speakerTag}${timeTag}: ${s.text}`;
+      })
+      .join("\n");
+  }
+
+  if (rawTranscript && rawTranscript.trim().length > formattedTranscript.length) {
+    formattedTranscript = rawTranscript.trim();
+  }
+
+  if (!formattedTranscript.trim()) {
     return {
       selectedSpeakerId: null,
       selectionReason: "No conversation transcript segments provided",
@@ -119,18 +140,6 @@ export async function extractSpeakerAwareContact({
       otherSpeakers: [],
     };
   }
-
-  // Format transcript with explicit speaker attribution
-  const formattedTranscript = segments
-    .map((s) => {
-      const speakerTag = (s.speakerId || "speaker_A")
-        .replace("speaker_", "Speaker ")
-        .toUpperCase();
-      const timeTag =
-        typeof s.startTime === "number" ? ` [${s.startTime.toFixed(1)}s]` : "";
-      return `${speakerTag}${timeTag}: ${s.text}`;
-    })
-    .join("\n");
 
   const hostName = hostUser?.name || "";
   const hostOrg = organization?.name || "";
@@ -151,102 +160,35 @@ export async function extractSpeakerAwareContact({
     contents: prompt,
     config: {
       responseMimeType: "application/json",
-      temperature: 0.1, // Low temperature for high precision and factual adherence
+      temperature: 0.1,
     },
   });
 
   const rawText = response.text || "";
-  let parsed;
-
   try {
     const cleanJson = rawText
       .replace(/^```(?:json)?\s*/i, "")
       .replace(/\s*```$/i, "")
       .trim();
-    parsed = JSON.parse(cleanJson);
+    const parsed = JSON.parse(cleanJson);
+
+    // Sanitize phone digits
+    if (parsed.contact?.phone?.value) {
+      const cleanDigits = String(parsed.contact.phone.value).replace(/\D/g, "");
+      if (cleanDigits.length >= 10) {
+        parsed.contact.phone.value = cleanDigits.slice(-10);
+      } else {
+        parsed.contact.phone.value = null;
+      }
+    }
+
+    return parsed;
   } catch (err) {
-    console.error("[ContactExtraction] Failed to parse JSON response:", rawText);
-    throw new Error("Unable to parse structured contact details from Gemini Flash response.");
+    console.error("[ContactExtraction] Failed to parse model response:", rawText, err);
+    throw new Error("Invalid structured extraction response from Gemini Flash");
   }
-
-  // Sanitize and validate extracted phone number
-  let sanitizedPhone = null;
-  const rawPhoneVal = parsed.contact?.phone?.value;
-  if (rawPhoneVal && rawPhoneVal !== "null") {
-    const digits = String(rawPhoneVal).replace(/\D/g, "");
-    if (digits.length >= 10) {
-      sanitizedPhone = digits.slice(-10);
-    }
-  }
-
-  // Shield check: ensure extracted phone is not the host's phone
-  if (hostPhone && sanitizedPhone === hostPhone) {
-    sanitizedPhone = null;
-    parsed.contact.phone = {
-      value: null,
-      evidence: "Host phone shielded",
-      confidence: 0,
-    };
-  } else if (sanitizedPhone) {
-    parsed.contact.phone.value = sanitizedPhone;
-  }
-
-  // Shield check: ensure extracted name is not the host's name
-  if (hostName && parsed.contact?.name?.value) {
-    const nameLower = parsed.contact.name.value.toLowerCase().trim();
-    const hostLower = hostName.toLowerCase().trim();
-    if (hostLower.length > 2 && (nameLower === hostLower || nameLower.includes(hostLower))) {
-      parsed.contact.name = {
-        value: null,
-        evidence: "Host name shielded",
-        confidence: 0,
-      };
-    }
-  }
-
-  // Shield check: ensure extracted company is not the host's company
-  if (hostOrg && parsed.contact?.company?.value) {
-    const companyLower = parsed.contact.company.value.toLowerCase().trim();
-    const orgLower = hostOrg.toLowerCase().trim();
-    if (orgLower.length > 2 && (companyLower === orgLower || companyLower.includes(orgLower))) {
-      parsed.contact.company = {
-        value: null,
-        evidence: "Host organization shielded",
-        confidence: 0,
-      };
-    }
-  }
-
-  return {
-    selectedSpeakerId: parsed.selectedSpeakerId || "speaker_A",
-    selectionReason: parsed.selectionReason || "First self-introduced speaker identified",
-    contact: {
-      name: {
-        value: parsed.contact?.name?.value || null,
-        evidence: parsed.contact?.name?.evidence || null,
-        confidence: typeof parsed.contact?.name?.confidence === "number" ? parsed.contact.name.confidence : 0,
-      },
-      company: {
-        value: parsed.contact?.company?.value || null,
-        evidence: parsed.contact?.company?.evidence || null,
-        confidence: typeof parsed.contact?.company?.confidence === "number" ? parsed.contact.company.confidence : 0,
-      },
-      designation: {
-        value: parsed.contact?.designation?.value || null,
-        evidence: parsed.contact?.designation?.evidence || null,
-        confidence: typeof parsed.contact?.designation?.confidence === "number" ? parsed.contact.designation.confidence : 0,
-      },
-      phone: {
-        value: sanitizedPhone,
-        evidence: parsed.contact?.phone?.evidence || null,
-        confidence: typeof parsed.contact?.phone?.confidence === "number" ? parsed.contact.phone.confidence : 0,
-      },
-    },
-    otherSpeakers: Array.isArray(parsed.otherSpeakers) ? parsed.otherSpeakers : [],
-  };
 }
 
 export default {
   extractSpeakerAwareContact,
 };
-

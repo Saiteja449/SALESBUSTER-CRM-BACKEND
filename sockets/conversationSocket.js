@@ -185,6 +185,11 @@ export function registerConversationSocketHandlers(socket) {
       socket.conversationCaptureSession = null;
     }
 
+    const clientTranscript = (data?.liveTranscript || data?.transcript || data?.committedTranscript || "").trim();
+    if (clientTranscript && clientTranscript.length > liveTranscript.length) {
+      liveTranscript = clientTranscript;
+    }
+
     const organization = session?.organization || (await resolveOrganization());
     const user = session?.user || socket.user;
     const eventId = data.eventId || session?.eventId || null;

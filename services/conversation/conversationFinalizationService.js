@@ -94,6 +94,7 @@ class ConversationFinalizationService {
       try {
         extractionResult = await extractSpeakerAwareContact({
           segments,
+          rawTranscript: diarizationRaw.fullTranscript || liveTranscript,
           hostUser: user,
           organization,
         });
@@ -118,6 +119,7 @@ class ConversationFinalizationService {
       try {
         summaryResult = await generateConversationSummary({
           segments,
+          rawTranscript: diarizationRaw.fullTranscript || liveTranscript,
           contact: extractionResult.contact,
           organization,
           isInterim: false,
