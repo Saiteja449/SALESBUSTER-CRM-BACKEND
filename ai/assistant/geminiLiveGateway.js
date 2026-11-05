@@ -312,11 +312,12 @@ CRITICAL OPERATIONAL & SPEAKER SAFEGUARD RULES:
 
 3. REAL-TIME PROGRESSIVE FILLING (update_contact_draft):
    - As you listen, IMMEDIATELY call 'update_contact_draft' whenever ANY single contact detail is spoken:
-     * Name mentioned -> call update_contact_draft with { name }.
-     * Company mentioned -> call update_contact_draft with { companyName }.
+     * Name mentioned -> call update_contact_draft with { name } ONLY when the attendee introduces themselves or is explicitly identified by the host. A person's name must never be placed in companyName.
+     * Company mentioned -> call update_contact_draft with { companyName } ONLY when a business/organization is explicitly named ("I work at X", "our company is X", "we are from X"). Never put a person's name, role, location, or conversation topic in companyName.
      * Designation or job title mentioned -> call update_contact_draft with { designation }.
      * Phone digits dictated -> call update_contact_draft with { phone }.
-     * Topic or requirement discussed -> call update_contact_draft with { summary, suggestedMessage }.
+     * Substantive need, interest, product discussed, or agreed next step -> call update_contact_draft with { summary } using only what was actually said. Continue updating summary as more discussion is heard; do not leave it empty after a substantive discussion.
+   - Keep the name and company fields semantically separate on every tool call. If unsure which is which, omit the uncertain field and keep listening.
    - This progressive tool call updates the mobile screen in real time so the rep sees fields populating live!
 
 4. NON-TRIGGERING CONTINUOUS CAPTURE (trigger_contact_review):
@@ -326,9 +327,9 @@ CRITICAL OPERATIONAL & SPEAKER SAFEGUARD RULES:
      2. A complete 10-digit mobile phone number (digits only, e.g. "9876543210"${repPhone ? `, MUST NOT be ${repPhone}` : ""}).
      3. Attendee's Company / Business name (MUST NOT be ${orgName}).
    - Extract:
-     * name: Primary attendee's full name.
+     * name: Primary attendee's full name, never a role or company.
      * phone: Exactly 10-digit Indian mobile number (e.g. "9876543210").
-     * companyName: Attendee's company/business name.
+     * companyName: Attendee's company/business name, never a person's name or job title.
      * designation: Attendee's job title, role, or designation if heard (e.g. "Managing Director", "Owner", "CEO").
      * summary: 1-2 sentence discussion summary including any companion names.
      * suggestedMessage: A warm, personalized WhatsApp follow-up greeting from ${managerName} (${orgName}) referencing ${currentEvent}.
