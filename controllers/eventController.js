@@ -1,10 +1,11 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { extractSpeakerAwareContact } from "../services/ai/contactExtractionService.js";
+import { generateConversationSummary } from "../services/ai/conversationSummaryService.js";
 import { getMasterModels } from "../services/tenantManager.js";
 import { decryptApiKey } from "../utils/encryption.js";
 
 /**
- * Summarize real-time speech transcript using Gemini AI
- * Extracts: Name, 10-digit Phone, Company, Summary, and ready-to-send WhatsApp message.
+ * Summarize real-time speech transcript using Intelligent Speaker-Aware AI
+ * Powered by Gemini Flash (gemini-3.5-flash) Contact Extraction & Conversation Summary
  * @route POST /api/events/summarize-text
  */
 export const summarizeTranscript = async (req, res) => {
@@ -28,107 +29,32 @@ export const summarizeTranscript = async (req, res) => {
       decryptApiKey(organization?.aiSettings?.geminiApiKey) ||
       process.env.GEMINI_API_KEY;
 
-    if (!activeKey) {
-      return res.status(500).json({
-        success: false,
-        message: "Gemini AI API Key is not configured on the server or organization.",
-      });
-    }
-
-    const genAI = new GoogleGenerativeAI(activeKey);
-    const preferredModel = process.env.GEMINI_TEXT_MODEL || "gemini-1.5-flash";
-    const model = genAI.getGenerativeModel({ model: preferredModel });
-
     const senderName = req.user?.name || "Sales Manager";
     const orgName = organization?.name || "Our Team";
+    const repPhone = (req.user?.phone || "").replace(/\D/g, "").slice(-10);
     const currentEvent = eventName || "our discussion";
 
-    const prompt = `
-You are the SalesBuster Event Intelligence Engine.
-Analyze the following raw spoken voice transcript from a face-to-face conversation or voice memo at an event ("${currentEvent}").
-The conversation may be in English, Hindi, Telugu, or multilingual mix.
+    // 1. Speaker-aware contact extraction using Gemini Flash
+    const extractedContact = await extractSpeakerAwareContact({
+      rawTranscript: transcript.trim(),
+      hostName: senderName,
+      hostOrg: orgName,
+      hostPhone: repPhone,
+      geminiApiKey: activeKey,
+    });
 
-TRANSCRIPT:
-"${transcript.trim()}"
+    // 2. Structured conversation summary
+    const summaryResult = await generateConversationSummary({
+      segments: [{ speakerId: "attendee", text: transcript.trim() }],
+      contact: extractedContact,
+      organization,
+    });
 
-TASK:
-Extract the following information:
-1. name: The customer / person's name mentioned or spoken. If unknown, return null.
-2. phone: The customer's 10-digit mobile number spoken (e.g. "9876543210"). Extract ONLY digits. If none found, return null.
-3. companyName: The company, firm, shop, or organization associated with the person. If none mentioned, return null.
-4. designation: The customer's job title, role, or designation (e.g. "Managing Director", "Founder", "CEO", "Owner", "Procurement Manager", "Operations Head", "Partner", "Doctor"). If none mentioned, return null.
-5. summary: A concise 1-2 sentence summary of the discussion topic, requirements, or next steps.
-6. messageText: A professional, warm, personalized WhatsApp message ready to be sent to this person from ${senderName} (${orgName}). Keep it friendly, mentioning the context discussed and inviting them to stay in touch. (Do NOT include fake links or placeholders).
-
-CRITICAL FORMAT REQUIREMENT:
-Respond ONLY with a valid raw JSON object and nothing else. Do NOT include markdown code fences or backticks.
-Example:
-{
-  "name": "Rahul Verma",
-  "phone": "9876543210",
-  "companyName": "Apex Technologies",
-  "designation": "Managing Director",
-  "summary": "Discussed commercial CRM licensing and sales rep tracking.",
-  "messageText": "Hello Rahul, it was great speaking with you regarding commercial CRM at ${currentEvent}. Feel free to connect directly whenever you need assistance!\\n\\nBest regards,\\n${senderName}\\n${orgName}"
-}
-`;
-
-    const result = await model.generateContent(prompt);
-    const rawResponse = result.response.text().trim();
-
-    // Clean JSON formatting if enclosed in code blocks
-    const cleanJson = rawResponse
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(cleanJson);
-    } catch (parseErr) {
-      console.warn("[EventAI] Failed to parse Gemini response as JSON:", rawResponse);
-      parsed = {
-        name: null,
-        phone: null,
-        companyName: null,
-        summary: transcript.slice(0, 150),
-        messageText: `Hello! It was great connecting with you today at ${currentEvent}. Let's stay in touch!\n\nBest regards,\n${senderName}\n${orgName}`,
-      };
-    }
-
-    // Clean phone number
-    let cleanPhone = "";
-    if (parsed.phone && parsed.phone !== "null") {
-      const digits = String(parsed.phone).replace(/\D/g, "");
-      if (digits.length >= 10) {
-        cleanPhone = digits.slice(-10);
-      }
-    }
-
-    // Fallback phone extraction with regex if Gemini missed it
-    if (!cleanPhone) {
-      const phoneMatch = transcript.match(/(?:(?:\+|0{0,2})91[\s-]*)?([6-9]\d{9})/);
-      if (phoneMatch) {
-        cleanPhone = phoneMatch[1];
-      }
-    }
-
-    const customerName =
-      parsed.name && parsed.name !== "null" && parsed.name !== "Valued Customer"
-        ? parsed.name.trim()
-        : "";
-
-    const companyName =
-      parsed.companyName && parsed.companyName !== "null"
-        ? parsed.companyName.trim()
-        : "";
-
-    const designation =
-      parsed.designation && parsed.designation !== "null"
-        ? parsed.designation.trim()
-        : "";
-
-    const summary = (parsed.summary || transcript.slice(0, 120)).trim();
+    const customerName = extractedContact.customerName || "";
+    const cleanPhone = extractedContact.spokenPhone || "";
+    const companyName = extractedContact.companyName || "";
+    const designation = extractedContact.designation || "";
+    const summary = summaryResult.keyDiscussion || transcript.slice(0, 150);
 
     const greetingName = customerName || "there";
     const defaultMessage =
@@ -139,8 +65,6 @@ Example:
       `*${senderName}*\n` +
       `${orgName}`;
 
-    const messageText = (parsed.messageText || defaultMessage).trim();
-
     return res.status(200).json({
       success: true,
       data: {
@@ -149,7 +73,7 @@ Example:
         companyName,
         designation,
         summary,
-        messageText,
+        messageText: defaultMessage,
         originalTranscript: transcript,
       },
     });

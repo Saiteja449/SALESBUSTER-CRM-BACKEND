@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 const conversationSchema = new mongoose.Schema(
   {
+    // Existing WhatsApp CRM fields (preserved for 100% backward compatibility)
     leadId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Lead",
@@ -51,20 +52,159 @@ const conversationSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
-    // AI-generated chat summary — cached here to avoid repeated Gemini calls
     chatSummary: {
       summary: { type: String, default: "" },
       keyPoints: [{ type: String }],
-      // e.g. "High Intent" | "Warm" | "Neutral" | "Cold" | "Hesitant" | "Price Sensitive"
       sentiment: { type: String, default: "" },
       nextSteps: [{ type: String }],
       generatedAt: { type: Date },
-      // Number of messages that were analyzed — used as cache invalidation key
       messagesAnalyzed: { type: Number, default: 0 },
+    },
+
+    // =========================================================================
+    // Real-Time Face-to-Face Conversation Capture System Fields
+    // =========================================================================
+    sessionId: {
+      type: String,
+      sparse: true,
+      unique: true,
+      index: true,
+    },
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+    },
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Organization",
+      index: true,
+    },
+    eventId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Event",
+      sparse: true,
+      index: true,
+    },
+    startedAt: {
+      type: Date,
+      default: Date.now,
+    },
+    endedAt: {
+      type: Date,
+      default: null,
+    },
+    duration: {
+      type: Number, // Duration in seconds
+      default: 0,
+    },
+    originalTranscript: {
+      type: String,
+      default: "",
+    },
+    transcriptSegments: [
+      {
+        speakerId: { type: String, required: true },
+        text: { type: String, required: true },
+        startTime: { type: Number, default: 0 },
+        endTime: { type: Number, default: 0 },
+        isFinal: { type: Boolean, default: true },
+        confidence: { type: Number, default: 1.0 },
+        language: { type: String, default: "en-IN" },
+      },
+    ],
+    speakers: [
+      {
+        speakerId: { type: String, required: true },
+        label: { type: String, default: "" },
+        identifiedName: { type: String, default: null },
+      },
+    ],
+    selectedSpeakerId: {
+      type: String,
+      default: null,
+    },
+    extractedContact: {
+      name: {
+        value: { type: String, default: null },
+        evidence: { type: String, default: null },
+        confidence: { type: Number, default: 0 },
+      },
+      phone: {
+        value: { type: String, default: null },
+        evidence: { type: String, default: null },
+        confidence: { type: Number, default: 0 },
+      },
+      company: {
+        value: { type: String, default: null },
+        evidence: { type: String, default: null },
+        confidence: { type: Number, default: 0 },
+      },
+      designation: {
+        value: { type: String, default: null },
+        evidence: { type: String, default: null },
+        confidence: { type: Number, default: 0 },
+      },
+      confirmationStatus: {
+        type: String,
+        enum: ["provisional", "confirmed", "rejected", "edited"],
+        default: "provisional",
+        index: true,
+      },
+      confirmedAt: {
+        type: Date,
+        default: null,
+      },
+    },
+    summary: {
+      keyDiscussion: { type: String, default: "" },
+      topics: [{ type: String }],
+      decisions: [{ type: String }],
+      actionItems: [{ type: String }],
+      participants: [{ type: Object }],
+    },
+    languages: [{ type: String }],
+    processingStatus: {
+      type: String,
+      enum: ["recording", "processing", "completed", "failed"],
+      default: "recording",
+      index: true,
+    },
+    aiProvider: {
+      type: String,
+      default: "gemini",
+    },
+    modelMetadata: {
+      liveModel: {
+        type: String,
+        default: "gemini-3.5-transcribe-live",
+      },
+      finalModel: {
+        type: String,
+        default: "gemini-3.5-transcribe",
+      },
+      extractionModel: {
+        type: String,
+        default: "gemini-3.5-flash",
+      },
+    },
+    usageMetrics: {
+      liveDurationSec: { type: Number, default: 0 },
+      finalDiarizationDurationSec: { type: Number, default: 0 },
+      flashPromptTokens: { type: Number, default: 0 },
+      flashCandidateTokens: { type: Number, default: 0 },
+      modelCallsCount: { type: Number, default: 0 },
+      retriesCount: { type: Number, default: 0 },
+      estimatedCostUsd: { type: Number, default: 0 },
     },
   },
   { timestamps: true }
 );
+
+// Indexes
+conversationSchema.index({ organizationId: 1, createdAt: -1 });
+conversationSchema.index({ userId: 1, createdAt: -1 });
+conversationSchema.index({ eventId: 1, createdAt: -1 });
 
 conversationSchema.set("toJSON", {
   virtuals: true,

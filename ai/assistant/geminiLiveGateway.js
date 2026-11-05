@@ -6,12 +6,6 @@ import { executeToolCall } from "./toolRunner.js";
 import { decryptApiKey } from "../../utils/encryption.js";
 import { reserveAiQuota } from "../../services/aiUsageService.js";
 import { VoiceTelemetry } from "./voiceTelemetry.js";
-import {
-  createEventCaptureTool,
-  createEventInterimTool,
-  EVENT_CAPTURE_TOOL_DECLARATION,
-  EVENT_INTERIM_TOOL_DECLARATION,
-} from "./tools/eventCaptureTool.js";
 
 /**
  * Standard Function Declarations for Gemini Live API
@@ -229,26 +223,7 @@ export class GeminiLiveSessionManager {
     });
     this.toolsByName = toolsByName;
 
-    // If running in event capture mode, bind both complete and progressive interim tools
-    if (this.sessionMode === "event_capture") {
-      const eventTool = createEventCaptureTool({
-        socket: this.socket,
-        eventId: this.eventId,
-        eventName: this.eventName,
-        user: this.user,
-        organization: this.organization,
-      });
-      this.toolsByName[eventTool.name] = eventTool;
-
-      const interimTool = createEventInterimTool({
-        socket: this.socket,
-        eventId: this.eventId,
-        eventName: this.eventName,
-        user: this.user,
-        organization: this.organization,
-      });
-      this.toolsByName[interimTool.name] = interimTool;
-    }
+    // Event capture is handled by dedicated conversation capture pipeline (conversationSocket)
   }
 
   /**
@@ -286,63 +261,9 @@ export class GeminiLiveSessionManager {
     let functionDeclarations = CRM_LIVE_FUNCTION_DECLARATIONS;
 
     if (this.sessionMode === "event_capture") {
-      const currentEvent = this.eventName || "our event";
-      systemPrompt = `You are the SalesBuster Event Intelligence Ear for the event "${currentEvent}".
-You are listening passively to an in-person business conversation between sales representative ${managerName} (${orgName}${repPhone ? `, Phone: ${repPhone}` : ""}) and one or more event attendees.
-
-CRITICAL OPERATIONAL & SPEAKER SAFEGUARD RULES:
-1. SILENT LISTENER MODE (MANDATORY):
-   - You MUST remain COMPLETELY SILENT.
-   - NEVER speak aloud, generate audible voice audio, or respond to the attendee.
-
-2. MULTI-SPEAKER & MULTI-PARTY CONVERSATION SAFEGUARDS (3+ SPEAKERS):
-   - At exhibitions and business meetings, 3 or more people may speak (Host Sales Rep, Primary Lead, Lead's Colleague/Partner, bystanders).
-   - HOST REP SHIELD (CRITICAL):
-     * The person holding this mobile device is sales representative ${managerName} (${orgName}${repPhone ? `, Phone: ${repPhone}` : ""}).
-     * NEVER capture ${managerName} as the contact name.
-     * NEVER capture ${orgName} as the company name.
-     ${repPhone ? `* NEVER capture ${repPhone} as the contact phone.` : ""}
-   - PRIMARY PROSPECT IDENTIFICATION & PHONE-NUMBER BINDING:
-     * When 2 or more attendees speak together (e.g. Ramesh introduces himself and colleague Suresh), ALWAYS anchor the contact name to the specific person whose phone number is confirmed for WhatsApp follow-up.
-     * Example: If Ramesh says "I am Ramesh, but please WhatsApp my partner Suresh on 9876543210", capture Name: "Suresh", Phone: "9876543210", with Ramesh noted in the summary.
-   - BYSTANDER & AMBIENT NOISE FILTERING:
-     * Completely ignore background passersby, conversations from adjacent expo booths, or phone calls happening nearby that are not addressing ${managerName}.
-   - MULTI-PERSON SUMMARY:
-     * In the summary, record all key participants (e.g. "Met with Ramesh [Director] and Suresh [Tech Lead]; requested software demo proposal..."), while attributing the primary contact fields to the verified phone owner.
-
-3. REAL-TIME PROGRESSIVE FILLING (update_contact_draft):
-   - As you listen, IMMEDIATELY call 'update_contact_draft' whenever ANY single contact detail is spoken:
-     * Name mentioned -> call update_contact_draft with { name } ONLY when the attendee introduces themselves or is explicitly identified by the host. A person's name must never be placed in companyName.
-     * Company mentioned -> call update_contact_draft with { companyName } ONLY when a business/organization is explicitly named ("I work at X", "our company is X", "we are from X"). Never put a person's name, role, location, or conversation topic in companyName.
-     * Designation or job title mentioned -> call update_contact_draft with { designation }.
-     * Phone digits dictated -> call update_contact_draft with { phone }.
-     * Substantive need, interest, product discussed, or agreed next step -> call update_contact_draft with { summary } using only what was actually said. Continue updating summary as more discussion is heard; do not leave it empty after a substantive discussion.
-   - Keep the name and company fields semantically separate on every tool call. If unsure which is which, omit the uncertain field and keep listening.
-   - This progressive tool call updates the mobile screen in real time so the rep sees fields populating live!
-
-4. NON-TRIGGERING CONTINUOUS CAPTURE (trigger_contact_review):
-   - You MUST CONTINUE listening passively and never stop the session or trigger modal interruptions.
-   - Call 'trigger_contact_review' ONLY when ALL THREE core contact details have been completely and clearly spoken:
-     1. Attendee's full Name (MUST NOT be ${managerName}).
-     2. A complete 10-digit mobile phone number (digits only, e.g. "9876543210"${repPhone ? `, MUST NOT be ${repPhone}` : ""}).
-     3. Attendee's Company / Business name (MUST NOT be ${orgName}).
-   - Extract:
-     * name: Primary attendee's full name, never a role or company.
-     * phone: Exactly 10-digit Indian mobile number (e.g. "9876543210").
-     * companyName: Attendee's company/business name, never a person's name or job title.
-     * designation: Attendee's job title, role, or designation if heard (e.g. "Managing Director", "Owner", "CEO").
-     * summary: 1-2 sentence discussion summary including any companion names.
-     * suggestedMessage: A warm, personalized WhatsApp follow-up greeting from ${managerName} (${orgName}) referencing ${currentEvent}.
-
-5. STRICT ZERO HALLUCINATION & MULTILINGUAL TRANSCRIPTION RULES:
-   - Transcribe strictly in the language actually spoken; NEVER translate attendee words into another language.
-   - Fully support English, Hindi, and Telugu code-switching (Hinglish and Tenglish).
-   - Do NOT guess unclear names, numbers, or company names.
-   - When a value or detail is unclear or absent, leave the field empty rather than inventing or hallucinating it.`;
-
-      functionDeclarations = [EVENT_CAPTURE_TOOL_DECLARATION, EVENT_INTERIM_TOOL_DECLARATION, ...CRM_LIVE_FUNCTION_DECLARATIONS];
-    } else {
-      systemPrompt = `You are the executive AI Voice CRM Assistant for "${orgName}", talking directly with ${managerName} (Sales Manager) in real-time.
+      console.warn("[Gemini Live Gateway] sessionMode 'event_capture' is deprecated in gateway; use conversationSocket instead.");
+    }
+    systemPrompt = systemPrompt = `You are the executive AI Voice CRM Assistant for "${orgName}", talking directly with ${managerName} (Sales Manager) in real-time.
 You have instant access to the live MongoDB database of the CRM via specialized tools.
 
 =======================================================
@@ -382,8 +303,7 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
      * Step 3: Wait for user verbal confirmation:
        - If they say "yes", "send it", "confirm", "send", "go ahead": Call 'confirm_send_email_report' with confirmed: true.
        - If they say "no", "cancel", "don't send", "discard": Call 'confirm_send_email_report' with confirmed: false.
-       - Then announce the result conversationally.`;
-    }
+       - Then announce the result conversationally.`;;
 
     const liveModel =
       process.env.AI_ASSISTANT_LIVE_MODEL ||
@@ -414,26 +334,14 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
     // language and vocabulary hints enabled in this mode even when the general
     // assistant is configured for basic transcription.
     const inputAudioTranscription =
-      transcriptionMode === "enhanced" || this.sessionMode === "event_capture"
+      transcriptionMode === "enhanced"
         ? {
             languageCodes: voiceLanguages,
             customVocabulary: customVocab,
           }
         : {};
 
-    const realtimeInputConfig =
-      this.sessionMode === "event_capture"
-        ? {
-            automaticActivityDetection: {
-              startOfSpeechSensitivity:
-                StartSensitivity?.START_SENSITIVITY_HIGH || "START_SENSITIVITY_HIGH",
-              endOfSpeechSensitivity:
-                EndSensitivity?.END_SENSITIVITY_LOW || "END_SENSITIVITY_LOW",
-              prefixPaddingMs: 100,
-              silenceDurationMs: 800,
-            },
-          }
-        : undefined;
+    const realtimeInputConfig = undefined;
 
     const config = {
       responseModalities: ["AUDIO"],
