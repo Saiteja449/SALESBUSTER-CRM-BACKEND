@@ -1,3 +1,100 @@
+/**
+ * Robustly extracts both audioTranscription parts (diarized speaker turns) and text parts
+ * from Gemini models.generateContent response without triggering the SDK non-text parts warning.
+ * @param {Object} response
+ * @param {number} baseOffsetSec
+ * @param {number} durationSec
+ * @returns {{ segments: Array<Object>, fullTranscript: string }}
+ */
+export function extractTranscriptionFromResponse(response, baseOffsetSec = 0, durationSec = 0) {
+  if (!response) {
+    return { segments: [], fullTranscript: "" };
+  }
+
+  const segments = [];
+  const fullTextLines = [];
+  const candidates = response.candidates || [];
+
+  for (const candidate of candidates) {
+    const parts = candidate.content?.parts || [];
+    for (const part of parts) {
+      // 1. Process audioTranscription parts (Speaker Diarization output from Gemini)
+      if (part.audioTranscription) {
+        const at = part.audioTranscription;
+        const text = (typeof at.text === "string" ? at.text : "").trim();
+        const rawSpeaker = at.speakerLabel || "Speaker A";
+
+        let startSec = baseOffsetSec;
+        let endSec = baseOffsetSec;
+
+        if (Array.isArray(at.words) && at.words.length > 0) {
+          const firstWord = at.words[0];
+          const lastWord = at.words[at.words.length - 1];
+          if (firstWord?.startOffset) {
+            const parsed = parseFloat(String(firstWord.startOffset).replace("s", ""));
+            if (!isNaN(parsed)) startSec = baseOffsetSec + parsed;
+          }
+          if (lastWord?.endOffset) {
+            const parsed = parseFloat(String(lastWord.endOffset).replace("s", ""));
+            if (!isNaN(parsed)) endSec = baseOffsetSec + parsed;
+          }
+        }
+
+        if (text) {
+          let cleanSpeaker = rawSpeaker.toLowerCase().trim().replace(/\s+/g, "_");
+          if (!cleanSpeaker.startsWith("speaker_")) {
+            cleanSpeaker = `speaker_${cleanSpeaker}`;
+          }
+
+          segments.push({
+            speakerId: cleanSpeaker,
+            text,
+            startTime: startSec,
+            endTime: endSec > startSec ? endSec : startSec + 3,
+            isFinal: true,
+            language: at.languageCode || "en-IN",
+          });
+
+          fullTextLines.push(`${rawSpeaker}: ${text}`);
+        }
+      }
+
+      // 2. Process regular text parts
+      if (typeof part.text === "string" && part.text.trim()) {
+        const trimmed = part.text.trim();
+        fullTextLines.push(trimmed);
+      }
+    }
+  }
+
+  // If structured audioTranscription segments were extracted, return them directly
+  if (segments.length > 0) {
+    return {
+      segments,
+      fullTranscript: fullTextLines.join("\n").trim(),
+    };
+  }
+
+  // Fallback: parse text lines using parseDiarizedTranscriptText
+  const combinedRawText = fullTextLines.join("\n").trim();
+  const parsedSegments = parseDiarizedTranscriptText(combinedRawText, baseOffsetSec);
+
+  if (parsedSegments.length === 0 && combinedRawText) {
+    parsedSegments.push({
+      speakerId: "speaker_A",
+      text: combinedRawText,
+      startTime: baseOffsetSec,
+      endTime: baseOffsetSec + durationSec,
+      isFinal: true,
+    });
+  }
+
+  return {
+    segments: parsedSegments,
+    fullTranscript: combinedRawText,
+  };
+}
+
 import { createGeminiClient, GEMINI_MODELS } from "../../configs/gemini.js";
 import { pcmToWav, segmentPcmBuffer, calculatePcmDuration } from "../../utils/audioUtils.js";
 
@@ -142,30 +239,13 @@ export async function transcribeWithDiarization({
       },
     });
 
-    const candidateText =
-      response.text ||
-      response.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("\n") ||
-      "";
+    const { segments: extractedSegments, fullTranscript: extractedFullText } =
+      extractTranscriptionFromResponse(response, seg.startTimeSec, seg.durationSec);
 
-    fullTranscriptParts.push(candidateText);
-
-    const parsedSegments = parseDiarizedTranscriptText(
-      candidateText,
-      seg.startTimeSec
-    );
-
-    // If parsing found no speaker markers, assign default speaker_A
-    if (parsedSegments.length === 0 && candidateText.trim()) {
-      parsedSegments.push({
-        speakerId: "speaker_A",
-        text: candidateText.trim(),
-        startTime: seg.startTimeSec,
-        endTime: seg.startTimeSec + seg.durationSec,
-        isFinal: true,
-      });
+    if (extractedFullText) {
+      fullTranscriptParts.push(extractedFullText);
     }
-
-    allTranscriptSegments.push(...parsedSegments);
+    allTranscriptSegments.push(...extractedSegments);
   }
 
   const fullTranscript = fullTranscriptParts.join("\n\n").trim();
@@ -180,5 +260,6 @@ export async function transcribeWithDiarization({
 export default {
   transcribeWithDiarization,
   parseDiarizedTranscriptText,
+  extractTranscriptionFromResponse,
 };
 
