@@ -6,13 +6,13 @@
 export const EVENT_INTERIM_TOOL_DECLARATION = {
   name: "update_contact_draft",
   description:
-    "Progressively updates attendee contact fields in real time on the sales rep's mobile screen as soon as any detail is spoken (e.g. attendee name, company, phone digits, or discussion topic). Call this immediately whenever any single attribute is heard so fields fill live.",
+    "Progressively updates attendee contact fields on mobile. Keep name and company strictly distinct: name is only a clearly identified person's name; companyName is only an explicitly identified business or organization. Never put a person's name in companyName or a company, role, or location in name. Send summary as a concise factual note when discussion needs or next steps are mentioned.",
   parameters: {
     type: "OBJECT",
     properties: {
       name: {
         type: "STRING",
-        description: "Attendee full name if heard. Must not be the sales representative.",
+        description: "Attendee person's name only, based on self-introduction or explicit identification. Never a company, role, location, or generic label. Must not be the sales representative.",
       },
       phone: {
         type: "STRING",
@@ -20,7 +20,7 @@ export const EVENT_INTERIM_TOOL_DECLARATION = {
       },
       companyName: {
         type: "STRING",
-        description: "Attendee company or business name mentioned. Must not be the host organization.",
+        description: "Explicitly named attendee company/business only. Never a person's name, job title, location, or discussion topic. Must not be the host organization.",
       },
       designation: {
         type: "STRING",
@@ -28,7 +28,7 @@ export const EVENT_INTERIM_TOOL_DECLARATION = {
       },
       summary: {
         type: "STRING",
-        description: "Progressive notes, requirement, or topic discussed so far.",
+        description: "Concise factual summary of the attendee's stated needs, interest, products discussed, or agreed next steps. Do not invent details.",
       },
       suggestedMessage: {
         type: "STRING",
@@ -47,7 +47,7 @@ export const EVENT_CAPTURE_TOOL_DECLARATION = {
     properties: {
       name: {
         type: "STRING",
-        description: "Customer or attendee full name. Mandatory.",
+        description: "Attendee person's full name only; never a company or job title. Mandatory.",
       },
       phone: {
         type: "STRING",
@@ -55,7 +55,7 @@ export const EVENT_CAPTURE_TOOL_DECLARATION = {
       },
       companyName: {
         type: "STRING",
-        description: "Company, organization, or business name mentioned. Mandatory.",
+        description: "Attendee's explicitly named company/business only; never a person's name or job title. Mandatory.",
       },
       designation: {
         type: "STRING",
@@ -63,7 +63,7 @@ export const EVENT_CAPTURE_TOOL_DECLARATION = {
       },
       summary: {
         type: "STRING",
-        description: "Concise 1-2 sentence summary of what was discussed, their interest, or next steps.",
+        description: "Concise factual 1-2 sentence summary of stated needs, interest, products discussed, or next steps. Do not invent details.",
       },
       suggestedMessage: {
         type: "STRING",
