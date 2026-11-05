@@ -29,6 +29,7 @@ import appReleaseRoutes from "./routes/appReleaseRoutes.js";
 import aiAssistantRoutes from "./routes/aiAssistantRoutes.js";
 import supportRoutes from "./routes/supportRoutes.js";
 import eventRoutes from "./routes/eventRoutes.js";
+import conversationRoutes from "./routes/conversationRoutes.js";
 import targetIntelligenceRoutes from "./routes/targetIntelligenceRoutes.js";
 
 // Socket & WhatsApp Imports
@@ -109,6 +110,7 @@ app.use("/api/static-chat", staticChatRoutes);
 app.use("/api/ai-assistant", aiAssistantRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/events", eventRoutes);
+app.use("/api/conversations", conversationRoutes);
 app.use("/api/target-intelligence", targetIntelligenceRoutes);
 
 // Base route
