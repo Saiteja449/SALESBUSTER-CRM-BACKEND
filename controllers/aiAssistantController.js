@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import AIAssistantChat from "../models/AIAssistantChat.js";
-import { runSalesManagerAssistant } from "../ai/assistant/aiAssistantService.js";
+import { runSalesManagerAssistant, extractTextFromAiContent } from "../ai/assistant/aiAssistantService.js";
 import { checkAiQuotaAvailable, reserveAiQuota, releaseAiQuota } from "../services/aiUsageService.js";
 
 /**
@@ -104,9 +104,11 @@ export const sendMessage = async (req, res) => {
       timestamp: new Date(),
     });
 
+    const cleanReply = extractTextFromAiContent(reply);
+
     chat.messages.push({
       role: "assistant",
-      content: reply,
+      content: cleanReply,
       options: options || [],
       toolsUsed: toolsUsed || [],
       emailDraft: emailDraft || null,
@@ -118,7 +120,7 @@ export const sendMessage = async (req, res) => {
     res.status(200).json({
       success: true,
       chatId: chat._id.toString(),
-      reply,
+      reply: cleanReply,
       options: options || [],
       toolsUsed,
       emailDraft,
@@ -157,17 +159,18 @@ export const getChatSessions = async (req, res) => {
       .select("title updatedAt createdAt messages isVoice")
       .lean();
 
-    const formatted = sessions.map((s) => ({
-      id: s._id.toString(),
-      title: s.title || "Conversation",
-      messageCount: s.messages?.length || 0,
-      lastMessageSnippet:
-        s.messages && s.messages.length > 0
-          ? s.messages[s.messages.length - 1].content.slice(0, 60)
-          : "",
-      updatedAt: s.updatedAt,
-      createdAt: s.createdAt,
-    }));
+    const formatted = sessions.map((s) => {
+      const lastMsg = s.messages && s.messages.length > 0 ? s.messages[s.messages.length - 1] : null;
+      const cleanSnippet = lastMsg ? extractTextFromAiContent(lastMsg.content) : "";
+      return {
+        id: s._id.toString(),
+        title: s.title || "Conversation",
+        messageCount: s.messages?.length || 0,
+        lastMessageSnippet: cleanSnippet.slice(0, 60),
+        updatedAt: s.updatedAt,
+        createdAt: s.createdAt,
+      };
+    });
 
     res.status(200).json({
       success: true,
@@ -214,7 +217,7 @@ export const getChatSessionById = async (req, res) => {
         messages: (chat.messages || []).map((m) => ({
           id: m._id?.toString(),
           role: m.role,
-          content: m.content,
+          content: extractTextFromAiContent(m.content),
           options: m.options || [],
           toolsUsed: m.toolsUsed || [],
           emailDraft: m.emailDraft || null,
