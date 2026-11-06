@@ -13,6 +13,7 @@ import {
   discoveryService,
   computeProspectKey,
 } from "../services/targetIntelligence/discoveryService.js";
+import rapidApiScraperProvider from "../services/targetIntelligence/providers/rapidApiScraperProvider.js";
 import { enrichCompanyWebsite } from "../services/targetIntelligence/enrichmentService.js";
 import {
   verifyEmail,
@@ -215,7 +216,7 @@ export const searchProspects = async (req, res) => {
 
     // Persist TargetSearch Record
     let searchRecord = null;
-    if (orgId && models.TargetSearchModel) {
+    if (orgId && models.TargetSearchModel && (models.TargetSearchModel.db?.readyState === 1 || !models.TargetSearchModel.db)) {
       try {
         searchRecord = await models.TargetSearchModel.create({
           organizationId: orgId,
@@ -252,6 +253,8 @@ export const searchProspects = async (req, res) => {
                 location: c.location,
                 founders: c.founders,
                 contact: c.contact,
+                socialLinks: c.socialLinks || {},
+                technologies: c.technologies || [],
                 sources: c.sources || [],
                 confidenceScore: c.confidenceScore,
                 enrichmentStatus: "discovered",
@@ -273,6 +276,7 @@ export const searchProspects = async (req, res) => {
       data: {
         searchId: searchRecord ? searchRecord._id.toString() : `ti-search-${Date.now()}`,
         totalCount: companies.length,
+        excludedResolvedCount: discoveryResult.excludedResolvedCount || 0,
         prospects: companies,
         searchProviders: discoveryResult.usedProviders,
         providerStatuses: discoveryResult.providerStatuses,
@@ -328,6 +332,9 @@ export const resolveProspect = async (req, res) => {
         email,
         phone,
         website,
+        linkedin: (prospect.socialLinks?.linkedin || prospect.linkedin || "").trim(),
+        socialLinks: prospect.socialLinks || {},
+        technologies: Array.isArray(prospect.technologies) ? prospect.technologies : [],
         location,
         resolvedBy: req.user?._id,
         resolvedByName: resolverName,
@@ -447,6 +454,9 @@ export const bulkResolveProspects = async (req, res) => {
           email,
           phone,
           website,
+          linkedin: (p.socialLinks?.linkedin || p.linkedin || "").trim(),
+          socialLinks: p.socialLinks || {},
+          technologies: Array.isArray(p.technologies) ? p.technologies : [],
           location,
           resolvedBy: req.user?._id,
           resolvedByName: resolverName,
@@ -822,6 +832,10 @@ export const getProviderStatus = async (req, res) => {
         },
         openStreetMap: {
           available: true,
+        },
+        rapidApi: {
+          configured: rapidApiScraperProvider.isConfigured(),
+          host: rapidApiScraperProvider.host,
         },
       },
     });

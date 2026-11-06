@@ -1,6 +1,7 @@
 import dns from "node:dns/promises";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { verifyEmail, normalizeAndVerifyPhone, normalizeDomain } from "./verificationService.js";
+import rapidApiScraperProvider from "./providers/rapidApiScraperProvider.js";
 
 const CONFIGURED_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 
@@ -207,9 +208,53 @@ export async function enrichCompanyWebsite(websiteUrl, companyName = "", apiKey 
     emailVerificationStatus: "unknown",
     contactPageUrl: "",
     decisionMakers: [],
+    socialLinks: {
+      linkedin: "",
+      twitter: "",
+      facebook: "",
+      instagram: "",
+      whatsapp: "",
+      youtube: "",
+      github: "",
+    },
+    technologies: [],
     sources: [],
     confidenceScore: 70,
   };
+
+  // Try RapidAPI Website Contacts Scraper first if configured
+  if (rapidApiScraperProvider.isConfigured() && websiteUrl) {
+    try {
+      const scraped = await rapidApiScraperProvider.fetchWebsiteContacts(websiteUrl);
+      if (scraped.success) {
+        if (scraped.primaryPhone) {
+          result.businessPhone = scraped.primaryPhone;
+          result.phoneType = scraped.phoneType;
+          result.phoneVerificationStatus = "Verified";
+        }
+        if (scraped.primaryEmail) {
+          result.businessEmail = scraped.primaryEmail;
+          result.emailType = scraped.emailType;
+          result.emailVerificationStatus = "Verified";
+        }
+        if (scraped.socialLinks) {
+          result.socialLinks = scraped.socialLinks;
+        }
+        if (scraped.technologies?.length > 0) {
+          result.technologies = scraped.technologies;
+        }
+        if (scraped.description) {
+          result.description = scraped.description;
+        }
+        if (scraped.sources?.length > 0) {
+          result.sources.push(...scraped.sources);
+        }
+        result.confidenceScore = result.businessPhone && (result.socialLinks?.linkedin || result.businessEmail) ? 95 : 85;
+      }
+    } catch (scErr) {
+      console.warn("[enrichmentService] RapidAPI enrichment warning:", scErr.message);
+    }
+  }
 
   const safeUrl = await validateSafeUrl(websiteUrl);
   if (!safeUrl) return result;
