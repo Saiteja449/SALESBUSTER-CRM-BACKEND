@@ -216,9 +216,17 @@ export const searchProspects = async (req, res) => {
 
     // Persist TargetSearch Record
     let searchRecord = null;
+    const generatedSearchId = `ti_${new mongoose.Types.ObjectId().toString()}`;
+
     if (orgId && models.TargetSearchModel && (models.TargetSearchModel.db?.readyState === 1 || !models.TargetSearchModel.db)) {
       try {
+        // Drop legacy unique index on searchId_1 if present on tenant collection to prevent null duplicates
+        if (models.TargetSearchModel.collection?.dropIndex) {
+          models.TargetSearchModel.collection.dropIndex("searchId_1").catch(() => {});
+        }
+
         searchRecord = await models.TargetSearchModel.create({
+          searchId: generatedSearchId,
           organizationId: orgId,
           userId: userId || null,
           originalPrompt: filters.prompt || `${filters.industry} in ${filters.city}`,
@@ -235,39 +243,41 @@ export const searchProspects = async (req, res) => {
           searchProviders: discoveryResult.usedProviders,
           durationMs,
         });
-
-        // Upsert Discovered Companies into TargetCompany collection for persistent caching
-        for (const c of companies) {
-          try {
-            await models.TargetCompanyModel.findOneAndUpdate(
-              { organizationId: orgId, prospectKey: c.prospectKey },
-              {
-                organizationId: orgId,
-                searchId: searchRecord._id,
-                prospectKey: c.prospectKey,
-                companyName: c.companyName,
-                normalizedDomain: c.normalizedDomain,
-                website: c.website,
-                industry: c.industry,
-                description: c.description,
-                location: c.location,
-                founders: c.founders,
-                contact: c.contact,
-                socialLinks: c.socialLinks || {},
-                technologies: c.technologies || [],
-                sources: c.sources || [],
-                confidenceScore: c.confidenceScore,
-                enrichmentStatus: "discovered",
-                isResolved: Boolean(c.isResolved),
-                resolvedAt: c.resolvedAt || null,
-                resolvedByName: c.resolvedByName || "",
-              },
-              { upsert: true, new: true, setDefaultsOnInsert: true }
-            );
-          } catch {}
-        }
       } catch (saveErr) {
         console.warn("[TargetIntelligence] Save search history warning:", saveErr.message);
+      }
+    }
+
+    // Upsert Discovered Companies into TargetCompany collection for persistent caching
+    if (orgId && models.TargetCompanyModel && (models.TargetCompanyModel.db?.readyState === 1 || !models.TargetCompanyModel.db)) {
+      for (const c of companies) {
+        try {
+          await models.TargetCompanyModel.findOneAndUpdate(
+            { organizationId: orgId, prospectKey: c.prospectKey },
+            {
+              organizationId: orgId,
+              searchId: searchRecord?._id || null,
+              prospectKey: c.prospectKey,
+              companyName: c.companyName,
+              normalizedDomain: c.normalizedDomain,
+              website: c.website,
+              industry: c.industry,
+              description: c.description,
+              location: c.location,
+              founders: c.founders,
+              contact: c.contact,
+              socialLinks: c.socialLinks || {},
+              technologies: c.technologies || [],
+              sources: c.sources || [],
+              confidenceScore: c.confidenceScore,
+              enrichmentStatus: "discovered",
+              isResolved: Boolean(c.isResolved),
+              resolvedAt: c.resolvedAt || null,
+              resolvedByName: c.resolvedByName || "",
+            },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+          );
+        } catch {}
       }
     }
 

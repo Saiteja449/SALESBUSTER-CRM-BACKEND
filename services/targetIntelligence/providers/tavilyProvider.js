@@ -20,18 +20,44 @@ export class TavilySearchProvider extends BaseSearchProvider {
     }
 
     const { prompt, industry, city, need } = filters;
-    let query = (prompt || "").trim();
+    let cleanPrompt = (prompt || "")
+      .replace(/\b(find|search|get|fetch|look for|show me|give me|list of|top|best)\b/gi, "")
+      .replace(/\b(with|having|including|and)\s+(founder names?|founders?|mobile numbers?|phones?|business emails?|emails?|websites?|contact details?|contacts?)\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    let query = cleanPrompt;
     if (!query) {
-      query = `${industry || "business"} ${city && city !== "All" ? city : ""} ${need || ""} contact phone email website official`.trim();
+      query = `${industry || "business"} in ${city && city !== "All" ? city : "India"}`.trim();
     } else if (city && city !== "All" && !query.toLowerCase().includes(city.toLowerCase())) {
       query = `${query} in ${city}`;
     }
+    query = `${query} official company website`;
 
     const payload = {
       query,
       search_depth: "advanced",
-      include_answer: true,
+      include_answer: false,
       max_results: 10,
+      exclude_domains: [
+        "facebook.com",
+        "instagram.com",
+        "twitter.com",
+        "x.com",
+        "quora.com",
+        "reddit.com",
+        "youtube.com",
+        "linkedin.com",
+        "pinterest.com",
+        "tiktok.com",
+        "wikipedia.org",
+        "sulekha.com",
+        "justdial.com",
+        "indiamart.com",
+        "tradeindia.com",
+        "smergers.com",
+        "yellowpages.in",
+      ],
     };
 
     const controller = new AbortController();

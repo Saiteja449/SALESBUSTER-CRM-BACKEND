@@ -9,6 +9,38 @@ const osmProvider = new OsmSearchProvider();
 const geminiProvider = new GeminiSearchProvider();
 
 /**
+ * Known non-company domains (social networks, user-generated content, directories)
+ * to exclude from becoming business prospect entries
+ */
+export const NON_COMPANY_DOMAINS = new Set([
+  "facebook.com",
+  "instagram.com",
+  "twitter.com",
+  "x.com",
+  "quora.com",
+  "reddit.com",
+  "youtube.com",
+  "linkedin.com",
+  "pinterest.com",
+  "tiktok.com",
+  "medium.com",
+  "wikipedia.org",
+  "google.com",
+  "yahoo.com",
+  "bing.com",
+  "duckduckgo.com",
+  "threads.net",
+  "sulekha.com",
+  "justdial.com",
+  "indiamart.com",
+  "tradeindia.com",
+  "smergers.com",
+  "yellowpages.in",
+  "indiaonline.in",
+  "petbacker.com",
+]);
+
+/**
  * Compute canonical prospect key based on normalized company name and domain or location
  */
 export function computeProspectKey(p) {
@@ -163,15 +195,27 @@ export class DiscoveryService {
             }
 
             if (Array.isArray(extracted) && extracted.length > 0) {
-              rawCandidates.push(...extracted);
+              rawCandidates.push(
+                ...extracted.filter((item) => {
+                  const d = normalizeDomain(item.website || item.sourceUrl || "");
+                  return d && !NON_COMPANY_DOMAINS.has(d);
+                })
+              );
             } else {
               // Direct mapping of Tavily live search citations if AI extraction is unavailable or produced 0 items
               const mapped = val.results
                 .map((r) => {
-                  const titleClean = (r.title || "").split(/[-|–:]/)[0]?.trim();
+                  const normDomain = normalizeDomain(r.url || "");
+                  if (!normDomain || NON_COMPANY_DOMAINS.has(normDomain)) return null;
+
+                  const titleClean = (r.title || "")
+                    .split(/[-|–:•]/)[0]
+                    ?.replace(/\b(home|best|top|official website|welcome to|services|page)\b/gi, "")
+                    ?.trim() || normDomain;
+
                   return {
                     companyName: titleClean,
-                    website: r.url || "",
+                    website: `https://${normDomain}`,
                     industry: filters.industry && filters.industry !== "All" ? filters.industry : null,
                     description: r.content || r.snippet || null,
                     location: null,
@@ -188,7 +232,7 @@ export class DiscoveryService {
                     retrievedAt: new Date().toISOString(),
                   };
                 })
-                .filter((r) => r.companyName && !/^(top \d+|companies in|list of|directory|pharmaceutical manufacturing companies)/i.test(r.companyName));
+                .filter(Boolean);
               rawCandidates.push(...mapped);
             }
           } else if (pKey === "openStreetMap") {
@@ -209,6 +253,8 @@ export class DiscoveryService {
       if (!compName) continue; // Reject any nameless candidates
 
       const normDomain = normalizeDomain(item.website || item.url || "");
+      if (normDomain && NON_COMPANY_DOMAINS.has(normDomain)) continue; // Skip non-company domains (social/search/directories)
+
       const tempKey = computeProspectKey({
         companyName: compName,
         website: item.website || item.url || "",
@@ -398,6 +444,11 @@ export class DiscoveryService {
                 // Tech stack
                 if (Array.isArray(scraped.technologies) && scraped.technologies.length > 0) {
                   company.technologies = scraped.technologies;
+                }
+
+                // Company name refinement from website metadata if current is raw domain
+                if (scraped.companyName && (!company.companyName || company.companyName.includes(".") || company.companyName.length > 50)) {
+                  company.companyName = scraped.companyName;
                 }
 
                 // Description backfill

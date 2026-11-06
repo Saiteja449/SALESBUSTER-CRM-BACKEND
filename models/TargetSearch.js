@@ -2,6 +2,11 @@ import mongoose from "mongoose";
 
 const targetSearchSchema = new mongoose.Schema(
   {
+    searchId: {
+      type: String,
+      default: () => `ti_${new mongoose.Types.ObjectId().toString()}`,
+      index: true,
+    },
     organizationId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Organization",
