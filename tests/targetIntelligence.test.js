@@ -457,4 +457,88 @@ describe("Target Intelligence Backend Unit Tests", () => {
       OsmSearchProvider.prototype.searchBusinesses = originalOsmSearch;
     }
   });
+
+  it("discoverBusinesses respects limit parameter and limits returned results", async () => {
+    const originalOsmSearch = OsmSearchProvider.prototype.searchBusinesses;
+    OsmSearchProvider.prototype.searchBusinesses = async () => ({
+      provider: "OpenStreetMap",
+      status: "success",
+      results: [
+        { companyName: "Pet Clinic 1", website: "https://petclinic1.com", city: "Hyderabad" },
+        { companyName: "Pet Clinic 2", website: "https://petclinic2.com", city: "Hyderabad" },
+        { companyName: "Pet Clinic 3", website: "https://petclinic3.com", city: "Hyderabad" },
+      ],
+      durationMs: 10,
+    });
+
+    try {
+      const result = await discoveryModule.discoveryService.discoverBusinesses(
+        { prompt: "pet clinic", city: "Hyderabad", limit: 2 },
+        { organizationId: "507f1f77bcf86cd799439011" }
+      );
+
+      assert.equal(result.companies.length, 2);
+    } finally {
+      OsmSearchProvider.prototype.searchBusinesses = originalOsmSearch;
+    }
+  });
+
+  it("discoverBusinesses hydrates cached company details from MongoDB without API calls", async () => {
+    const originalOsmSearch = OsmSearchProvider.prototype.searchBusinesses;
+    OsmSearchProvider.prototype.searchBusinesses = async () => ({
+      provider: "OpenStreetMap",
+      status: "success",
+      results: [
+        { companyName: "Cached Pet Clinic", website: "https://cachedpetclinic.com", city: "Hyderabad" },
+      ],
+      durationMs: 10,
+    });
+
+    try {
+      const MockTargetCompanyModel = {
+        find(filter) {
+          return {
+            select() {
+              return this;
+            },
+            lean() {
+              if (filter?.isResolved) {
+                return Promise.resolve([]);
+              }
+              return Promise.resolve([
+                {
+                  prospectKey: "comp_cachedpetclinic_cachedpetcliniccom",
+                  normalizedDomain: "cachedpetclinic.com",
+                  companyName: "Cached Pet Clinic",
+                  contact: {
+                    businessPhone: "+91 99999 88888",
+                    phoneType: "mobile",
+                    businessEmail: "info@cachedpetclinic.com",
+                  },
+                  socialLinks: {
+                    linkedin: "https://linkedin.com/company/cachedpetclinic",
+                  },
+                },
+              ]);
+            },
+          };
+        },
+      };
+
+      const result = await discoveryModule.discoveryService.discoverBusinesses(
+        { prompt: "pet clinic", city: "Hyderabad" },
+        {
+          organizationId: "507f1f77bcf86cd799439011",
+          tenantModels: { TargetCompanyModel: MockTargetCompanyModel },
+        }
+      );
+
+      assert.equal(result.companies.length, 1);
+      assert.equal(result.companies[0].cached, true);
+      assert.equal(result.companies[0].contact.businessPhone, "+91 99999 88888");
+      assert.equal(result.companies[0].socialLinks.linkedin, "https://linkedin.com/company/cachedpetclinic");
+    } finally {
+      OsmSearchProvider.prototype.searchBusinesses = originalOsmSearch;
+    }
+  });
 });

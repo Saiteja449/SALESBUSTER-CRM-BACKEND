@@ -6,7 +6,7 @@ export class OsmSearchProvider extends BaseSearchProvider {
   }
 
   async searchBusinesses(filters, context = {}) {
-    const { prompt, industry, city } = filters;
+    const { prompt, industry, city, limit } = filters;
     const start = Date.now();
 
     try {
@@ -26,9 +26,10 @@ export class OsmSearchProvider extends BaseSearchProvider {
         };
       }
 
+      const osmLimit = limit ? Math.min(Math.max(parseInt(limit, 10), 5), 50) : 20;
       const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
         searchQuery
-      )}&format=json&addressdetails=1&extratags=1&namedetails=1&limit=20`;
+      )}&format=json&addressdetails=1&extratags=1&namedetails=1&limit=${osmLimit}`;
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 7000);

@@ -19,7 +19,7 @@ export class TavilySearchProvider extends BaseSearchProvider {
       };
     }
 
-    const { prompt, industry, city, need } = filters;
+    const { prompt, industry, city, need, limit } = filters;
     let cleanPrompt = (prompt || "")
       .replace(/\b(find|search|get|fetch|look for|show me|give me|list of|top|best)\b/gi, "")
       .replace(/\b(with|having|including|and)\s+(founder names?|founders?|mobile numbers?|phones?|business emails?|emails?|websites?|contact details?|contacts?)\b/gi, "")
@@ -34,11 +34,14 @@ export class TavilySearchProvider extends BaseSearchProvider {
     }
     query = `${query} official company website`;
 
+    const desiredCount = limit ? Math.min(Math.max(parseInt(limit, 10), 1), 50) : 10;
+    const maxResults = Math.min(desiredCount + 5, 50);
+
     const payload = {
       query,
       search_depth: "advanced",
       include_answer: false,
-      max_results: 10,
+      max_results: maxResults,
       exclude_domains: [
         "facebook.com",
         "instagram.com",

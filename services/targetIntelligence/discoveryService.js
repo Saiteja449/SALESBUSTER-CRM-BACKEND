@@ -70,7 +70,7 @@ export class DiscoveryService {
    */
   async discoverBusinesses(filters, context = {}) {
     const { apiKey, tavilyKey, organizationId, tenantModels = {} } = context;
-    const { ResolvedModel, ProviderUsageModel } = tenantModels;
+    const { ResolvedModel, TargetCompanyModel, ProviderUsageModel } = tenantModels;
 
     const timings = {
       totalMs: 0,
@@ -78,6 +78,7 @@ export class DiscoveryService {
       extractionMs: 0,
       contactScrapingMs: 0,
       resolutionLookupMs: 0,
+      mongoCacheLookupMs: 0,
     };
     const overallStart = Date.now();
 
@@ -102,24 +103,48 @@ export class DiscoveryService {
       },
     };
 
-    // 0. Pre-fetch all resolved prospect keys & domains for this organization
+    // 0. Pre-fetch all resolved prospect keys & domains for this organization from MongoDB
     const resolvedKeysSet = new Set();
     const resolvedDomainsSet = new Set();
     const resolvedNamesSet = new Set();
 
-    if (organizationId && ResolvedModel && (ResolvedModel.db?.readyState === 1 || !ResolvedModel.db)) {
+    if (organizationId) {
       const resStart = Date.now();
       try {
-        const allResolved = await ResolvedModel.find({ organization: organizationId })
-          .select("prospectKey companyName website")
-          .lean();
-        if (Array.isArray(allResolved)) {
-          allResolved.forEach((r) => {
-            if (r.prospectKey) resolvedKeysSet.add(r.prospectKey);
-            if (r.companyName) resolvedNamesSet.add(r.companyName.toLowerCase().trim());
-            const d = normalizeDomain(r.website || "");
-            if (d) resolvedDomainsSet.add(d);
+        // A. Check ResolvedProspect collection
+        if (ResolvedModel && (ResolvedModel.db?.readyState === 1 || !ResolvedModel.db)) {
+          const allResolved = await ResolvedModel.find({ organization: organizationId })
+            .select("prospectKey companyName website")
+            .lean();
+          if (Array.isArray(allResolved)) {
+            allResolved.forEach((r) => {
+              if (r.prospectKey) resolvedKeysSet.add(r.prospectKey);
+              if (r.companyName) resolvedNamesSet.add(r.companyName.toLowerCase().trim());
+              const d = normalizeDomain(r.website || "");
+              if (d) resolvedDomainsSet.add(d);
+            });
+          }
+        }
+
+        // B. Check TargetCompany collection for resolved records
+        if (TargetCompanyModel && typeof TargetCompanyModel.find === "function" && (TargetCompanyModel.db?.readyState === 1 || !TargetCompanyModel.db)) {
+          const tcQuery = TargetCompanyModel.find({
+            organizationId,
+            isResolved: true,
           });
+          const resolvedCompanies = await (typeof tcQuery?.select === "function"
+            ? tcQuery.select("prospectKey companyName website normalizedDomain").lean()
+            : typeof tcQuery?.lean === "function"
+            ? tcQuery.lean()
+            : tcQuery);
+          if (Array.isArray(resolvedCompanies)) {
+            resolvedCompanies.forEach((r) => {
+              if (r.prospectKey) resolvedKeysSet.add(r.prospectKey);
+              if (r.companyName) resolvedNamesSet.add(r.companyName.toLowerCase().trim());
+              const d = r.normalizedDomain || normalizeDomain(r.website || "");
+              if (d) resolvedDomainsSet.add(d);
+            });
+          }
         }
       } catch (rErr) {
         console.warn("[DiscoveryService] Fetch resolved history warning:", rErr.message);
@@ -397,14 +422,89 @@ export class DiscoveryService {
       }
     }
 
-    // 3. Contact Details Extraction via RapidAPI Website Contacts Scraper
-    if (rapidApiScraperProvider.isConfigured() && reconciled.length > 0) {
+    // Slice candidates to requested limit (default 10, max 50)
+    const targetLimit = filters.limit ? Math.min(Math.max(parseInt(filters.limit, 10), 1), 50) : 10;
+    const selectedCompanies = reconciled.slice(0, targetLimit);
+
+    // 3. MongoDB Cache Lookup: Check if company contact & social data is already stored in MongoDB
+    if (organizationId && TargetCompanyModel && (TargetCompanyModel.db?.readyState === 1 || !TargetCompanyModel.db) && selectedCompanies.length > 0) {
+      const cacheStart = Date.now();
+      try {
+        const domainsToLookup = selectedCompanies.map((c) => c.normalizedDomain).filter(Boolean);
+        const keysToLookup = selectedCompanies.map((c) => c.prospectKey).filter(Boolean);
+
+        const cachedDocs = await TargetCompanyModel.find({
+          organizationId,
+          $or: [
+            { prospectKey: { $in: keysToLookup } },
+            { normalizedDomain: { $in: domainsToLookup } },
+          ],
+        }).lean();
+
+        if (Array.isArray(cachedDocs) && cachedDocs.length > 0) {
+          const cachedByKey = new Map();
+          const cachedByDomain = new Map();
+          for (const doc of cachedDocs) {
+            if (doc.prospectKey) cachedByKey.set(doc.prospectKey, doc);
+            if (doc.normalizedDomain) cachedByDomain.set(doc.normalizedDomain, doc);
+          }
+
+          for (const company of selectedCompanies) {
+            const cached = cachedByKey.get(company.prospectKey) || cachedByDomain.get(company.normalizedDomain);
+            if (cached && (cached.contact?.businessPhone || cached.contact?.businessEmail || cached.socialLinks?.linkedin || cached.socialLinks?.twitter || cached.socialLinks?.instagram || cached.socialLinks?.facebook || cached.socialLinks?.whatsapp)) {
+              if (cached.contact?.businessPhone) {
+                company.contact.businessPhone = cached.contact.businessPhone;
+                company.contact.phoneType = cached.contact.phoneType || "none";
+                company.contact.phoneVerificationStatus = cached.contact.phoneVerificationStatus || "Verified";
+              }
+              if (Array.isArray(cached.contact?.allPhones) && cached.contact.allPhones.length > 0) {
+                company.contact.allPhones = cached.contact.allPhones;
+              }
+              if (cached.contact?.businessEmail) {
+                company.contact.businessEmail = cached.contact.businessEmail;
+                company.contact.emailType = cached.contact.emailType || "none";
+                company.contact.emailVerificationStatus = cached.contact.emailVerificationStatus || "Verified";
+              }
+              if (Array.isArray(cached.contact?.allEmails) && cached.contact.allEmails.length > 0) {
+                company.contact.allEmails = cached.contact.allEmails;
+              }
+              if (cached.socialLinks) {
+                company.socialLinks = { ...company.socialLinks, ...cached.socialLinks };
+              }
+              if (Array.isArray(cached.technologies) && cached.technologies.length > 0) {
+                company.technologies = cached.technologies;
+              }
+              if (cached.description && (!company.description || company.description.length < 20)) {
+                company.description = cached.description;
+              }
+              if (cached.companyName && (!company.companyName || company.companyName.includes("."))) {
+                company.companyName = cached.companyName;
+              }
+              company.cached = true;
+              company.confidenceScore = cached.confidenceScore || 90;
+            }
+          }
+        }
+      } catch (cErr) {
+        console.warn("[DiscoveryService] MongoDB cache lookup notice:", cErr.message);
+      } finally {
+        timings.mongoCacheLookupMs = Date.now() - cacheStart;
+      }
+    }
+
+    // 4. Contact Details Extraction via RapidAPI Website Contacts Scraper
+    // Only scrape candidates that are NOT cached from MongoDB and still need phone or email
+    const companiesToScrape = selectedCompanies.filter(
+      (c) => !c.cached && c.website && (!c.contact?.businessPhone || !c.contact?.businessEmail)
+    );
+
+    if (rapidApiScraperProvider.isConfigured() && companiesToScrape.length > 0) {
       const contactStart = Date.now();
       const concurrency = 4;
       let enrichedCount = 0;
 
-      for (let i = 0; i < reconciled.length; i += concurrency) {
-        const batch = reconciled.slice(i, i + concurrency);
+      for (let i = 0; i < companiesToScrape.length; i += concurrency) {
+        const batch = companiesToScrape.slice(i, i + concurrency);
         await Promise.all(
           batch.map(async (company) => {
             const targetUrl = company.website;
@@ -496,9 +596,16 @@ export class DiscoveryService {
         durationMs: timings.contactScrapingMs,
         error: null,
       };
+    } else if (rapidApiScraperProvider.isConfigured() && selectedCompanies.length > 0) {
+      providerStatuses.rapidApi = {
+        status: "idle",
+        count: 0,
+        durationMs: 0,
+        error: null,
+      };
     }
 
-    // 4. Record Provider Usage
+    // 5. Record Provider Usage
     if (organizationId && ProviderUsageModel) {
       const today = new Date().toISOString().split("T")[0];
       for (const providerName of usedProviders) {
@@ -518,7 +625,7 @@ export class DiscoveryService {
       providerStatuses.rapidApi.status = "idle";
     }
 
-    // 5. Determine high-level outcome state based on live discovery providers
+    // 6. Determine high-level outcome state based on live discovery providers
     const searchProviders = [providerStatuses.tavily, providerStatuses.openStreetMap];
     const allProvidersFailed = searchProviders.every(
       (ps) => ps.status === "error" || ps.status === "timeout" || ps.status === "unconfigured"
@@ -533,13 +640,13 @@ export class DiscoveryService {
       outcome = "all_providers_failed";
     } else if (hasAnyFailure && hasAnySuccess) {
       outcome = "partial_failure";
-    } else if (reconciled.length === 0) {
+    } else if (selectedCompanies.length === 0) {
       outcome = "no_matches";
     }
 
     return {
-      companies: reconciled,
-      totalCount: reconciled.length,
+      companies: selectedCompanies,
+      totalCount: selectedCompanies.length,
       excludedResolvedCount,
       usedProviders,
       providerStatuses,
