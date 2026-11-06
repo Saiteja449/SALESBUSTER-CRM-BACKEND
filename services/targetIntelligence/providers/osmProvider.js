@@ -10,9 +10,20 @@ export class OsmSearchProvider extends BaseSearchProvider {
     const start = Date.now();
 
     try {
-      const rawTerms = (prompt || industry || "")
-        .replace(/\b(find|search|companies|company|providing|services|service|in|near|and|or|for|the|with)\b/gi, "")
+      const targetTerm = industry && industry !== "All" && industry !== "Commercial Enterprise"
+        ? industry
+        : prompt || "";
+
+      let rawTerms = targetTerm
+        .replace(/[&/\\#,+()$~%.'":*?<>{}]/g, " ")
+        .replace(/\b(find|search|companies|company|businesses|business|providing|services|service|in|near|and|or|for|the|with)\b/gi, " ")
+        .replace(/\b(founder names?|founders?|mobile numbers?|phones?|business emails?|emails?|websites?|contact details?|contacts?)\b/gi, " ")
+        .replace(/\s+/g, " ")
         .trim();
+
+      if (/pet/i.test(rawTerms) && !/clinic|veterinary/i.test(rawTerms)) {
+        rawTerms = "pet clinic";
+      }
 
       const targetCity = city && city !== "All" ? city : "";
       const searchQuery = `${rawTerms} ${targetCity}`.trim();

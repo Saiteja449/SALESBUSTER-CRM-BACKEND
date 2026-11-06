@@ -37,7 +37,8 @@ export class RapidApiScraperProvider {
    */
   async fetchWebsiteContacts(websiteUrl, options = {}) {
     const apiKey = options.apiKey || process.env.RAPIDAPI_KEY;
-    const timeoutMs = options.timeoutMs || 8000;
+    const timeoutMs = options.timeoutMs || 15000;
+    const maxRetries = options.maxRetries !== undefined ? options.maxRetries : 1;
 
     const result = {
       success: false,
@@ -99,6 +100,15 @@ export class RapidApiScraperProvider {
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => "");
+        if ((response.status === 503 || response.status === 429) && maxRetries > 0) {
+          clearTimeout(timeout);
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          return this.fetchWebsiteContacts(websiteUrl, {
+            ...options,
+            maxRetries: maxRetries - 1,
+            timeoutMs,
+          });
+        }
         result.error = `RapidAPI returned status ${response.status}: ${errorText.slice(0, 200)}`;
         return result;
       }

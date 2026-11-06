@@ -32,12 +32,13 @@ export const wrapUntrustedData = (text) => {
 /**
  * Enforces a strict character length cap on tool output string payloads
  * to protect the LLM context window from overflowing.
+ * Preserves valid JSON structure when possible by truncating records array.
  *
  * @param {string} payload - Serialized tool output JSON string
- * @param {number} [maxChars=3000] - Maximum allowed characters
+ * @param {number} [maxChars=12000] - Maximum allowed characters
  * @returns {string} - Truncated payload with pagination/continuation hint if truncated
  */
-export const truncatePayload = (payload, maxChars = 3000) => {
+export const truncatePayload = (payload, maxChars = 12000) => {
   if (typeof payload !== "string") {
     payload = JSON.stringify(payload || "");
   }
@@ -45,6 +46,27 @@ export const truncatePayload = (payload, maxChars = 3000) => {
     return payload;
   }
   const excess = payload.length - maxChars;
+
+  // If payload is a JSON object, safely trim records array to maintain valid JSON
+  try {
+    const obj = JSON.parse(payload);
+    if (obj && typeof obj === "object") {
+      const arrayKey = ["records", "leads", "calls", "items", "data", "followups"].find(
+        (k) => Array.isArray(obj[k]) && obj[k].length > 1
+      );
+      if (arrayKey && obj[arrayKey].length > 1) {
+        while (obj[arrayKey].length > 1 && JSON.stringify(obj).length > maxChars) {
+          obj[arrayKey].pop();
+        }
+        obj.isTruncated = true;
+        obj.hasMore = true;
+        obj.truncationNotice = `[TRUNCATED ${excess} CHARS: Showing first ${obj[arrayKey].length} records to protect context window. Request next page to view remaining records.]`;
+        return JSON.stringify(obj);
+      }
+    }
+  } catch (_) {}
+
+  // Fallback for plain text or non-array JSON
   return `${payload.slice(0, maxChars)}... [TRUNCATED ${excess} CHARS: Request more specific filters or lower limit to see remaining records]`;
 };
 

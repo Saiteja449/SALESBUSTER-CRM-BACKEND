@@ -26,14 +26,14 @@ export const formatToolError = ({
  * @param {Object} options.toolCall - { id, name, args } from LLM
  * @param {Object} options.toolsByName - Map of registered tools
  * @param {number} [options.timeoutMs=7000] - Hard execution timeout per tool
- * @param {number} [options.maxPayloadChars=3500] - Max output characters passed to context
+ * @param {number} [options.maxPayloadChars=12000] - Max output characters passed to context
  * @returns {Promise<{ output: string, durationMs: number, toolName: string, toolCallId: string, ok: boolean }>}
  */
 export const executeToolCall = async ({
   toolCall,
   toolsByName = {},
   timeoutMs = 7000,
-  maxPayloadChars = 3500,
+  maxPayloadChars = 12000,
 }) => {
   const startTime = Date.now();
   const toolName = toolCall?.name;

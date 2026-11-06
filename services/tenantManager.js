@@ -28,6 +28,7 @@ import TargetCompany from "../models/TargetCompany.js";
 import TargetContact from "../models/TargetContact.js";
 import TargetList from "../models/TargetList.js";
 import ProviderUsage from "../models/ProviderUsage.js";
+import CallRecord from "../models/CallRecord.js";
 import Organization, { organizationSchema } from "../models/Organization.js";
 import AuthUser, { authUserSchema } from "../models/AuthUser.js";
 import AppRelease, { appReleaseSchema } from "../models/AppRelease.js";
@@ -153,6 +154,9 @@ export const getTenantModels = (tenantDbName) => {
     ProviderUsage:
       db.models.ProviderUsage ||
       db.model("ProviderUsage", ProviderUsage.schema),
+    CallRecord:
+      db.models.CallRecord ||
+      db.model("CallRecord", CallRecord.schema),
     db,
   };
 };

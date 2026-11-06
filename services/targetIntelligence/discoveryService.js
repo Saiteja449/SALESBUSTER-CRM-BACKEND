@@ -38,6 +38,28 @@ export const NON_COMPANY_DOMAINS = new Set([
   "yellowpages.in",
   "indiaonline.in",
   "petbacker.com",
+  "revenuebase.ai",
+  "leadiq.com",
+  "apollo.io",
+  "zoominfo.com",
+  "lusha.com",
+  "signalhire.com",
+  "contactout.com",
+  "rocketreach.co",
+  "scribd.com",
+  "salezshark.com",
+  "gptengineer.app",
+  "lovable.dev",
+  "bytescraper.com",
+  "quikr.com",
+  "olx.in",
+  "crunchbase.com",
+  "github.com",
+  "play.google.com",
+  "apps.apple.com",
+  "vocal.media",
+  "leadstal.com",
+  "intercom.io",
 ]);
 
 /**
@@ -500,10 +522,14 @@ export class DiscoveryService {
 
     if (rapidApiScraperProvider.isConfigured() && companiesToScrape.length > 0) {
       const contactStart = Date.now();
-      const concurrency = 4;
+      const concurrency = 2;
       let enrichedCount = 0;
 
       for (let i = 0; i < companiesToScrape.length; i += concurrency) {
+        if (i > 0) {
+          // Stagger batches by 400ms so RapidAPI capacity limit is not saturated
+          await new Promise((r) => setTimeout(r, 400));
+        }
         const batch = companiesToScrape.slice(i, i + concurrency);
         await Promise.all(
           batch.map(async (company) => {

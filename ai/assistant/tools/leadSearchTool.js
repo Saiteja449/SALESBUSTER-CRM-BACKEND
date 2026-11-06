@@ -1,134 +1,79 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { escapeRegex, wrapUntrustedData } from "../securityUtils.js";
+import { searchLeadsAdvanced } from "../analytics/crmAnalyticsService.js";
 
 /**
- * Creates Lead Search tool bound to authenticated tenant context
+ * Creates Lead Search & Advanced Discovery tool bound to authenticated tenant context.
+ * Used for both search_leads and search_leads_advanced.
  */
-export const createLeadSearchTool = ({ tenantModels }) => {
+export const createLeadSearchTool = ({ tenantModels, toolName = "search_leads" }) => {
   return tool(
     async ({
       searchTerm,
+      salespersonNameOrId,
       status,
       source,
       service,
       priority,
+      period,
+      startDate,
+      endDate,
+      callStatusFilter,
+      followupStatusFilter,
+      inactiveDays,
+      unassignedOnly = false,
+      page = 1,
       limit = 10,
     }) => {
       try {
-        const { Lead: LeadModel } = tenantModels;
-        if (!LeadModel) {
-          return JSON.stringify({ error: "Lead model not found in tenant database" });
-        }
-
-        const filter = {};
-
-        if (status) {
-          filter.status = status;
-        }
-
-        if (source) {
-          filter.source = source;
-        }
-
-        if (service && service.trim()) {
-          const safeService = escapeRegex(service.trim());
-          filter.$or = [
-            { service: { $regex: safeService, $options: "i" } },
-            { services: { $regex: safeService, $options: "i" } },
-          ];
-        }
-
-        if (priority) {
-          filter.priority = priority;
-        }
-
-        if (searchTerm && searchTerm.trim()) {
-          const safeTerm = escapeRegex(searchTerm.trim());
-          const safeRegex = new RegExp(safeTerm, "i");
-          const searchConditions = [
-            { name: { $regex: safeTerm, $options: "i" } },
-            { company: { $regex: safeTerm, $options: "i" } },
-            { notes: { $regex: safeTerm, $options: "i" } },
-            { city: { $regex: safeTerm, $options: "i" } },
-            { tags: { $in: [safeRegex] } },
-          ];
-          if (filter.$or) {
-            filter.$and = [{ $or: filter.$or }, { $or: searchConditions }];
-            delete filter.$or;
-          } else {
-            filter.$or = searchConditions;
-          }
-        }
-
-        const safeLimit = Math.min(Math.max(1, parseInt(limit, 10) || 10), 25);
-
-        const totalMatching = await LeadModel.countDocuments(filter);
-        const leads = await LeadModel.find(filter)
-          .sort({ createdAt: -1 })
-          .limit(safeLimit)
-          .select("name phone company service status source priority assignedTo dealValue createdAt notes tags city")
-          .lean();
-
-        const formattedLeads = leads.map((l) => ({
-          id: l._id.toString(),
-          name: l.name || "Unnamed Lead",
-          phone: l.phone,
-          company: l.company || undefined,
-          service: l.service,
-          status: l.status,
-          source: l.source,
-          priority: l.priority,
-          assignedTo: l.assignedTo ? String(l.assignedTo) : "Unassigned",
-          dealValue: l.dealValue ? `₹${l.dealValue.toLocaleString("en-IN")}` : undefined,
-          city: l.city || undefined,
-          createdDateIST: new Date(l.createdAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }),
-          notesSnippet: l.notes ? wrapUntrustedData(l.notes.slice(0, 120)) : undefined,
-        }));
-
-        return JSON.stringify({
-          totalMatchingCount: totalMatching,
-          showingCount: formattedLeads.length,
-          leads: formattedLeads,
+        const result = await searchLeadsAdvanced({
+          tenantModels,
+          filters: {
+            searchTerm,
+            salespersonNameOrId,
+            status,
+            source,
+            service,
+            priority,
+            period,
+            startDate,
+            endDate,
+            callStatusFilter,
+            followupStatusFilter,
+            inactiveDays,
+            unassignedOnly,
+          },
+          pagination: { page, limit },
         });
+        return JSON.stringify(result);
       } catch (error) {
         return JSON.stringify({ error: `Lead search failed: ${error.message}` });
       }
     },
     {
-      name: "search_leads",
+      name: toolName,
       description:
-        "Searches and filters CRM leads by name, keyword, status, source, service, or priority. Returns matching leads with details. Never invent leads; use this tool whenever looking for specific leads or customer records.",
+        "Searches and filters CRM leads with rich multi-filter criteria: assigned salesperson name or ID, creation date range, last activity date, lead status (New, Missed Call, Follow Up, Converted, Lost), source (Call, WhatsApp, Meta Ads, etc.), service, priority, customer name or phone, call history status (has_calls, has_missed_calls, never_called), follow-up status (overdue, pending_today, no_followup), inactive days (e.g. leads not contacted for 7 days), or unassigned leads. Returns total matching counts and paginated leads.",
       schema: z.object({
-        searchTerm: z
-          .string()
-          .max(100)
-          .optional()
-          .describe("Search keyword matching lead name, company, city, tags, or notes"),
-        status: z
-          .enum(["New", "Missed Call", "Follow Up", "Not Interested", "Not Attended", "Price Issue", "Converted"])
-          .optional()
-          .describe("Filter by lead lifecycle status"),
-        source: z
-          .enum(["Email", "WhatsApp", "Meta Ads", "Website Form", "Website Chat", "Call", "Manual Entry", "Mobile App", "Excel Import"])
-          .optional()
-          .describe("Filter by lead origination source"),
-        service: z
-          .string()
-          .max(100)
-          .optional()
-          .describe("Filter by service/product name or category"),
-        priority: z
-          .enum(["High", "Medium", "Low"])
-          .optional()
-          .describe("Filter by priority level"),
-        limit: z
-          .number()
-          .min(1)
-          .max(25)
-          .default(10)
-          .describe("Maximum number of leads to return (1-25)"),
+        searchTerm: z.string().optional().describe("Free-text search across name, company, notes, phone, city"),
+        salespersonNameOrId: z.string().optional().describe("Filter by assigned salesperson name or ID (e.g. Shanmukh)"),
+        status: z.string().optional().describe("Lead status filter (e.g. 'New', 'Converted', 'Missed Call', 'Follow Up', 'Not Interested')"),
+        source: z.string().optional().describe("Lead acquisition source (e.g. 'Call', 'WhatsApp', 'Meta Ads', 'Website Form')"),
+        service: z.string().optional().describe("Service inquiry filter (e.g. 'General Enquiry', specific service name)"),
+        priority: z.enum(["High", "Medium", "Low", "all"]).optional().describe("Priority level"),
+        period: z.string().optional().describe("Creation time period: 'all_time', 'this_month', 'last_month', 'today', 'yesterday', 'this_week', 'custom'"),
+        startDate: z.string().optional().describe("Creation start date in YYYY-MM-DD format"),
+        endDate: z.string().optional().describe("Creation end date in YYYY-MM-DD format"),
+        callStatusFilter: z.enum(["has_calls", "has_missed_calls", "never_called", "all"]).optional().describe("Filter by call history interaction"),
+        followupStatusFilter: z.enum(["overdue", "pending_today", "has_pending", "no_followup", "all"]).optional().describe("Filter by scheduled follow-up status"),
+        inactiveDays: z.number().optional().describe("Find leads with no activity or call for at least this many days (e.g. 7)"),
+        unassignedOnly: z.boolean().default(false).describe("Set true to find leads with no assigned salesperson"),
+        page: z.number().default(1).describe("Pagination page number (1-indexed)"),
+        limit: z.number().default(10).describe("Number of leads per page (max 25)"),
       }),
     }
   );
 };
+
+export const createAdvancedLeadSearchTool = ({ tenantModels }) =>
+  createLeadSearchTool({ tenantModels, toolName: "search_leads_advanced" });

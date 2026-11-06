@@ -32,7 +32,6 @@ export class TavilySearchProvider extends BaseSearchProvider {
     } else if (city && city !== "All" && !query.toLowerCase().includes(city.toLowerCase())) {
       query = `${query} in ${city}`;
     }
-    query = `${query} official company website`;
 
     const desiredCount = limit ? Math.min(Math.max(parseInt(limit, 10), 1), 50) : 10;
     const maxResults = Math.min(desiredCount + 5, 50);
@@ -60,6 +59,19 @@ export class TavilySearchProvider extends BaseSearchProvider {
         "tradeindia.com",
         "smergers.com",
         "yellowpages.in",
+        "revenuebase.ai",
+        "leadiq.com",
+        "apollo.io",
+        "zoominfo.com",
+        "scribd.com",
+        "salezshark.com",
+        "gptengineer.app",
+        "lovable.dev",
+        "bytescraper.com",
+        "play.google.com",
+        "apps.apple.com",
+        "vocal.media",
+        "leadstal.com",
       ],
     };
 
