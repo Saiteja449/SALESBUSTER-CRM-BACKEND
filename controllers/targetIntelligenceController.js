@@ -169,6 +169,7 @@ export const searchProspects = async (req, res) => {
       need,
       roles,
       searchType = "all",
+      limit,
     } = req.body;
 
     const apiKey = resolveGeminiKey(req);
@@ -184,6 +185,7 @@ export const searchProspects = async (req, res) => {
       need: need || "",
       roles: Array.isArray(roles) ? roles : [],
       searchType,
+      limit: limit ? parseInt(limit, 10) : 10,
     };
 
     const discoveryResult = await discoveryService.discoverBusinesses(filters, {
@@ -236,6 +238,7 @@ export const searchProspects = async (req, res) => {
             need: filters.need,
             roles: filters.roles,
             searchType,
+            limit: filters.limit,
           },
           status: "completed",
           totalDiscovered: companies.length,
@@ -255,25 +258,29 @@ export const searchProspects = async (req, res) => {
           await models.TargetCompanyModel.findOneAndUpdate(
             { organizationId: orgId, prospectKey: c.prospectKey },
             {
-              organizationId: orgId,
-              searchId: searchRecord?._id || null,
-              prospectKey: c.prospectKey,
-              companyName: c.companyName,
-              normalizedDomain: c.normalizedDomain,
-              website: c.website,
-              industry: c.industry,
-              description: c.description,
-              location: c.location,
-              founders: c.founders,
-              contact: c.contact,
-              socialLinks: c.socialLinks || {},
-              technologies: c.technologies || [],
-              sources: c.sources || [],
-              confidenceScore: c.confidenceScore,
-              enrichmentStatus: "discovered",
-              isResolved: Boolean(c.isResolved),
-              resolvedAt: c.resolvedAt || null,
-              resolvedByName: c.resolvedByName || "",
+              $set: {
+                organizationId: orgId,
+                searchId: searchRecord?._id || null,
+                prospectKey: c.prospectKey,
+                companyName: c.companyName,
+                normalizedDomain: c.normalizedDomain,
+                website: c.website,
+                industry: c.industry,
+                description: c.description,
+                location: c.location,
+                founders: c.founders,
+                contact: c.contact,
+                socialLinks: c.socialLinks || {},
+                technologies: c.technologies || [],
+                sources: c.sources || [],
+                confidenceScore: c.confidenceScore,
+                enrichmentStatus: "discovered",
+              },
+              $setOnInsert: {
+                isResolved: false,
+                resolvedAt: null,
+                resolvedByName: "",
+              },
             },
             { upsert: true, new: true, setDefaultsOnInsert: true }
           );
@@ -355,7 +362,42 @@ export const resolveProspect = async (req, res) => {
     );
 
     // Also update TargetCompany collection if present and database is connected
-    if (TargetCompanyModel && TargetCompanyModel.db?.readyState === 1 && mongoose.Types.ObjectId.isValid(orgId)) {
+    if (TargetCompanyModel && typeof TargetCompanyModel.findOneAndUpdate === "function" && (TargetCompanyModel.db?.readyState === 1 || !TargetCompanyModel.db) && mongoose.Types.ObjectId.isValid(orgId)) {
+      await TargetCompanyModel.findOneAndUpdate(
+        { organizationId: orgId, prospectKey: key },
+        {
+          $set: {
+            organizationId: orgId,
+            prospectKey: key,
+            companyName: company,
+            normalizedDomain: normalizeDomain(website),
+            website,
+            location: prospect.location || { locality: "", city: location, state: "", country: "India", raw: location },
+            founders: Array.isArray(prospect.founders) && prospect.founders.length > 0
+              ? prospect.founders
+              : person
+              ? [{ name: person, title, designation: title, email, phone, verificationStatus: "Verified" }]
+              : [],
+            contact: prospect.contact || {
+              businessPhone: phone,
+              phoneType: prospect.contact?.phoneType || "none",
+              phoneVerificationStatus: phone ? "Verified" : "Not Found",
+              businessEmail: email,
+              emailType: prospect.contact?.emailType || "none",
+              emailVerificationStatus: email ? "Verified" : "Not Found",
+              contactPage: prospect.contact?.contactPage || null,
+            },
+            socialLinks: prospect.socialLinks || {},
+            technologies: Array.isArray(prospect.technologies) ? prospect.technologies : [],
+            isResolved: true,
+            resolvedAt: record.resolvedAt,
+            resolvedByName: resolverName,
+            resolvedNotes: notes || "",
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+    } else if (TargetCompanyModel && typeof TargetCompanyModel.updateMany === "function" && (TargetCompanyModel.db?.readyState === 1 || !TargetCompanyModel.db) && mongoose.Types.ObjectId.isValid(orgId)) {
       await TargetCompanyModel.updateMany(
         { organizationId: orgId, prospectKey: key },
         {
@@ -476,7 +518,42 @@ export const bulkResolveProspects = async (req, res) => {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
-      if (TargetCompanyModel && TargetCompanyModel.db?.readyState === 1 && mongoose.Types.ObjectId.isValid(orgId)) {
+      if (TargetCompanyModel && typeof TargetCompanyModel.findOneAndUpdate === "function" && (TargetCompanyModel.db?.readyState === 1 || !TargetCompanyModel.db) && mongoose.Types.ObjectId.isValid(orgId)) {
+        await TargetCompanyModel.findOneAndUpdate(
+          { organizationId: orgId, prospectKey: key },
+          {
+            $set: {
+              organizationId: orgId,
+              prospectKey: key,
+              companyName: company,
+              normalizedDomain: normalizeDomain(website),
+              website,
+              location: p.location || { locality: "", city: location, state: "", country: "India", raw: location },
+              founders: Array.isArray(p.founders) && p.founders.length > 0
+                ? p.founders
+                : person
+                ? [{ name: person, title, designation: title, email, phone, verificationStatus: "Verified" }]
+                : [],
+              contact: p.contact || {
+                businessPhone: phone,
+                phoneType: p.contact?.phoneType || "none",
+                phoneVerificationStatus: phone ? "Verified" : "Not Found",
+                businessEmail: email,
+                emailType: p.contact?.emailType || "none",
+                emailVerificationStatus: email ? "Verified" : "Not Found",
+                contactPage: p.contact?.contactPage || null,
+              },
+              socialLinks: p.socialLinks || {},
+              technologies: Array.isArray(p.technologies) ? p.technologies : [],
+              isResolved: true,
+              resolvedAt: new Date(),
+              resolvedByName: resolverName,
+              resolvedNotes: notes || "",
+            },
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+      } else if (TargetCompanyModel && typeof TargetCompanyModel.updateMany === "function" && (TargetCompanyModel.db?.readyState === 1 || !TargetCompanyModel.db) && mongoose.Types.ObjectId.isValid(orgId)) {
         await TargetCompanyModel.updateMany(
           { organizationId: orgId, prospectKey: key },
           {

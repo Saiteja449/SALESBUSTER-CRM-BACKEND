@@ -30,6 +30,7 @@ const targetSearchSchema = new mongoose.Schema(
       country: { type: String, default: "India" },
       need: { type: String, default: "" },
       roles: { type: [String], default: [] },
+      limit: { type: Number, default: 10 },
       searchType: { type: String, enum: ["all", "companies", "people"], default: "all" },
     },
     status: {
