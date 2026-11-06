@@ -2,13 +2,24 @@ import mongoose from "mongoose";
 import TelecallerAnalytics from "../models/TelecallerAnalytics.js";
 import AILimit from "../models/AILimit.js";
 import Lead from "../models/Lead.js";
+import CallRecord from "../models/CallRecord.js";
 import { getIO } from "../socket/socket.js";
 import { recordLeadCallAtomic } from "../services/leadCallService.js";
+
+const canQueryModel = (model) => {
+  if (!model) return false;
+  if (model.prototype instanceof mongoose.Model || model.schema) {
+    const readyState = model.db?.readyState ?? mongoose.connection?.readyState;
+    return readyState === 1;
+  }
+  return true;
+};
 
 const getModels = (req) => ({
   AnalyticsModel: req.tenantModels?.TelecallerAnalytics || TelecallerAnalytics,
   AILimitModel: req.tenantModels?.AILimit || AILimit,
   LeadModel: req.tenantModels?.Lead || Lead,
+  CallRecordModel: req.tenantModels?.CallRecord || (mongoose.models.CallRecord || CallRecord),
 });
 
 // Logs a single call and increments daily analytics
@@ -136,6 +147,37 @@ export const logCall = async (req, res) => {
       update,
       { new: true, upsert: true },
     );
+
+    // Save individual call record if CallRecordModel is available
+    const { CallRecordModel } = getModels(req);
+    if (canQueryModel(CallRecordModel) && typeof CallRecordModel.create === "function") {
+      try {
+        const cleanCallEventId = callEventId || eventId || `evt_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        const callTime = timestamp ? new Date(timestamp) : (calledAt ? new Date(calledAt) : new Date());
+        const orgId = req.organization?._id || req.user?.organizationId;
+        await CallRecordModel.findOneAndUpdate(
+          { callEventId: cleanCallEventId },
+          {
+            $set: {
+              organizationId: orgId,
+              leadId: updatedLead?._id || (leadId && mongoose.Types.ObjectId.isValid(leadId) ? leadId : null),
+              salespersonId: salespersonId || null,
+              salespersonName: salesperson || "Unassigned",
+              customerName: updatedLead?.name || "",
+              customerPhone: phone || updatedLead?.phone || "Unknown",
+              callType: callType || "outgoing",
+              callStatus: status || "connected",
+              duration: durationNum,
+              calledAt: callTime,
+              source: "Call",
+            },
+          },
+          { upsert: true, new: true }
+        );
+      } catch (crErr) {
+        console.warn("[logCall] Note updating CallRecord:", crErr.message);
+      }
+    }
 
     res.status(200).json({
       success: true,

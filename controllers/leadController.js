@@ -22,6 +22,9 @@ import { decryptApiKey } from "../utils/encryption.js";
 import WAAccount from "../models/WhatsAppAccount.js";
 import { sendTemplateMessage } from "../services/whatsappCloudService.js";
 import { recordLeadCallAtomic } from "../services/leadCallService.js";
+import CallRecord from "../models/CallRecord.js";
+import TelecallerAnalytics from "../models/TelecallerAnalytics.js";
+import { recordCallEvent } from "../services/callEventService.js";
 
 
 // Feature toggle for AI Call Analysis & Transcription
@@ -40,6 +43,8 @@ const getModels = (req) => ({
   AILogModel: req?.tenantModels?.AILog || AILog,
   SystemSettingsModel: req?.tenantModels?.SystemSettings || SystemSettings,
   WhatsAppSessionModel: req?.tenantModels?.WhatsAppSession || WhatsAppSession,
+  CallRecordModel: req?.tenantModels?.CallRecord || (mongoose.models.CallRecord || CallRecord),
+  AnalyticsModel: req?.tenantModels?.TelecallerAnalytics || (mongoose.models.TelecallerAnalytics || TelecallerAnalytics),
 });
 
 // Helper to verify lead assignment for sales representatives
@@ -1922,6 +1927,8 @@ export const handleMissedCall = async (req, res) => {
       MessageModel,
       UserModel,
       WhatsAppSessionModel,
+      CallRecordModel,
+      AnalyticsModel,
     } = getModels(req);
 
     let orgId = req.user?.organizationId
@@ -2122,8 +2129,11 @@ export const handleMissedCall = async (req, res) => {
     let isNewLead = false;
     const assignedUserId =
       resolvedRepId ||
-      (isRepUser ? (req.user._id || req.user.id)?.toString() : "") ||
-      (req.user?._id || req.user?.id || "").toString();
+      (isRepUser ? (req.user._id || req.user.id)?.toString() : null);
+    const effectiveRepName =
+      resolvedRepName ||
+      (isRepUser ? req.user?.name : "") ||
+      "Unassigned";
 
     let callerName = name && name.trim() ? name.trim() : "";
     if (lead) {
@@ -2170,11 +2180,39 @@ export const handleMissedCall = async (req, res) => {
         time: followupTimeFormatted,
         priority: "High",
         notes: `Missed call received at ${timeFormatted}.`,
-        author: resolvedRepName || req.user?.name || "Mobile App",
+        author: resolvedRepName || (isRepUser ? req.user?.name : "Mobile App") || "Mobile App",
         done: false,
       });
     } catch (fErr) {
       console.warn("[Missed Call] Note creating Followup entry:", fErr.message);
+    }
+
+    // Record individual call event idempotently across CallRecord, Lead.callHistory, and TelecallerAnalytics
+    let callEventResult = null;
+    try {
+      callEventResult = await recordCallEvent({
+        CallRecordModel,
+        LeadModel,
+        AnalyticsModel,
+        organizationId: orgId,
+        callEventId: req.body.callEventId || req.body.eventId || null,
+        leadId: lead?._id,
+        salespersonId: assignedUserId,
+        salespersonName: effectiveRepName,
+        customerName: callerName,
+        customerPhone: rawPhone,
+        callType: "missed",
+        callStatus: "missed",
+        duration: durationSeconds || 0,
+        calledAt: missedTime,
+        source: req.body.source || "Call",
+        receivedSimNumber: number,
+      });
+      if (callEventResult?.updatedLead) {
+        lead = callEventResult.updatedLead;
+      }
+    } catch (callEvtErr) {
+      console.error("[Missed Call] Error recording call event:", callEvtErr);
     }
 
     // Broadcast lead update via Socket.IO

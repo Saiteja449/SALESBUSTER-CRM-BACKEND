@@ -110,7 +110,7 @@ export const runSalesManagerAssistant = async ({
   user,
 }) => {
   const startTime = Date.now();
-  const WALL_CLOCK_LIMIT_MS = 25000; // 25-second total turn budget
+  const WALL_CLOCK_LIMIT_MS = 45000; // 45-second total turn budget for multi-tool CRM queries
 
   // 1. Resolve Gemini API Key
   const geminiApiKey =
@@ -148,8 +148,8 @@ export const runSalesManagerAssistant = async ({
   const orgName = organization?.name || "Our Organization";
   const managerName = user?.name || "Sales Manager";
 
-  const systemPrompt = `You are the executive AI CRM Assistant for "${orgName}", interacting with ${managerName} (Sales Manager).
-You have real-time access to the live MongoDB database of the CRM via specialized tools.
+  const systemPrompt = `You are the executive AI CRM Data Intelligence Analyst for "${orgName}", interacting with ${managerName} (Sales Manager).
+You have real-time access to the live MongoDB database of the CRM via specialized analytics tools.
 
 =======================================================
 REAL-WORLD SYSTEM TEMPORAL CONTEXT (India Standard Time - IST):
@@ -161,7 +161,37 @@ REAL-WORLD SYSTEM TEMPORAL CONTEXT (India Standard Time - IST):
 - Current Month: ${boundaries.thisMonth.label}
 =======================================================
 
-STRICT OPERATIONAL RULES:
+CORE CRM INTELLIGENCE TOOLS & USAGE:
+1. 'get_crm_overview': Returns complete 360-degree CRM summary (total leads, new/active/converted/lost, calls incoming/outgoing/connected/missed, follow-ups pending/overdue, WhatsApp unread, recordings). Use for high-level summaries and health checks.
+2. 'get_missed_call_analytics': PRIMARY TOOL for ALL missed call inquiries.
+   - Overall missed calls
+   - Salesperson-wise missed calls (e.g. "How many missed calls did Shanmukh receive?")
+   - Date-wise missed calls (today, this month, custom dates)
+   - Customer-wise missed calls / phone number lookups
+   - Missed calls without follow-up vs with overdue follow-ups vs successfully followed up
+   - Missed calls from unknown/unassigned salespeople
+   - Returns both verified summary counts and paginated record details.
+3. 'search_call_records': Queries individual call logs and events.
+   - Filters: salesperson name/ID, customer phone/name, callType (incoming/outgoing/missed), callStatus (connected/missed/rejected), date range, recording availability, source.
+   - Use for specific call timelines, customer call activity, or calls between specific dates.
+4. 'get_salesperson_analytics': Comprehensive rep and team performance.
+   - Total calls, incoming, outgoing, connected, missed, talk time
+   - Total leads, new, converted, lost, conversion rate, deal value
+   - Pending, overdue, completed follow-ups
+   - Supports active, inactive, and historical representatives.
+   - Use for rep leaderboard, comparing salespeople (e.g. Shanmukh vs Jhansi), or rep activity.
+5. 'search_leads_advanced': Multi-filter lead search.
+   - Filters: assigned salesperson (including unassigned), creation date range, last activity date, status, source, service, priority, call status (has_calls, missed_calls, never_called), follow-up status (overdue, pending_today, no_followup), inactive days (e.g. not contacted for 7 days).
+6. 'get_followup_analytics': In-depth follow-up and task reports.
+   - Pending, overdue, today, upcoming, completed follow-ups, priority breakdown, rep-wise follow-up load, missed-call follow-ups.
+7. 'get_conversion_analytics': Win rates, conversions by salesperson, by source, by service, lost-lead reasons, and comparing high-call vs low-conversion reps.
+8. 'get_recording_analytics': Call audio recordings, transcriptions, analysis status, missing recordings for connected calls.
+9. 'get_whatsapp_analytics': Messages sent/received, response rate, leads awaiting reply, unread customer messages.
+10. 'lookup_phone_number': Quick check if a phone number exists across leads and calls.
+11. 'get_org_integrations_and_config': Organization subscription, AI keys, WhatsApp connections.
+12. 'search_crm_documentation_and_features': Knowledge base and user guides.
+
+QUERY PLANNING & EXECUTION INVARIANTS:
 1. ZERO HALLUCINATION INVARIANT:
    - Every single metric, count, percentage, lead detail, or team performance figure MUST come directly from a tool execution response.
    - NEVER invent numbers, assume record counts, or answer data questions without calling the appropriate tool.
@@ -219,7 +249,7 @@ STRICT OPERATIONAL RULES:
   messages.push(new HumanMessage(userMessage));
 
   // 6. Hardened Tool-Calling Agent Loop
-  const MAX_ITERATIONS = 5;
+  const MAX_ITERATIONS = 8;
   const toolsUsedSet = new Set();
   const iterationLogs = [];
   const previousFingerprints = [];
@@ -339,7 +369,7 @@ STRICT OPERATIONAL RULES:
         toolCall,
         toolsByName,
         timeoutMs: toolsByName[toolCall.name]?.metadata?.timeoutMs || 6500,
-        maxPayloadChars: 3000,
+        maxPayloadChars: 12000,
       })
     );
 
@@ -357,6 +387,12 @@ STRICT OPERATIONAL RULES:
       if (settled.status === "fulfilled") {
         toolOutput = settled.value.output;
         durationMs = settled.value.durationMs;
+        try {
+          const parsedToolData = JSON.parse(toolOutput);
+          if (parsedToolData?.error_code === "AMBIGUOUS_SALESPERSON" && Array.isArray(parsedToolData.matches)) {
+            extractedOptions = parsedToolData.matches.map((m) => m.name || m.email).filter(Boolean);
+          }
+        } catch (_) {}
       } else {
         toolOutput = JSON.stringify({
           ok: false,
