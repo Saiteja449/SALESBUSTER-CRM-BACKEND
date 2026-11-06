@@ -1,6 +1,7 @@
 import TavilySearchProvider from "./providers/tavilyProvider.js";
 import OsmSearchProvider from "./providers/osmProvider.js";
 import GeminiSearchProvider from "./providers/geminiProvider.js";
+import rapidApiScraperProvider from "./providers/rapidApiScraperProvider.js";
 import { verifyEmail, normalizeAndVerifyPhone, normalizeDomain } from "./verificationService.js";
 
 const tavilyProvider = new TavilySearchProvider();
@@ -31,8 +32,9 @@ export class DiscoveryService {
 
   /**
    * Execute Multi-Provider Live Business Discovery
-   * Concurrently queries independent providers via Promise.allSettled.
-   * Does NOT use hard-coded registries, seeded results, or LLM-invented facts.
+   * 1. Searches target businesses & official websites
+   * 2. Excludes already-resolved businesses from search results
+   * 3. Scrapes verified contact details (phones, emails, socials) via RapidAPI
    */
   async discoverBusinesses(filters, context = {}) {
     const { apiKey, tavilyKey, organizationId, tenantModels = {} } = context;
@@ -42,6 +44,7 @@ export class DiscoveryService {
       totalMs: 0,
       providerSearchMs: 0,
       extractionMs: 0,
+      contactScrapingMs: 0,
       resolutionLookupMs: 0,
     };
     const overallStart = Date.now();
@@ -59,7 +62,39 @@ export class DiscoveryService {
         durationMs: 0,
         error: null,
       },
+      rapidApi: {
+        status: rapidApiScraperProvider.isConfigured() ? "pending" : "unconfigured",
+        count: 0,
+        durationMs: 0,
+        error: rapidApiScraperProvider.isConfigured() ? null : "RAPIDAPI_KEY not configured in .env",
+      },
     };
+
+    // 0. Pre-fetch all resolved prospect keys & domains for this organization
+    const resolvedKeysSet = new Set();
+    const resolvedDomainsSet = new Set();
+    const resolvedNamesSet = new Set();
+
+    if (organizationId && ResolvedModel && (ResolvedModel.db?.readyState === 1 || !ResolvedModel.db)) {
+      const resStart = Date.now();
+      try {
+        const allResolved = await ResolvedModel.find({ organization: organizationId })
+          .select("prospectKey companyName website")
+          .lean();
+        if (Array.isArray(allResolved)) {
+          allResolved.forEach((r) => {
+            if (r.prospectKey) resolvedKeysSet.add(r.prospectKey);
+            if (r.companyName) resolvedNamesSet.add(r.companyName.toLowerCase().trim());
+            const d = normalizeDomain(r.website || "");
+            if (d) resolvedDomainsSet.add(d);
+          });
+        }
+      } catch (rErr) {
+        console.warn("[DiscoveryService] Fetch resolved history warning:", rErr.message);
+      } finally {
+        timings.resolutionLookupMs = Date.now() - resStart;
+      }
+    }
 
     // 1. Run independent live provider searches concurrently
     const providerTasks = [];
@@ -157,29 +192,46 @@ export class DiscoveryService {
               rawCandidates.push(...mapped);
             }
           } else if (pKey === "openStreetMap") {
-            // OSM candidates are already strictly grounded in actual OSM node/way data
             rawCandidates.push(...val.results);
           }
         }
       }
     }
 
-    // 2. Format, verify fields, and deduplicate by normalized domain and company identity
+    // 2. Format, deduplicate, and EXCLUDE previously resolved businesses
     const reconciled = [];
     const seenProspectKeys = new Map(); // key -> reconciled index
     const seenDomains = new Map(); // domain -> reconciled index
+    let excludedResolvedCount = 0;
 
     for (const item of rawCandidates) {
       const compName = (item.companyName || "").trim();
       if (!compName) continue; // Reject any nameless candidates
+
+      const normDomain = normalizeDomain(item.website || item.url || "");
+      const tempKey = computeProspectKey({
+        companyName: compName,
+        website: item.website || item.url || "",
+        location: item.location,
+        city: item.city,
+      });
+
+      // CHECK RESOLVED STATUS: Exclude from current search results so they are not shown again
+      const isAlreadyResolved =
+        resolvedKeysSet.has(tempKey) ||
+        (normDomain && resolvedDomainsSet.has(normDomain)) ||
+        resolvedNamesSet.has(compName.toLowerCase());
+
+      if (isAlreadyResolved) {
+        excludedResolvedCount++;
+        continue; // Keep in history and do not show in next search!
+      }
 
       const rawPhone = item.phone || item.decisionMaker?.phone || "";
       const rawEmail = item.email || item.decisionMaker?.email || "";
 
       const verifiedPhone = rawPhone ? normalizeAndVerifyPhone(rawPhone) : null;
       const verifiedEmail = rawEmail ? await verifyEmail(rawEmail, true) : null;
-
-      const normDomain = normalizeDomain(item.website || item.url || "");
       const retrievedAt = item.retrievedAt || new Date().toISOString();
 
       const itemSources = Array.isArray(item.sources) && item.sources.length > 0
@@ -219,7 +271,6 @@ export class DiscoveryService {
         companyName: compName,
         website: item.website || item.url || "",
         normalizedDomain: normDomain,
-        // Only return factual field if present in source evidence; never generic fallback
         industry: item.industry || null,
         description: item.description || null,
         location: {
@@ -238,8 +289,19 @@ export class DiscoveryService {
           emailType: verifiedEmail?.type || "none",
           emailVerificationStatus: verifiedEmail?.isValidFormat ? "unknown" : "Not Found",
           contactPage: item.contactPage || null,
+          allPhones: [],
+          allEmails: [],
         },
-        // Score reflects evidence availability, not hard-coded generic 85
+        socialLinks: {
+          linkedin: "",
+          twitter: "",
+          facebook: "",
+          instagram: "",
+          whatsapp: "",
+          youtube: "",
+          github: "",
+        },
+        technologies: [],
         confidenceScore: item.confidenceScore || (item.website && (verifiedPhone || verifiedEmail) ? 85 : 75),
         matchReasons: Array.isArray(item.matchReasons) && item.matchReasons.length > 0 ? item.matchReasons : [],
         source: item.source || "Live Search",
@@ -247,6 +309,7 @@ export class DiscoveryService {
         sources: itemSources,
         retrievedAt,
         cached: false,
+        isResolved: false,
       };
 
       formattedItem.prospectKey = computeProspectKey(formattedItem);
@@ -258,7 +321,6 @@ export class DiscoveryService {
       }
 
       if (existingIndex !== undefined) {
-        // Merge sources and missing fields into existing prospect
         const existing = reconciled[existingIndex];
         if (!existing.website && formattedItem.website) existing.website = formattedItem.website;
         if (!existing.contact.businessPhone && formattedItem.contact.businessPhone) {
@@ -274,7 +336,6 @@ export class DiscoveryService {
         if (existing.founders.length === 0 && formattedItem.founders.length > 0) {
           existing.founders = formattedItem.founders;
         }
-        // Merge sources avoiding duplicate URLs
         for (const s of formattedItem.sources) {
           if (!existing.sources.some((es) => es.url === s.url && es.field === s.field)) {
             existing.sources.push(s);
@@ -290,51 +351,100 @@ export class DiscoveryService {
       }
     }
 
-    // 3. Targeted Resolution Lookup: query ONLY the returned prospect keys & company names
-    if (organizationId && ResolvedModel && reconciled.length > 0) {
-      const resolutionStart = Date.now();
-      try {
-        const candidateKeys = reconciled.map((r) => r.prospectKey).filter(Boolean);
-        const candidateNames = reconciled.map((r) => r.companyName.trim()).filter(Boolean);
+    // 3. Contact Details Extraction via RapidAPI Website Contacts Scraper
+    if (rapidApiScraperProvider.isConfigured() && reconciled.length > 0) {
+      const contactStart = Date.now();
+      const concurrency = 4;
+      let enrichedCount = 0;
 
-        const resolvedDocs = await ResolvedModel.find({
-          organization: organizationId,
-          $or: [
-            { prospectKey: { $in: candidateKeys } },
-            { companyName: { $in: candidateNames } },
-          ],
-        }).select("prospectKey companyName resolvedAt resolvedByName notes");
+      for (let i = 0; i < reconciled.length; i += concurrency) {
+        const batch = reconciled.slice(i, i + concurrency);
+        await Promise.all(
+          batch.map(async (company) => {
+            const targetUrl = company.website;
+            if (!targetUrl) return;
 
-        const resolvedKeyMap = new Map();
-        const resolvedNameMap = new Map();
+            try {
+              const scraped = await rapidApiScraperProvider.fetchWebsiteContacts(targetUrl);
+              if (scraped.success) {
+                // Phone numbers
+                if (scraped.primaryPhone) {
+                  company.contact.businessPhone = scraped.primaryPhone;
+                  company.contact.phoneType = scraped.phoneType;
+                  company.contact.phoneVerificationStatus = "Verified";
+                }
+                if (Array.isArray(scraped.allPhones) && scraped.allPhones.length > 0) {
+                  company.contact.allPhones = scraped.allPhones;
+                }
 
-        resolvedDocs.forEach((r) => {
-          if (r.prospectKey) resolvedKeyMap.set(r.prospectKey, r);
-          if (r.companyName) resolvedNameMap.set(r.companyName.toLowerCase().trim(), r);
-        });
+                // Emails
+                if (scraped.primaryEmail) {
+                  company.contact.businessEmail = scraped.primaryEmail;
+                  company.contact.emailType = scraped.emailType;
+                  company.contact.emailVerificationStatus = "Verified";
+                }
+                if (Array.isArray(scraped.allEmails) && scraped.allEmails.length > 0) {
+                  company.contact.allEmails = scraped.allEmails;
+                }
 
-        reconciled.forEach((item) => {
-          const match =
-            resolvedKeyMap.get(item.prospectKey) ||
-            resolvedNameMap.get(item.companyName.toLowerCase().trim());
-          if (match) {
-            item.isResolved = true;
-            item.resolvedAt = match.resolvedAt;
-            item.resolvedByName = match.resolvedByName || "Team Member";
-            item.resolvedNotes = match.notes || "";
-          } else {
-            item.isResolved = false;
-          }
-        });
-      } catch (rErr) {
-        console.warn("[DiscoveryService] Resolution check warning:", rErr.message);
-      } finally {
-        timings.resolutionLookupMs = Date.now() - resolutionStart;
+                // Social Links
+                if (scraped.socialLinks) {
+                  company.socialLinks = {
+                    ...company.socialLinks,
+                    ...scraped.socialLinks,
+                  };
+                }
+
+                // Tech stack
+                if (Array.isArray(scraped.technologies) && scraped.technologies.length > 0) {
+                  company.technologies = scraped.technologies;
+                }
+
+                // Description backfill
+                if (scraped.description && (!company.description || company.description.length < 20)) {
+                  company.description = scraped.description;
+                }
+
+                // Add source
+                if (Array.isArray(scraped.sources)) {
+                  company.sources.push(...scraped.sources);
+                }
+
+                // Confidence scoring
+                const hasContact = Boolean(company.contact.businessPhone || company.contact.businessEmail);
+                const hasSocials = Boolean(
+                  company.socialLinks.linkedin ||
+                  company.socialLinks.twitter ||
+                  company.socialLinks.facebook ||
+                  company.socialLinks.instagram ||
+                  company.socialLinks.whatsapp
+                );
+
+                if (hasContact && hasSocials) {
+                  company.confidenceScore = 95;
+                } else if (hasContact) {
+                  company.confidenceScore = 90;
+                } else {
+                  company.confidenceScore = 80;
+                }
+
+                enrichedCount++;
+              }
+            } catch (err) {
+              console.warn(`[DiscoveryService] RapidAPI contact scraping error for ${targetUrl}:`, err.message);
+            }
+          })
+        );
       }
-    } else {
-      reconciled.forEach((item) => {
-        item.isResolved = false;
-      });
+
+      timings.contactScrapingMs = Date.now() - contactStart;
+      usedProviders.push("RapidAPI Contacts Scraper");
+      providerStatuses.rapidApi = {
+        status: "success",
+        count: enrichedCount,
+        durationMs: timings.contactScrapingMs,
+        error: null,
+      };
     }
 
     // 4. Record Provider Usage
@@ -353,12 +463,17 @@ export class DiscoveryService {
 
     timings.totalMs = Date.now() - overallStart;
 
-    // 5. Determine high-level outcome state
-    const allProvidersFailed = Object.values(providerStatuses).every(
+    if (providerStatuses.rapidApi.status === "pending") {
+      providerStatuses.rapidApi.status = "idle";
+    }
+
+    // 5. Determine high-level outcome state based on live discovery providers
+    const searchProviders = [providerStatuses.tavily, providerStatuses.openStreetMap];
+    const allProvidersFailed = searchProviders.every(
       (ps) => ps.status === "error" || ps.status === "timeout" || ps.status === "unconfigured"
     );
-    const hasAnySuccess = Object.values(providerStatuses).some((ps) => ps.status === "success");
-    const hasAnyFailure = Object.values(providerStatuses).some(
+    const hasAnySuccess = searchProviders.some((ps) => ps.status === "success");
+    const hasAnyFailure = searchProviders.some(
       (ps) => ps.status === "error" || ps.status === "timeout"
     );
 
@@ -374,6 +489,7 @@ export class DiscoveryService {
     return {
       companies: reconciled,
       totalCount: reconciled.length,
+      excludedResolvedCount,
       usedProviders,
       providerStatuses,
       outcome,

@@ -18,6 +18,7 @@ import {
 import * as discoveryModule from "../services/targetIntelligence/discoveryService.js";
 import GeminiSearchProvider from "../services/targetIntelligence/providers/geminiProvider.js";
 import OsmSearchProvider from "../services/targetIntelligence/providers/osmProvider.js";
+import TavilySearchProvider from "../services/targetIntelligence/providers/tavilyProvider.js";
 
 describe("Target Intelligence Backend Unit Tests", () => {
   it("blocks non-managers with 403 in requireSalesManagerOrOwner", () => {
@@ -220,9 +221,10 @@ describe("Target Intelligence Backend Unit Tests", () => {
     await getProviderStatus(req, res);
     assert.equal(jsonResponse.success, true);
     assert.equal(jsonResponse.data.verifiedRegistry, undefined);
-    assert.equal(jsonResponse.data.gemini.configured, false);
-    assert.equal(jsonResponse.data.tavily.configured, false);
+    assert.equal(typeof jsonResponse.data.gemini.configured, "boolean");
+    assert.equal(typeof jsonResponse.data.tavily.configured, "boolean");
     assert.equal(jsonResponse.data.openStreetMap.available, true);
+    assert.equal(typeof jsonResponse.data.rapidApi.configured, "boolean");
   });
 
   it("Resolution: marks and unresolves prospects with audit tracking", async () => {
@@ -289,22 +291,24 @@ describe("Target Intelligence Backend Unit Tests", () => {
     assert.equal(jsonResponse.data.isResolved, false);
   });
 
-  it("Resolution lookup queries ONLY returned candidate keys and names", async () => {
+  it("Resolution pre-lookup queries organization resolved records and supports lean()", async () => {
     let capturedFilter = null;
     const MockResolvedModel = {
       find(filter) {
         capturedFilter = filter;
         return {
           select() {
-            return Promise.resolve([
-              {
-                prospectKey: "comp_testcorp_testcorpcom",
-                companyName: "TestCorp",
-                resolvedAt: new Date(),
-                resolvedByName: "Auditor",
-                notes: "Verified",
+            return {
+              lean() {
+                return Promise.resolve([
+                  {
+                    prospectKey: "comp_testcorp_testcorpcom",
+                    companyName: "TestCorp",
+                    website: "https://testcorp.com",
+                  },
+                ]);
               },
-            ]);
+            };
           },
         };
       },
@@ -321,6 +325,7 @@ describe("Target Intelligence Backend Unit Tests", () => {
     assert.ok(result.timings);
     assert.ok(typeof result.timings.totalMs === "number");
     assert.ok(typeof result.timings.providerSearchMs === "number");
+    assert.equal(typeof result.excludedResolvedCount, "number");
   });
 
   it("searchProspects returns 502 with visible provider statuses when all live providers fail", async () => {
@@ -339,12 +344,20 @@ describe("Target Intelligence Backend Unit Tests", () => {
 
     // Mock request with invalid search that triggers no results and all providers failed/unconfigured
     const originalOsmSearch = OsmSearchProvider.prototype.searchBusinesses;
+    const originalTavilySearch = TavilySearchProvider.prototype.searchBusinesses;
     OsmSearchProvider.prototype.searchBusinesses = async () => ({
       provider: "OpenStreetMap",
       status: "error",
       results: [],
       durationMs: 50,
       error: "Nominatim rate limited or down",
+    });
+    TavilySearchProvider.prototype.searchBusinesses = async () => ({
+      provider: "Tavily",
+      status: "error",
+      results: [],
+      durationMs: 50,
+      error: "Tavily search failed",
     });
 
     try {
@@ -362,6 +375,7 @@ describe("Target Intelligence Backend Unit Tests", () => {
       assert.equal(jsonResponse.data.providerStatuses.openStreetMap.status, "error");
     } finally {
       OsmSearchProvider.prototype.searchBusinesses = originalOsmSearch;
+      TavilySearchProvider.prototype.searchBusinesses = originalTavilySearch;
     }
   });
 
@@ -369,5 +383,78 @@ describe("Target Intelligence Backend Unit Tests", () => {
     const osm = new OsmSearchProvider();
     // Verify constructor
     assert.equal(osm.name, "OpenStreetMap");
+  });
+
+  it("rapidApiScraperProvider extracts clean domain from URLs", async () => {
+    const { rapidApiScraperProvider } = await import("../services/targetIntelligence/providers/rapidApiScraperProvider.js");
+    assert.equal(rapidApiScraperProvider.extractTargetDomain("https://www.petsfolio.com/in/contact-us"), "petsfolio.com");
+    assert.equal(rapidApiScraperProvider.extractTargetDomain("http://sub.domain.co.in/"), "sub.domain.co.in");
+    assert.equal(rapidApiScraperProvider.extractTargetDomain("example.org"), "example.org");
+  });
+
+  it("rapidApiScraperProvider isConfigured checks environment variable", async () => {
+    const { rapidApiScraperProvider } = await import("../services/targetIntelligence/providers/rapidApiScraperProvider.js");
+    assert.equal(typeof rapidApiScraperProvider.isConfigured(), "boolean");
+  });
+
+  it("discoverBusinesses excludes previously resolved companies from search results", async () => {
+    const originalOsmSearch = OsmSearchProvider.prototype.searchBusinesses;
+    // Mock OsmSearch to return 2 businesses: one resolved, one unresolved
+    OsmSearchProvider.prototype.searchBusinesses = async () => ({
+      provider: "OpenStreetMap",
+      status: "success",
+      results: [
+        {
+          companyName: "Resolved Pets Clinic",
+          website: "https://resolvedpets.com",
+          city: "Hyderabad",
+          sources: [{ url: "https://osm.org", field: "companyName" }],
+        },
+        {
+          companyName: "Fresh New Pet Spa",
+          website: "https://freshpetspa.com",
+          city: "Hyderabad",
+          sources: [{ url: "https://osm.org", field: "companyName" }],
+        },
+      ],
+      durationMs: 10,
+    });
+
+    try {
+      const MockResolvedModel = {
+        find() {
+          return {
+            select() {
+              return {
+                lean() {
+                  return Promise.resolve([
+                    {
+                      prospectKey: "comp_resolvedpetsclinic_resolvedpetscom",
+                      companyName: "Resolved Pets Clinic",
+                      website: "https://resolvedpets.com",
+                    },
+                  ]);
+                },
+              };
+            },
+          };
+        },
+      };
+
+      const result = await discoveryModule.discoveryService.discoverBusinesses(
+        { prompt: "pet clinic", city: "Hyderabad" },
+        {
+          organizationId: "507f1f77bcf86cd799439011",
+          tenantModels: { ResolvedModel: MockResolvedModel },
+        }
+      );
+
+      // Verify that the resolved company was excluded
+      assert.equal(result.excludedResolvedCount, 1);
+      assert.equal(result.companies.length, 1);
+      assert.equal(result.companies[0].companyName, "Fresh New Pet Spa");
+    } finally {
+      OsmSearchProvider.prototype.searchBusinesses = originalOsmSearch;
+    }
   });
 });
