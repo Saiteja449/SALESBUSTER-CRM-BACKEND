@@ -13,10 +13,57 @@ import { decryptApiKey } from "../../utils/encryption.js";
 import { recordAiUsage } from "../../services/aiUsageService.js";
 
 /**
+ * Safely extracts plain text from LLM response content:
+ * Handles strings, arrays of text blocks ([{ type: "text", text: "..." }]),
+ * objects, and stringified JSON arrays.
+ */
+export const extractTextFromAiContent = (content) => {
+  if (!content) return "";
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part.text === "string") return part.text;
+        return "";
+      })
+      .join("");
+  }
+  if (typeof content === "object" && content !== null && typeof content.text === "string") {
+    return content.text;
+  }
+  if (typeof content === "string") {
+    const trimmed = content.trim();
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (
+          Array.isArray(parsed) &&
+          parsed.some(
+            (p) => p && typeof p === "object" && (p.text !== undefined || p.type === "text")
+          )
+        ) {
+          return parsed
+            .map((p) => {
+              if (typeof p === "string") return p;
+              if (p && typeof p.text === "string") return p.text;
+              return "";
+            })
+            .join("");
+        }
+      } catch (_) {}
+    }
+    return content;
+  }
+  return String(content);
+};
+
+/**
  * Extracts structured options from assistant text if embedded via syntax markers
  */
 const parseOptionsFromText = (text) => {
-  if (!text || typeof text !== "string") return { cleanText: text, options: [] };
+  const clean = extractTextFromAiContent(text);
+  if (!clean || typeof clean !== "string") return { cleanText: clean || "", options: [] };
+  text = clean;
 
   // Pattern 1: <<<OPTIONS: [...]>>>
   const regex1 = /<<<OPTIONS:\s*(\[.*?\])\s*>>>/is;
@@ -253,7 +300,7 @@ STRICT OPERATIONAL RULES:
 
     // If no tool calls requested, we have the final textual answer!
     if (!aiResponse.tool_calls || aiResponse.tool_calls.length === 0) {
-      const rawText = typeof aiResponse.content === "string" ? aiResponse.content : JSON.stringify(aiResponse.content);
+      const rawText = extractTextFromAiContent(aiResponse.content);
       const parsed = parseOptionsFromText(rawText);
       finalReply = parsed.cleanText;
       if (extractedOptions.length === 0 && parsed.options.length > 0) {
@@ -368,7 +415,7 @@ STRICT OPERATIONAL RULES:
 
       const synthesisRes = await directModel.invoke(synthesisPrompt);
       if (synthesisRes && synthesisRes.content) {
-        const rawText = typeof synthesisRes.content === "string" ? synthesisRes.content : JSON.stringify(synthesisRes.content);
+        const rawText = extractTextFromAiContent(synthesisRes.content);
         const parsed = parseOptionsFromText(rawText);
         finalReply = parsed.cleanText;
         if (extractedOptions.length === 0 && parsed.options.length > 0) {
