@@ -37,12 +37,13 @@ export class RapidApiScraperProvider {
    */
   async fetchWebsiteContacts(websiteUrl, options = {}) {
     const apiKey = options.apiKey || process.env.RAPIDAPI_KEY;
-    const timeoutMs = options.timeoutMs || 15000;
+    const timeoutMs = options.timeoutMs || 8000;
 
     const result = {
       success: false,
       domain: "",
       title: null,
+      companyName: null,
       description: null,
       primaryPhone: null,
       phoneType: "none",
@@ -107,6 +108,7 @@ export class RapidApiScraperProvider {
 
       // 1. Meta / Company Info
       if (raw.title) result.title = raw.title;
+      if (raw.company?.name) result.companyName = raw.company.name;
       if (raw.description) result.description = raw.description;
 
       // 2. Extract and Normalize Phones
