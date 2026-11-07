@@ -4,8 +4,11 @@ import conversationFinalizationService from "../services/conversation/conversati
 import { getMasterModels } from "../services/tenantManager.js";
 
 /**
- * Registers standardized Conversation Capture socket event listeners.
- * Also registers backward-compatible aliases for legacy mobile events.
+ * Registers Conversation Capture socket event listeners (single canonical `conversation:*` set).
+ * Client -> server: conversation:start | conversation:audio_chunk | conversation:stop
+ * Server -> client: conversation:ready | conversation:error | conversation:transcript_interim |
+ *                   conversation:transcript_final | conversation:processing | conversation:completed
+ * Implements session-level idempotency and protects active sessions against duplicate triggers.
  * @param {import("socket.io").Socket} socket
  */
 export function registerConversationSocketHandlers(socket) {
@@ -23,7 +26,7 @@ export function registerConversationSocketHandlers(socket) {
   };
 
   // =========================================================================
-  // 1. conversation:start (Alias: event_voice_start)
+  // 1. conversation:start
   // =========================================================================
   const handleStart = async (data = {}) => {
     try {
@@ -32,19 +35,59 @@ export function registerConversationSocketHandlers(socket) {
         `conv_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
       const eventId = data.eventId || null;
       const eventName = data.eventName || "";
-      const customVocabulary = data.customVocabulary || [eventName].filter(Boolean);
+      const customVocabulary =
+        data.customVocabulary || [eventName].filter(Boolean);
 
-      console.log(
-        `[ConversationSocket] Starting capture session ${sessionId} for user ${socket.user?.id || socket.user?._id}`
-      );
-
-      // Close pre-existing session if active on this socket
+      // Session-Level Idempotency Check:
+      // If an active session already exists on this socket
       if (socket.conversationCaptureSession) {
+        const current = socket.conversationCaptureSession;
+
+        // Same session ID arriving again (e.g. client retried conversation:start)
+        if (data.sessionId && current.sessionId === data.sessionId) {
+          console.log(
+            `[ConversationSocket] Duplicate start for active session ${sessionId}. Re-emitting ready without re-initializing.`,
+          );
+          socket.emit("conversation:ready", {
+            sessionId: current.sessionId,
+            status: "ready",
+            model:
+              current.liveTranscriber?.liveModel ||
+              "gemini-3.5-transcribe-live",
+            startedAt: current.startedAt,
+          });
+          return;
+        }
+
+        // Rapid duplicate start within 1.5s window
+        if (Date.now() - current.startedAt < 1500) {
+          console.log(
+            `[ConversationSocket] Rapid duplicate start on socket for session ${current.sessionId}. Preserving active session.`,
+          );
+          socket.emit("conversation:ready", {
+            sessionId: current.sessionId,
+            status: "ready",
+            model:
+              current.liveTranscriber?.liveModel ||
+              "gemini-3.5-transcribe-live",
+            startedAt: current.startedAt,
+          });
+          return;
+        }
+
+        // Truly a new subsequent session: cleanly close pre-existing live transcriber
+        console.log(
+          `[ConversationSocket] Closing pre-existing session ${current.sessionId} for new session ${sessionId}`,
+        );
         try {
-          socket.conversationCaptureSession.liveTranscriber?.close();
+          current.liveTranscriber?.close();
         } catch {}
         socket.conversationCaptureSession = null;
       }
+
+      console.log(
+        `[ConversationSocket] Starting capture session ${sessionId} for user ${socket.user?.id || socket.user?._id}`,
+      );
 
       const organization = await resolveOrganization();
 
@@ -63,10 +106,13 @@ export function registerConversationSocketHandlers(socket) {
         user: socket.user,
         customVocabulary,
         onTranscriptInterim: (interimData) => {
-          // Can optionally trigger lightweight provisional extraction suggestions
+          // Provisional updates emitted by liveTranscriber
         },
         onError: (err) => {
-          console.warn(`[ConversationSocket] Live transcriber error for ${sessionId}:`, err.message);
+          console.warn(
+            `[ConversationSocket] Live transcriber error for ${sessionId}:`,
+            err.message,
+          );
         },
       });
 
@@ -80,7 +126,6 @@ export function registerConversationSocketHandlers(socket) {
         user: socket.user,
         liveTranscriber,
         startedAt: Date.now(),
-        isPaused: false,
       };
 
       socket.emit("conversation:ready", {
@@ -89,30 +134,21 @@ export function registerConversationSocketHandlers(socket) {
         model: liveTranscriber.liveModel,
         startedAt: Date.now(),
       });
-      // Legacy alias
-      socket.emit("bi_voice_ready", {
-        sessionId,
-        model: liveTranscriber.liveModel,
-        provider: "gemini",
-      });
     } catch (err) {
       console.error("[ConversationSocket] Error in conversation:start:", err);
       socket.emit("conversation:error", {
         sessionId: data?.sessionId || null,
         message: err.message || "Failed to initialize conversation session",
       });
-      socket.emit("bi_voice_error", {
-        message: err.message || "Failed to initialize conversation session",
-      });
     }
   };
 
   // =========================================================================
-  // 2. conversation:audio_chunk (Alias: event_voice_audio_in)
+  // 2. conversation:audio_chunk
   // =========================================================================
   const handleAudioChunk = (chunkPayload) => {
     const session = socket.conversationCaptureSession;
-    if (!session || session.isPaused) return;
+    if (!session) return;
 
     let base64Data = null;
     let sequenceNumber = null;
@@ -143,49 +179,44 @@ export function registerConversationSocketHandlers(socket) {
   };
 
   // =========================================================================
-  // 3. conversation:pause & conversation:resume
-  // =========================================================================
-  const handlePause = () => {
-    if (socket.conversationCaptureSession) {
-      socket.conversationCaptureSession.isPaused = true;
-      socket.emit("conversation:status", { state: "paused" });
-    }
-  };
-
-  const handleResume = () => {
-    if (socket.conversationCaptureSession) {
-      socket.conversationCaptureSession.isPaused = false;
-      socket.emit("conversation:status", { state: "listening" });
-    }
-  };
-
-  // =========================================================================
-  // 4. conversation:stop (Alias: event_voice_stop)
+  // 3. conversation:stop
   // =========================================================================
   const handleStop = async (data = {}) => {
     const session = socket.conversationCaptureSession;
-    const sessionId = data.sessionId || session?.sessionId;
+    const sessionId =
+      data.sessionId || session?.sessionId || socket._lastActiveSessionId;
 
     if (!sessionId) {
-      console.warn("[ConversationSocket] Stop requested but no active sessionId found");
+      console.warn(
+        "[ConversationSocket] Stop requested but no active sessionId found",
+      );
       return;
     }
 
     console.log(`[ConversationSocket] Stop received for session: ${sessionId}`);
+    socket._lastActiveSessionId = sessionId;
 
     let liveTranscript = "";
     let liveDurationSec = 0;
 
-    if (session) {
+    if (session && session.sessionId === sessionId) {
       liveDurationSec = (Date.now() - session.startedAt) / 1000;
       if (session.liveTranscriber) {
-        liveTranscript = session.liveTranscriber.accumulatedLiveTranscript || "";
-        session.liveTranscriber.close();
+        liveTranscript =
+          session.liveTranscriber.accumulatedLiveTranscript || "";
+        try {
+          session.liveTranscriber.close();
+        } catch {}
       }
       socket.conversationCaptureSession = null;
     }
 
-    const clientTranscript = (data?.liveTranscript || data?.transcript || data?.committedTranscript || "").trim();
+    const clientTranscript = (
+      data?.liveTranscript ||
+      data?.transcript ||
+      data?.committedTranscript ||
+      ""
+    ).trim();
     if (clientTranscript && clientTranscript.length > liveTranscript.length) {
       liveTranscript = clientTranscript;
     }
@@ -206,37 +237,30 @@ export function registerConversationSocketHandlers(socket) {
         liveDurationSec,
       });
     } catch (err) {
-      console.error(`[ConversationSocket] Finalization failed for ${sessionId}:`, err);
+      console.error(
+        `[ConversationSocket] Finalization failed for ${sessionId}:`,
+        err,
+      );
       socket.emit("conversation:error", {
         sessionId,
-        message: err.message || "Failed to finalize conversation",
-      });
-      socket.emit("bi_voice_error", {
         message: err.message || "Failed to finalize conversation",
       });
     }
   };
 
-  // Register Standardized Events
   socket.on("conversation:start", handleStart);
   socket.on("conversation:audio_chunk", handleAudioChunk);
-  socket.on("conversation:pause", handlePause);
-  socket.on("conversation:resume", handleResume);
   socket.on("conversation:stop", handleStop);
-
-  // Register Backwards-Compatible Legacy Aliases
-  socket.on("event_voice_start", handleStart);
-  socket.on("event_voice_audio_in", handleAudioChunk);
-  socket.on("event_voice_stop", handleStop);
 
   // Disconnect Cleanup
   socket.on("disconnect", () => {
     if (socket.conversationCaptureSession?.liveTranscriber) {
-      socket.conversationCaptureSession.liveTranscriber.close();
+      try {
+        socket.conversationCaptureSession.liveTranscriber.close();
+      } catch {}
       socket.conversationCaptureSession = null;
     }
   });
 }
 
 export default registerConversationSocketHandlers;
-

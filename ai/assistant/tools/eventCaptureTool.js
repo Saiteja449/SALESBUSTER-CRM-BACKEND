@@ -83,12 +83,17 @@ export const createEventInterimTool = ({ socket, eventId, eventName, user, organ
     const currentEvent = eventName || "our event";
 
     let cleanPhone = "";
+    let partialPhone = "";
     if (args.phone) {
-      const digits = String(args.phone).replace(/\D/g, "");
-      if (digits.length >= 10) {
-        cleanPhone = digits.slice(-10);
-      } else if (digits.length > 0) {
-        cleanPhone = digits;
+      const rawDigits = String(args.phone).replace(/\D/g, "");
+      let candidate = rawDigits;
+      if (candidate.length === 12 && candidate.startsWith("91")) candidate = candidate.slice(2);
+      else if (candidate.length === 11 && candidate.startsWith("0")) candidate = candidate.slice(1);
+
+      if (candidate.length === 10 && /^[6-9]\d{9}$/.test(candidate) && candidate !== repPhone) {
+        cleanPhone = candidate;
+      } else if (rawDigits.length > 0) {
+        partialPhone = rawDigits;
       }
     }
 
@@ -115,6 +120,7 @@ export const createEventInterimTool = ({ socket, eventId, eventName, user, organ
       eventName: currentEvent,
       name: rawName,
       phone: cleanPhone,
+      partialPhone: partialPhone || null,
       companyName,
       designation,
       summary,
@@ -124,8 +130,9 @@ export const createEventInterimTool = ({ socket, eventId, eventName, user, organ
     };
 
     if (socket) {
+      socket.emit("conversation:contact_update", payload);
       socket.emit("event_contact_interim", payload);
-      console.log(`[EventCaptureTool] Emitted 'event_contact_interim' to socket ${socket.id}: Name="${rawName}", Phone="${cleanPhone}", Company="${companyName}", Designation="${designation}"`);
+      console.log(`[EventCaptureTool] Emitted contact update to socket ${socket.id}: Name="${rawName}", Phone="${cleanPhone}", Company="${companyName}", Designation="${designation}"`);
     }
 
     return JSON.stringify({
@@ -150,12 +157,16 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
     const repPhone = (user?.phone || "").replace(/\D/g, "").slice(-10);
     const currentEvent = eventName || "our event";
 
-    // Normalize phone number (must be a valid 10-digit number)
+    // Normalize phone number (must be a valid 10-digit Indian mobile number)
     let cleanPhone = "";
     if (args.phone) {
       const digits = String(args.phone).replace(/\D/g, "");
-      if (digits.length >= 10) {
-        cleanPhone = digits.slice(-10);
+      let candidate = digits;
+      if (candidate.length === 12 && candidate.startsWith("91")) candidate = candidate.slice(2);
+      else if (candidate.length === 11 && candidate.startsWith("0")) candidate = candidate.slice(1);
+
+      if (candidate.length === 10 && /^[6-9]\d{9}$/.test(candidate) && candidate !== repPhone) {
+        cleanPhone = candidate;
       }
     }
 
@@ -241,8 +252,9 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
 
     // Emit event directly to the mobile client
     if (socket) {
+      socket.emit("conversation:contact_ready", payload);
       socket.emit("event_contact_triggered", payload);
-      console.log(`[EventCaptureTool] Emitted 'event_contact_triggered' to socket ${socket.id}`);
+      console.log(`[EventCaptureTool] Emitted 'event_contact_triggered' & 'conversation:contact_ready' to socket ${socket.id}`);
     } else {
       console.warn("[EventCaptureTool] Socket reference was null; could not emit event_contact_triggered");
     }

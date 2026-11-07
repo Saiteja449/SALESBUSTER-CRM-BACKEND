@@ -174,7 +174,8 @@ export function parseDiarizedTranscriptText(rawText = "", baseOffsetSec = 0) {
 }
 
 /**
- * Transcribes complete recorded audio with verbatim speaker diarization using gemini-3.5-transcribe.
+ * Transcribes complete recorded audio with verbatim accuracy using gemini-3.5-transcribe.
+ * Optimized for single-person high-fidelity speech-to-text.
  * @param {Object} options
  * @param {Buffer} options.pcmBuffer - Complete recorded 16kHz PCM16 audio
  * @param {Object} [options.organization] - Tenant organization document
@@ -189,7 +190,7 @@ export async function transcribeWithDiarization({
   customVocabulary = [],
 }) {
   if (!Buffer.isBuffer(pcmBuffer) || pcmBuffer.length === 0) {
-    throw new Error("Invalid or empty audio buffer provided for diarization.");
+    throw new Error("Invalid or empty audio buffer provided for transcription.");
   }
 
   const ai = createGeminiClient(organization);
@@ -197,7 +198,6 @@ export async function transcribeWithDiarization({
   const totalDurationSec = calculatePcmDuration(pcmBuffer.length, 16000);
 
   // If audio is under 25 minutes, process in a single request.
-  // If audio approaches/exceeds 25 minutes (1500 seconds), segment safely.
   const audioSegments = segmentPcmBuffer(pcmBuffer, 1500, 16000);
   const allTranscriptSegments = [];
   const fullTranscriptParts = [];
@@ -207,9 +207,8 @@ export async function transcribeWithDiarization({
     const base64Audio = wavBuffer.toString("base64");
 
     const promptText =
-      "Please provide an accurate, verbatim transcript of this conversation with speaker diarization. " +
-      "Identify distinct speakers as Speaker A, Speaker B, Speaker C, etc. " +
-      "Prefix every spoken turn with the speaker identifier (e.g. 'Speaker A: ...', 'Speaker B: ...') and include timestamps.";
+      "Please provide an accurate, verbatim transcript of this single-person speech. " +
+      "Capture all spoken words including personal names, company names, mobile numbers, and detailed discussion context in English, Hindi, or Telugu.";
 
     const response = await ai.models.generateContent({
       model: modelName,
@@ -231,7 +230,6 @@ export async function transcribeWithDiarization({
       ],
       config: {
         transcriptionConfig: {
-          diarizationMode: "speaker",
           languageCodes,
           customVocabulary: customVocabulary.length > 0 ? customVocabulary : undefined,
           timestampGranularities: ["word"],

@@ -65,7 +65,7 @@ export class LiveTranscriptionSession {
         callbacks: {
           onopen: () => {
             console.log(
-              `[LiveTranscription] Connected to ${this.liveModel} for session ${this.sessionId}`
+              `[LiveTranscription] Connected to ${this.liveModel} for session ${this.sessionId}`,
             );
           },
           onmessage: async (serverMsg) => {
@@ -74,21 +74,17 @@ export class LiveTranscriptionSession {
           onerror: (err) => {
             console.error(
               `[LiveTranscription] Error in session ${this.sessionId}:`,
-              err?.message || err
+              err?.message || err,
             );
             if (typeof this.onError === "function") this.onError(err);
             this.emitSocket("conversation:error", {
               sessionId: this.sessionId,
               message: err?.message || "Live transcription error",
             });
-            // Legacy alias
-            this.emitSocket("bi_voice_error", {
-              message: err?.message || "Live transcription error",
-            });
           },
           onclose: (closeEvt) => {
             console.log(
-              `[LiveTranscription] Session closed for ${this.sessionId}`
+              `[LiveTranscription] Session closed for ${this.sessionId}`,
             );
             this.isActive = false;
           },
@@ -101,7 +97,7 @@ export class LiveTranscriptionSession {
       // Flush buffered chunks
       if (this.pendingChunksQueue.length > 0) {
         console.log(
-          `[LiveTranscription] Flushing ${this.pendingChunksQueue.length} pre-buffered chunks for ${this.sessionId}`
+          `[LiveTranscription] Flushing ${this.pendingChunksQueue.length} pre-buffered chunks for ${this.sessionId}`,
         );
         while (this.pendingChunksQueue.length > 0) {
           const chunk = this.pendingChunksQueue.shift();
@@ -112,23 +108,15 @@ export class LiveTranscriptionSession {
       // Schedule controlled session rotation at 9.5 minutes (570,000 ms) before the 10m ceiling
       this.scheduleSessionRotation();
 
-      this.emitSocket("conversation:ready", {
-        sessionId: this.sessionId,
-        model: this.liveModel,
-        readyAt: Date.now(),
-      });
-      // Legacy alias
-      this.emitSocket("bi_voice_ready", {
-        sessionId: this.sessionId,
-        model: this.liveModel,
-        provider: "gemini",
-      });
+      // NOTE: `conversation:ready` is emitted once by conversationSocket (handleStart).
+      // It is intentionally NOT emitted here, because start() is also re-run by
+      // rotateSession() mid-recording and must not re-announce readiness to the client.
     } catch (err) {
       this.isConnecting = false;
       this.isActive = false;
       console.error(
         `[LiveTranscription] Failed to start live session for ${this.sessionId}:`,
-        err
+        err,
       );
       throw err;
     }
@@ -143,7 +131,7 @@ export class LiveTranscriptionSession {
 
     if (serverMsg.goAway) {
       console.warn(
-        `[LiveTranscription] goAway signal received for ${this.sessionId}. Triggering session rotation.`
+        `[LiveTranscription] goAway signal received for ${this.sessionId}. Triggering session rotation.`,
       );
       this.rotateSession();
       return;
@@ -158,8 +146,7 @@ export class LiveTranscriptionSession {
 
     const interimText =
       typeof rawInterim?.text === "string" ? rawInterim.text : null;
-    const finalText =
-      typeof rawFinal?.text === "string" ? rawFinal.text : null;
+    const finalText = typeof rawFinal?.text === "string" ? rawFinal.text : null;
 
     // 1. Interim Transcription Update
     if (interimText && (!rawInterim?.finished || !finalText)) {
@@ -177,8 +164,6 @@ export class LiveTranscriptionSession {
       }
 
       this.emitSocket("conversation:transcript_interim", payload);
-      // Legacy alias
-      this.emitSocket("bi_voice_transcript_interim", payload);
     }
 
     // 2. Final Committed User Speech Segment
@@ -204,8 +189,6 @@ export class LiveTranscriptionSession {
       }
 
       this.emitSocket("conversation:transcript_final", payload);
-      // Legacy alias
-      this.emitSocket("bi_voice_transcript_final", payload);
     }
   }
 
@@ -237,7 +220,7 @@ export class LiveTranscriptionSession {
     } catch (err) {
       console.warn(
         `[LiveTranscription] Error streaming chunk for ${this.sessionId}:`,
-        err.message
+        err.message,
       );
     }
   }
@@ -259,7 +242,7 @@ export class LiveTranscriptionSession {
   async rotateSession() {
     if (!this.isActive) return;
     console.log(
-      `[LiveTranscription] Rotating live session for ${this.sessionId} (approaching 10m ceiling)`
+      `[LiveTranscription] Rotating live session for ${this.sessionId} (approaching 10m ceiling)`,
     );
 
     const oldSession = this.liveSession;
@@ -275,7 +258,7 @@ export class LiveTranscriptionSession {
     } catch (err) {
       console.error(
         `[LiveTranscription] Session rotation failed for ${this.sessionId}:`,
-        err.message
+        err.message,
       );
     }
   }
@@ -306,7 +289,7 @@ export class LiveTranscriptionSession {
       } catch (err) {
         console.warn(
           `[LiveTranscription] Error closing session for ${this.sessionId}:`,
-          err.message
+          err.message,
         );
       }
       this.liveSession = null;
@@ -315,4 +298,3 @@ export class LiveTranscriptionSession {
 }
 
 export default LiveTranscriptionSession;
-
