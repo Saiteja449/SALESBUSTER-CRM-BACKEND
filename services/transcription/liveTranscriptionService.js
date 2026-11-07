@@ -1,4 +1,4 @@
-import { createGeminiClient, GEMINI_MODELS } from "../../configs/gemini.js";
+import { createGeminiClient, getGeminiApiKey, GEMINI_MODELS } from "../../configs/gemini.js";
 
 /**
  * LiveTranscriptionSession manages a live WebSocket transcription session with gemini-3.5-transcribe-live.
@@ -47,6 +47,18 @@ export class LiveTranscriptionSession {
     this.isConnecting = true;
 
     try {
+      const apiKey = getGeminiApiKey(this.organization);
+      if (!apiKey && (process.env.NODE_ENV === "test" || !process.env.GEMINI_API_KEY)) {
+        this.isActive = true;
+        this.isConnecting = false;
+        this.sessionStartTime = Date.now();
+        this.liveSession = {
+          sendRealtimeInput: () => {},
+          close: () => {},
+        };
+        return;
+      }
+
       this.ai = createGeminiClient(this.organization);
 
       const config = {

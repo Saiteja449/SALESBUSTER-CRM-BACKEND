@@ -1,6 +1,7 @@
 import express from "express";
 import {
   summarizeTranscript,
+  scanBusinessCard,
   getEvents,
   createEvent,
   getEventById,
@@ -17,8 +18,9 @@ const router = express.Router();
 // All event routes are protected by user authentication
 router.use(protect);
 
-// 1. AI Real-Time Transcript Summarization
+// 1. AI Real-Time Transcript & Card Vision
 router.post("/summarize-text", summarizeTranscript);
+router.post("/scan-card", scanBusinessCard);
 
 // 2. Event Management
 router.get("/", getEvents);
