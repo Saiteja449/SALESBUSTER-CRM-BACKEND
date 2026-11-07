@@ -9,16 +9,30 @@ import { GEMINI_MODELS } from "../../configs/gemini.js";
 /**
  * ConversationFinalizationService orchestrates post-recording audio finalization,
  * diarization, speaker-aware contact extraction, summarization, and database persistence.
- * Implements strict idempotency locks to avoid duplicate processing.
+ * Implements strict idempotency locks and completed cache to avoid duplicate processing.
  */
 class ConversationFinalizationService {
   constructor() {
     this.inFlightFinalizations = new Map();
+    this.completedFinalizations = new Map();
+    this.RETENTION_MS = 15 * 60 * 1000; // 15 minutes retention
+  }
+
+  /**
+   * Prunes cached completed sessions older than retention period.
+   */
+  pruneCache() {
+    const now = Date.now();
+    for (const [sId, item] of this.completedFinalizations.entries()) {
+      if (now - item.completedAt > this.RETENTION_MS) {
+        this.completedFinalizations.delete(sId);
+      }
+    }
   }
 
   /**
    * Finalizes a conversation capture session.
-   * Idempotent: returns existing Promise if already finalizing.
+   * Idempotent: returns existing Promise if in flight, or cached result if already completed.
    * @param {Object} params
    * @param {string} params.sessionId
    * @param {Object} [params.socket] - Client socket connection
@@ -40,14 +54,93 @@ class ConversationFinalizationService {
   }) {
     if (!sessionId) throw new Error("sessionId is required for finalization");
 
-    // Idempotency: Return existing in-flight promise if currently processing
+    this.pruneCache();
+
+    // 1. Check in-memory completed cache
+    if (this.completedFinalizations.has(sessionId)) {
+      console.log(
+        `[FinalizationService] Returning cached finalization result for session ${sessionId}`,
+      );
+      const cached = this.completedFinalizations.get(sessionId).result;
+      if (socket) {
+        socket.emit("conversation:completed", cached);
+      }
+      return cached;
+    }
+
+    // 2. Check in-flight finalization promise
     if (this.inFlightFinalizations.has(sessionId)) {
-      console.log(`[FinalizationService] Session ${sessionId} finalization already in flight. Returning active promise.`);
+      console.log(
+        `[FinalizationService] Session ${sessionId} finalization already in flight. Returning active promise.`,
+      );
       return this.inFlightFinalizations.get(sessionId);
     }
 
+    // 3. Check MongoDB for completed session (e.g. after server restart or distributed request)
+    try {
+      if (typeof Conversation?.findOne === "function") {
+        const existingDoc = await Conversation.findOne({
+          sessionId,
+          processingStatus: "completed",
+        }).lean();
+
+        if (existingDoc) {
+          console.log(
+            `[FinalizationService] Session ${sessionId} already completed in DB. Returning reconstructed result.`,
+          );
+          const reconstructed = {
+            sessionId: existingDoc.sessionId,
+            conversationId: existingDoc._id?.toString() || null,
+            durationSeconds: existingDoc.duration || 0,
+            selectedSpeakerId: existingDoc.selectedSpeakerId || null,
+            identityStatus: existingDoc.identityStatus || "provisional",
+            selectionReason: existingDoc.selectionReason || null,
+            requiresManualReview: Boolean(existingDoc.requiresManualReview),
+            contact: existingDoc.extractedContact || {},
+            detailedSummary: existingDoc.summary?.keyDiscussion || "",
+            summary: existingDoc.summary || {},
+            transcriptSegments: existingDoc.transcriptSegments || [],
+            speakers: existingDoc.speakers || [],
+            usageMetrics: existingDoc.usageMetrics || {},
+            status: "completed",
+            isComplete: Boolean(
+              existingDoc.extractedContact?.name?.value &&
+              existingDoc.extractedContact?.phone?.value &&
+              existingDoc.extractedContact?.company?.value &&
+              !existingDoc.requiresManualReview,
+            ),
+            name: existingDoc.extractedContact?.name?.value || null,
+            phone: existingDoc.extractedContact?.phone?.value || null,
+            companyName: existingDoc.extractedContact?.company?.value || null,
+            designation:
+              existingDoc.extractedContact?.designation?.value || null,
+            discussionSummary: existingDoc.summary?.keyDiscussion || "",
+            rawTranscript: existingDoc.originalTranscript || "",
+          };
+
+          this.completedFinalizations.set(sessionId, {
+            result: reconstructed,
+            completedAt: Date.now(),
+          });
+
+          if (socket) {
+            socket.emit("conversation:completed", reconstructed);
+          }
+          return reconstructed;
+        }
+      }
+    } catch (checkErr) {
+      console.warn(
+        `[FinalizationService] Warning checking existing session ${sessionId}:`,
+        checkErr.message,
+      );
+    }
+
+    // 4. Create new finalization promise
     const finalizationPromise = (async () => {
-      console.log(`[FinalizationService] Starting finalization for session: ${sessionId}`);
+      console.log(
+        `[FinalizationService] Starting authoritative finalization for session: ${sessionId}`,
+      );
 
       this.emitProgress(socket, sessionId, "finalizing_audio", 15);
 
@@ -56,7 +149,10 @@ class ConversationFinalizationService {
       try {
         audioResult = await audioBufferService.finalizeSession(sessionId);
       } catch (err) {
-        console.warn(`[FinalizationService] Audio buffer finalization warning for ${sessionId}:`, err.message);
+        console.warn(
+          `[FinalizationService] Audio buffer finalization warning for ${sessionId}:`,
+          err.message,
+        );
         audioResult = {
           pcmBuffer: Buffer.alloc(0),
           durationSec: 0,
@@ -78,7 +174,9 @@ class ConversationFinalizationService {
             organization,
           });
         } catch (transcribeErr) {
-          console.warn(`[FinalizationService] Gemini 3.5 Transcribe failed for ${sessionId}: ${transcribeErr.message}. Falling back to live transcript.`);
+          console.warn(
+            `[FinalizationService] Gemini 3.5 Transcribe failed for ${sessionId}: ${transcribeErr.message}. Falling back to live transcript.`,
+          );
         }
       }
 
@@ -99,15 +197,41 @@ class ConversationFinalizationService {
           organization,
         });
       } catch (extractErr) {
-        console.error(`[FinalizationService] Contact extraction error for ${sessionId}:`, extractErr.message);
+        console.error(
+          `[FinalizationService] Contact extraction error for ${sessionId}:`,
+          extractErr.message,
+        );
         extractionResult = {
-          selectedSpeakerId: "speaker_A",
-          selectionReason: "Fallback default",
+          selectedSpeakerId: null,
+          identityStatus: "uncertain",
+          selectionReason: "Contact extraction failed",
+          requiresManualReview: true,
+          isComplete: false,
           contact: {
-            name: { value: null, evidence: null, confidence: 0 },
-            company: { value: null, evidence: null, confidence: 0 },
-            designation: { value: null, evidence: null, confidence: 0 },
-            phone: { value: null, evidence: null, confidence: 0 },
+            name: {
+              value: null,
+              speakerId: null,
+              evidence: null,
+              confidence: 0,
+            },
+            company: {
+              value: null,
+              speakerId: null,
+              evidence: null,
+              confidence: 0,
+            },
+            designation: {
+              value: null,
+              speakerId: null,
+              evidence: null,
+              confidence: 0,
+            },
+            phone: {
+              value: null,
+              speakerId: null,
+              evidence: null,
+              confidence: 0,
+            },
           },
           otherSpeakers: [],
         };
@@ -125,9 +249,13 @@ class ConversationFinalizationService {
           isInterim: false,
         });
       } catch (sumErr) {
-        console.warn(`[FinalizationService] Summary generation warning for ${sessionId}:`, sumErr.message);
+        console.warn(
+          `[FinalizationService] Summary generation warning for ${sessionId}:`,
+          sumErr.message,
+        );
         summaryResult = {
-          keyDiscussion: liveTranscript.slice(0, 150) || "Conversation captured.",
+          keyDiscussion:
+            liveTranscript.slice(0, 150) || "Conversation captured.",
           topics: [],
           actionItems: [],
           decisions: [],
@@ -140,8 +268,10 @@ class ConversationFinalizationService {
       const liveDuration = liveDurationSec || finalDurationSec;
       const liveCost = (liveDuration / 60) * 0.003;
       const diarizationCost = (finalDurationSec / 60) * 0.002;
-      const flashCost = 0.0005; // Average token cost for flash extraction & summary
-      const estimatedCostUsd = Number((liveCost + diarizationCost + flashCost).toFixed(5));
+      const flashCost = 0.0005;
+      const estimatedCostUsd = Number(
+        (liveCost + diarizationCost + flashCost).toFixed(5),
+      );
 
       const usageMetrics = {
         liveDurationSec: liveDuration,
@@ -164,12 +294,17 @@ class ConversationFinalizationService {
           transcriptSegments: segments,
           speakers,
           selectedSpeakerId: extractionResult.selectedSpeakerId,
+          identityStatus: extractionResult.identityStatus || "provisional",
+          selectionReason: extractionResult.selectionReason || null,
+          requiresManualReview: Boolean(extractionResult.requiresManualReview),
           extractedContact: {
             name: extractionResult.contact.name,
             phone: extractionResult.contact.phone,
             company: extractionResult.contact.company,
             designation: extractionResult.contact.designation,
-            confirmationStatus: "provisional",
+            confirmationStatus: extractionResult.isComplete
+              ? "confirmed"
+              : "provisional",
           },
           summary: summaryResult,
           languages: ["en-IN", "hi-IN", "te-IN"],
@@ -183,46 +318,62 @@ class ConversationFinalizationService {
           usageMetrics,
         };
 
-        savedConversation = await Conversation.findOneAndUpdate(
-          { sessionId },
-          { $set: updateData },
-          { upsert: true, new: true, setDefaultsOnInsert: true }
-        );
+        if (typeof Conversation?.findOneAndUpdate === "function") {
+          savedConversation = await Conversation.findOneAndUpdate(
+            { sessionId },
+            { $set: updateData },
+            { upsert: true, new: true, setDefaultsOnInsert: true },
+          );
+        }
       } catch (dbErr) {
-        console.error(`[FinalizationService] DB save error for session ${sessionId}:`, dbErr.message);
+        console.error(
+          `[FinalizationService] DB save error for session ${sessionId}:`,
+          dbErr.message,
+        );
       }
+
+      const finalSummaryText =
+        extractionResult.detailedSummary || summaryResult?.keyDiscussion || "";
 
       const completedPayload = {
         sessionId,
         conversationId: savedConversation?._id?.toString() || null,
         durationSeconds: Math.round(audioDuration),
         selectedSpeakerId: extractionResult.selectedSpeakerId,
+        identityStatus: extractionResult.identityStatus || "provisional",
+        selectionReason: extractionResult.selectionReason || null,
+        requiresManualReview: Boolean(extractionResult.requiresManualReview),
+        isComplete: Boolean(extractionResult.isComplete),
         contact: extractionResult.contact,
+        detailedSummary: finalSummaryText,
         summary: summaryResult,
         transcriptSegments: segments,
         speakers,
         usageMetrics,
         status: "completed",
+        // Direct top-level accessors for instant field auto-fill on mobile
+        name: extractionResult.contact?.name?.value || null,
+        phone: extractionResult.contact?.phone?.value || null,
+        companyName: extractionResult.contact?.company?.value || null,
+        designation: extractionResult.contact?.designation?.value || null,
+        discussionSummary: finalSummaryText,
+        rawTranscript: diarizationRaw.fullTranscript || liveTranscript,
       };
 
       // Step 8: Emit Completion to Client Socket
       if (socket) {
         socket.emit("conversation:completed", completedPayload);
-        // Legacy event alias for compatibility with existing modals
-        socket.emit("event_contact_triggered", {
-          eventId,
-          name: extractionResult.contact.name.value,
-          phone: extractionResult.contact.phone.value,
-          companyName: extractionResult.contact.company.value,
-          designation: extractionResult.contact.designation.value,
-          summary: summaryResult.keyDiscussion,
-          isComplete: true,
-          evidence: extractionResult.contact,
-          sessionId,
-        });
       }
 
-      console.log(`[FinalizationService] Successfully completed finalization for ${sessionId}`);
+      // Store in completed finalizations cache for retention period
+      this.completedFinalizations.set(sessionId, {
+        result: completedPayload,
+        completedAt: Date.now(),
+      });
+
+      console.log(
+        `[FinalizationService] Successfully completed authoritative finalization for ${sessionId}`,
+      );
       return completedPayload;
     })();
 
@@ -247,6 +398,6 @@ class ConversationFinalizationService {
   }
 }
 
-export const conversationFinalizationService = new ConversationFinalizationService();
+export const conversationFinalizationService =
+  new ConversationFinalizationService();
 export default conversationFinalizationService;
-

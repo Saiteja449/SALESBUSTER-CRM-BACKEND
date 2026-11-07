@@ -21,6 +21,7 @@ export function reconcileDiarization({ diarizedSegments = [], liveTranscript = "
   if (!Array.isArray(diarizedSegments) || diarizedSegments.length === 0) {
     if (cleanLiveTranscript) {
       const parsedLive = parseDiarizedTranscriptText(cleanLiveTranscript, 0);
+      const hasExplicitSpeakers = parsedLive.some((s) => s.speakerId && s.speakerId !== "speaker_A");
       const fallbackSegments = parsedLive.length > 0 ? parsedLive : [
         {
           speakerId: "speaker_A",
@@ -28,7 +29,8 @@ export function reconcileDiarization({ diarizedSegments = [], liveTranscript = "
           startTime: 0,
           endTime: 0,
           isFinal: true,
-          confidence: 0.85,
+          confidence: hasExplicitSpeakers ? 0.85 : 0.5,
+          isUnsegmented: !hasExplicitSpeakers,
         },
       ];
       const speakers = Array.from(new Set(fallbackSegments.map((s) => s.speakerId))).map((id) => ({
@@ -39,6 +41,7 @@ export function reconcileDiarization({ diarizedSegments = [], liveTranscript = "
         segments: fallbackSegments,
         speakers,
         uniqueSpeakerIds: speakers.map((s) => s.speakerId),
+        diarizationFailed: !hasExplicitSpeakers,
       };
     }
     return { segments: [], speakers: [], uniqueSpeakerIds: [] };

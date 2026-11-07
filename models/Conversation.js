@@ -124,24 +124,42 @@ const conversationSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    identityStatus: {
+      type: String,
+      enum: ["verified", "uncertain", "requires_verification", "provisional"],
+      default: "provisional",
+      index: true,
+    },
+    selectionReason: {
+      type: String,
+      default: null,
+    },
+    requiresManualReview: {
+      type: Boolean,
+      default: false,
+    },
     extractedContact: {
       name: {
         value: { type: String, default: null },
+        speakerId: { type: String, default: null },
         evidence: { type: String, default: null },
         confidence: { type: Number, default: 0 },
       },
       phone: {
         value: { type: String, default: null },
+        speakerId: { type: String, default: null },
         evidence: { type: String, default: null },
         confidence: { type: Number, default: 0 },
       },
       company: {
         value: { type: String, default: null },
+        speakerId: { type: String, default: null },
         evidence: { type: String, default: null },
         confidence: { type: Number, default: 0 },
       },
       designation: {
         value: { type: String, default: null },
+        speakerId: { type: String, default: null },
         evidence: { type: String, default: null },
         confidence: { type: Number, default: 0 },
       },
