@@ -97,20 +97,37 @@ export function extractNameFromText(text = "", repName = "") {
   if (!text) return null;
   const repNameClean = (repName || "").toLowerCase().trim();
 
+  const stopWords = new Set([
+    "from", "at", "with", "and", "working", "representing", "company", "my", "our",
+    "call", "phone", "mobile", "here", "speaking", "interested", "looking",
+    "the", "a", "an", "as", "hai", "peru", "ni", "sir", "madam",
+    "managing", "director", "manager", "lead", "engineer", "ceo", "cto", "coo", "founder", "owner"
+  ]);
+
   const patterns = [
-    /\b(?:my name is|i am|this is|myself|call me|i'm)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/i,
-    /\b(?:mera naam|main|hum)\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2})\s+(?:hoon|hai|bol raha)/i,
-    /\b(?:naa peru|nenu)\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2})/i,
+    /\b(?:my\s+name\s+is|myself|people\s+call\s+me|call\s+me|i'm|i\s+am|this\s+is)\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2})(?=[,.]|\s+(?:from|at|with|and|as|working|representing|company|role|my|our|call|phone|mobile|\.|$)|$)/i,
+    /\b(?:mera\s+naam|main|hum)\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2})(?:\s+(?:hoon|hai|bol\s+raha))?(?=[,.]|\s+(?:from|aur|and|working|\.|$)|$)/i,
+    /\b(?:naa\s+peru|nenu)\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2})(?:\s*ni|\s+ni)?(?=[,.]|\s+(?:from|mariyu|and|working|\.|$)|$)/i,
   ];
 
   for (const pat of patterns) {
     const match = text.match(pat);
     if (match && match[1]) {
-      const candidate = match[1].trim();
+      const rawTokens = match[1].trim().split(/\s+/);
+      const validTokens = [];
+      for (const tok of rawTokens) {
+        if (stopWords.has(tok.toLowerCase())) break;
+        validTokens.push(tok);
+      }
+      if (validTokens.length === 0) continue;
+      const candidate = validTokens.join(" ").trim();
       const candidateLower = candidate.toLowerCase();
+      if (candidate.endsWith("...") || candidate.endsWith("..")) {
+        return null;
+      }
       if (
         candidate.length >= 2 &&
-        !/^(unknown|attendee|sir|madam|there|from|with|here)$/i.test(candidate) &&
+        !/^(unknown|attendee|sir|madam|there|from|with|here|our|your)$/i.test(candidate) &&
         !(repNameClean && (candidateLower === repNameClean || repNameClean.includes(candidateLower)))
       ) {
         return {
@@ -131,19 +148,41 @@ export function extractCompanyFromText(text = "", hostOrg = "") {
   if (!text) return null;
   const hostOrgClean = (hostOrg || "").toLowerCase().trim();
 
+  const stopWords = new Set([
+    "our", "my", "the", "this", "that", "your", "here", "there", "salesbuster", "crm",
+    "as", "and", "where", "in", "phone", "mobile", "number", "call", "whatsapp", "email",
+    "role", "designation", "looking", "interested", "need", "want", "cto", "ceo", "manager",
+    "director", "owner", "founder", "lead", "engineer"
+  ]);
+
   const patterns = [
-    /\b(?:i work at|i am with|i work for|i represent|representing|from our company|hamari company|naadi)\s+([A-Za-z0-9&.,'-]+(?:\s+[A-Za-z0-9&.,'-]+){0,3})/i,
-    /\b(?:from|at|with)\s+([A-Z][A-Za-z0-9&.,'-]+(?:\s+[A-Z][A-Za-z0-9&.,'-]+){0,2})\b/i,
+    // 1. Explicit declaration cues
+    /(?:(?:my|our|the)\s+)?(?:company\s+name\s+is|company\s+is|company\s+called|firm\s+name\s+is|firm\s+is|business\s+name\s+is|business\s+is|organization\s+name\s+is|organization\s+is)\s*[:\-]?\s*([A-Za-z0-9&'-]+(?:\s+[A-Za-z0-9&'-]+){0,3})(?=[.,!?:;]|\s+(?:and|as|we|i|my|our|phone|mobile|call|role|designation)\b|$)/i,
+    // 2. "working at / in / with", "representing", "founder of", "work for", "work at"
+    /(?:i\s+work\s+at|i\s+am\s+with|i\s+work\s+for|working\s+(?:at|in|with)|representing|from\s+our\s+company|hamari\s+company|naadi)\s+([A-Za-z0-9&'-]+(?:\s+[A-Za-z0-9&'-]+){0,3})(?=[.,!?:;]|\s+(?:as|and|where|in|my|our|phone|mobile|call|role|designation|looking)\b|$)/i,
+    // 3. "from [Company]", "i am from [Company]", "we are from [Company]"
+    /(?:i\s+am\s+from|i'm\s+from|we\s+are\s+from|coming\s+from|calling\s+from)\s+([A-Za-z0-9&'-]+(?:\s+[A-Za-z0-9&'-]+){0,3})(?=[.,!?:;]|\s+(?:and|as|we|i|my|our|phone|mobile|call|role|designation)\b|$)/i,
+    // 4. "from <Company>" (e.g., "Suresh from Infosys")
+    /\bfrom\s+([A-Z][A-Za-z0-9&'-]+(?:\s+[A-Z][A-Za-z0-9&'-]+){0,2})(?=[.,!?:;]|\s+(?:and|as|we|i|my|our|phone|mobile|call|role|designation)\b|$)/i,
+    // 5. Standalone single company / organization answer (e.g., "Infosys.", "ABC Technologies", "[00:15 - 00:20] Infosys.")
+    /(?:^|:\s*|\b(?:at|with)\s+)([A-Z][A-Za-z0-9&'-]+(?:\s+[A-Z][A-Za-z0-9&'-]+){0,2})[.!?]?$/i,
   ];
 
   for (const pat of patterns) {
     const match = text.match(pat);
     if (match && match[1]) {
-      const candidate = match[1].replace(/[.,;:!?]+$/, "").trim();
+      const rawTokens = match[1].replace(/[.,;:!?]+$/, "").trim().split(/\s+/);
+      const validTokens = [];
+      for (const tok of rawTokens) {
+        if (stopWords.has(tok.toLowerCase())) break;
+        validTokens.push(tok);
+      }
+      if (validTokens.length === 0) continue;
+      const candidate = validTokens.join(" ").trim();
       const candidateLower = candidate.toLowerCase();
       if (
         candidate.length >= 2 &&
-        !/^(our|my|the|this|that|your|here|there|salesbuster|crm)$/i.test(candidateLower) &&
+        !stopWords.has(candidateLower) &&
         !(hostOrgClean.length > 2 && (candidateLower === hostOrgClean || hostOrgClean.includes(candidateLower)))
       ) {
         return {
@@ -162,20 +201,32 @@ export function extractCompanyFromText(text = "", hostOrg = "") {
  */
 export function extractDesignationFromText(text = "") {
   if (!text) return null;
+
   const patterns = [
-    /\b(?:i am the|working as|my role is|i handle|i'm the|i am a|i'm a)\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,3})\b/i,
-    /\b(?:Managing Director|Technical Lead|Software Engineer|Purchase Head|Purchase Manager|Project Manager|Director|Founder|CEO|CTO|VP|Owner|Consultant|Developer)\b/i,
+    /\b(?:currently\s+working\s+as|working\s+here\s+as|working\s+as|my\s+role\s+is|my\s+designation\s+is|designation\s+is|my\s+position\s+is|position\s+is|i\s+handle|i\s+am\s+the|i'm\s+the|i\s+am\s+a|i'm\s+a|employed\s+as|serving\s+as|as\s+a|as\s+an)\s+([A-Za-z\s]{2,35}?)(?=[.,!?:;]|\s+(?:at|with|in|for|from|and|my|phone|mobile|number|call|email)\b|$)/i,
+    /\b(?:Managing Director|Business Development Manager|Technical Lead|Software Engineer|Purchase Head|Purchase Manager|Project Manager|Sales Manager|Marketing Manager|Operations Manager|General Manager|Director|Founder|Co-Founder|CEO|CTO|COO|CFO|VP|Owner|Partner|Consultant|Developer|Architect|Lead)\b/i,
   ];
 
   for (const pat of patterns) {
     const match = text.match(pat);
     if (match) {
-      const candidate = (match[1] || match[0]).trim();
-      if (candidate.length >= 2 && !/^(here|with|from|working)$/i.test(candidate)) {
+      const candidate = (match[1] || match[0]).replace(/[.,;:!?]+$/, "").trim();
+      if (candidate.length >= 2 && !/^(here|with|from|working|company|firm|our|the)$/i.test(candidate)) {
+        // Title case formatting
+        const formatted = candidate
+          .split(/\s+/)
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+          .join(" ")
+          .replace(/\bCeo\b/g, "CEO")
+          .replace(/\bCto\b/g, "CTO")
+          .replace(/\bCoo\b/g, "COO")
+          .replace(/\bCfo\b/g, "CFO")
+          .replace(/\bVp\b/g, "VP");
+
         return {
-          value: candidate,
+          value: formatted,
           evidence: match[0].trim(),
-          confidence: 0.9,
+          confidence: 0.92,
         };
       }
     }
@@ -215,10 +266,40 @@ export function analyzeConversationSpeakers({
 
   for (const [sId, turns] of speakerTurnsMap.entries()) {
     const combinedText = turns.map((t) => t.text || "").join(" ").trim();
-    const phoneData = extractPhoneFromText(combinedText, repPhoneClean);
-    const nameData = extractNameFromText(combinedText, repName);
-    const companyData = extractCompanyFromText(combinedText, hostOrg);
-    const designationData = extractDesignationFromText(combinedText);
+    let phoneData = extractPhoneFromText(combinedText, repPhoneClean);
+    let nameData = extractNameFromText(combinedText, repName);
+    let companyData = extractCompanyFromText(combinedText, hostOrg);
+    let designationData = extractDesignationFromText(combinedText);
+
+    // If company, name, phone or designation not found in combined text, inspect individual turns
+    if (!companyData) {
+      for (const turn of turns) {
+        const turnText = (turn.text || "").trim();
+        companyData = extractCompanyFromText(turnText, hostOrg);
+        if (companyData) break;
+      }
+    }
+    if (!designationData) {
+      for (const turn of turns) {
+        const turnText = (turn.text || "").trim();
+        designationData = extractDesignationFromText(turnText);
+        if (designationData) break;
+      }
+    }
+    if (!nameData) {
+      for (const turn of turns) {
+        const turnText = (turn.text || "").trim();
+        nameData = extractNameFromText(turnText, repName);
+        if (nameData) break;
+      }
+    }
+    if (!phoneData) {
+      for (const turn of turns) {
+        const turnText = (turn.text || "").trim();
+        phoneData = extractPhoneFromText(turnText, repPhoneClean);
+        if (phoneData) break;
+      }
+    }
 
     // Host detection
     const textLower = combinedText.toLowerCase();
@@ -336,6 +417,8 @@ export function analyzeConversationSpeakers({
     identityStatus = "uncertain";
     selectionReason = "External attendee spoke but did not provide personal name";
     requiresManualReview = true;
+  } else if (!selected.phone?.value) {
+    requiresManualReview = true;
   }
 
   // Construct contact with strict speaker-level attribution
@@ -425,7 +508,11 @@ CRITICAL EXTRACTION RULES:
    - company: Explicitly named company/firm of the attendee (e.g., "Infosys"). Never host org ("${hostOrg}").
    - designation: Job title or role of attendee if mentioned. Null if not mentioned.
    - phone: 10-digit Indian mobile number spoken by attendee (starting with 6, 7, 8, or 9). Null if incomplete or missing. Never salesperson's phone.
-5. SUMMARY:
+5. PHONETIC SPELLING CORRECTION & PROPER NOUN NORMALIZATION:
+   - Speech-to-text engines often transcribe proper nouns phonetically with spelling errors (e.g., "sooresh" -> "Suresh", "info cis" -> "Infosys", "pet folio" -> "PetsFolio", "cogni zant" -> "Cognizant", "tata motors" -> "Tata Motors").
+   - Automatically correct obvious phonetic spelling mistakes in attendee names, companies, and locations using canonical proper noun spellings.
+   - Properly capitalize and format company legal suffixes (e.g., "Pvt Ltd", "Technologies", "Solutions", "Enterprises", "LLP", "Limited").
+6. SUMMARY:
    - Provide an in-detail summary of the attendee's requirements, pain points, products discussed, and agreed next steps.
 
 OUTPUT FORMAT:
@@ -591,6 +678,8 @@ export async function extractSpeakerAwareContact({
 
       if (!finalContact.name.value) {
         finalIdentityStatus = "uncertain";
+        finalRequiresManualReview = true;
+      } else if (!finalContact.phone.value) {
         finalRequiresManualReview = true;
       } else if (baseline.identityStatus === "requires_verification") {
         finalIdentityStatus = "requires_verification";

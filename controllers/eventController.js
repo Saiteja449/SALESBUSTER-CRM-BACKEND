@@ -1,7 +1,53 @@
 import { extractSpeakerAwareContact } from "../services/ai/contactExtractionService.js";
 import { generateConversationSummary } from "../services/ai/conversationSummaryService.js";
+import { extractBusinessCardData } from "../services/ai/cardVisionExtractionService.js";
 import { getMasterModels } from "../services/tenantManager.js";
 import { decryptApiKey } from "../utils/encryption.js";
+
+/**
+ * Analyze business / visiting card photo using Gemini Multimodal Vision (gemini-3.5-flash-lite)
+ * @route POST /api/events/scan-card
+ */
+export const scanBusinessCard = async (req, res) => {
+  try {
+    const { imageBase64, mimeType } = req.body;
+
+    if (!imageBase64 || typeof imageBase64 !== "string" || !imageBase64.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Image base64 data is required to scan business card.",
+      });
+    }
+
+    const { Organization } = getMasterModels();
+    const orgId = req.user?.organizationId
+      ? req.user.organizationId.toString()
+      : req.organization?._id?.toString();
+
+    const organization = orgId ? await Organization.findById(orgId).lean() : null;
+    const activeKey =
+      decryptApiKey(organization?.aiSettings?.geminiApiKey) ||
+      process.env.GEMINI_API_KEY;
+
+    const extracted = await extractBusinessCardData({
+      imageBase64,
+      mimeType: mimeType || "image/jpeg",
+      geminiApiKey: activeKey,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: extracted,
+      message: "Business card analyzed successfully.",
+    });
+  } catch (err) {
+    console.error("[EventController] Error scanning business card:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message || "Failed to analyze business card image.",
+    });
+  }
+};
 
 /**
  * Summarize real-time speech transcript using Intelligent Speaker-Aware AI
