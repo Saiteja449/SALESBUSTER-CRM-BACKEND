@@ -1,4 +1,7 @@
 import express from "express";
+import multer from "multer";
+import fs from "fs";
+import path from "path";
 import {
   summarizeTranscript,
   scanBusinessCard,
@@ -10,16 +13,27 @@ import {
   getEventContacts,
   createEventContact,
   updateContactStatus,
+  analyzeVoiceAudio,
 } from "../controllers/eventController.js";
 import { protect } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
+const voiceUploadDir = path.resolve(process.cwd(), "uploads", "voice");
+fs.mkdirSync(voiceUploadDir, { recursive: true });
+const voiceUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, voiceUploadDir),
+    filename: (_req, file, cb) => cb(null, `guest-${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname || "") || ".wav"}`),
+  }),
+  limits: { fileSize: 30 * 1024 * 1024 },
+});
 
 // All event routes are protected by user authentication
 router.use(protect);
 
 // 1. AI Real-Time Transcript & Card Vision
 router.post("/summarize-text", summarizeTranscript);
+router.post("/analyze-voice-audio", voiceUpload.single("audio"), analyzeVoiceAudio);
 router.post("/scan-card", scanBusinessCard);
 
 // 2. Event Management

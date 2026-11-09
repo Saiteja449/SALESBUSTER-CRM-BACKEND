@@ -2,6 +2,37 @@ import { extractSpeakerAwareContactDeterministically } from "../services/ai/cont
 import { extractBusinessCardData } from "../services/ai/cardVisionExtractionService.js";
 import { getMasterModels } from "../services/tenantManager.js";
 import { decryptApiKey } from "../utils/encryption.js";
+import fs from "fs";
+import { extractProspectDetailsFromVoice } from "../services/voiceProspectExtractionService.js";
+
+export const analyzeVoiceAudio = async (req, res) => {
+  const audioFile = req.file;
+  const requestId = `guest-voice-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const startedAt = Date.now();
+  try {
+    if (!audioFile) return res.status(400).json({ success: false, message: "Audio recording file is required." });
+    const { Organization } = getMasterModels();
+    const orgId = req.user?.organizationId?.toString() || req.organization?._id?.toString();
+    const organization = orgId ? await Organization.findById(orgId).lean() : null;
+    const apiKey = decryptApiKey(organization?.aiSettings?.geminiApiKey) || process.env.GEMINI_API_KEY;
+    console.info(`[CONTACT_CAPTURE][${requestId}] Audio received`, { organizationId: orgId, sizeBytes: audioFile.size, mimeType: audioFile.mimetype });
+    const details = await extractProspectDetailsFromVoice(audioFile.path, audioFile.mimetype, apiKey, requestId);
+    console.info(`[CONTACT_CAPTURE][${requestId}] Audio analyzed`, { durationMs: Date.now() - startedAt });
+    const name = details.customerName === "Valued Customer" ? "" : details.customerName;
+    return res.json({ success: true, data: {
+      name, customerName: name, phone: details.spokenPhone || "",
+      companyName: details.companyName || "", designation: details.designation || "",
+      summary: details.keyTopic || "",
+    }});
+  } catch (error) {
+    console.error(`[CONTACT_CAPTURE][${requestId}] Audio analysis failed`, { durationMs: Date.now() - startedAt, error: error.message });
+    return res.status(422).json({ success: false, message: error.message || "Failed to analyze voice recording." });
+  } finally {
+    if (audioFile?.path && fs.existsSync(audioFile.path)) {
+      try { fs.unlinkSync(audioFile.path); } catch (error) { console.warn(`[CONTACT_CAPTURE][${requestId}] Upload cleanup failed`, { error: error.message }); }
+    }
+  }
+};
 
 /**
  * Analyze business / visiting card photo using Gemini Multimodal Vision (gemini-3.5-flash-lite)
