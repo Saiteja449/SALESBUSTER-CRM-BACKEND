@@ -1,4 +1,5 @@
 import fs from "fs";
+import { randomUUID } from "crypto";
 import path from "path";
 import Conversation from "../models/Conversation.js";
 import Message from "../models/Message.js";
@@ -14,20 +15,39 @@ import { getIO } from "../socket/socket.js";
  */
 export const extractLiveVoiceDetails = async (req, res) => {
   const audioFile = req.file;
+  const requestId = randomUUID();
+  const startedAt = Date.now();
+  let orgId;
   try {
     if (!audioFile) {
+      console.warn(`[ManagerLiveVoice][${requestId}] Rejected request: audio file missing`);
       return res.status(400).json({ success: false, message: "Audio recording file is required." });
     }
 
     const { Organization } = getMasterModels();
-    const orgId = req.user?.organizationId?.toString() || req.organization?._id?.toString();
+    orgId = req.user?.organizationId?.toString() || req.organization?._id?.toString();
     if (!orgId) {
+      console.warn(`[ManagerLiveVoice][${requestId}] Rejected request: organization context missing`);
       return res.status(401).json({ success: false, message: "Organization context required." });
     }
 
+    console.info(`[ManagerLiveVoice][${requestId}] Extraction request received`, {
+      organizationId: orgId,
+      userId: req.user?._id?.toString(),
+      fileSizeBytes: audioFile.size,
+      mimeType: audioFile.mimetype,
+    });
     const organization = await Organization.findById(orgId).lean();
     const geminiApiKey = decryptApiKey(organization?.aiSettings?.geminiApiKey) || process.env.GEMINI_API_KEY;
-    const extracted = await extractProspectDetailsFromVoice(audioFile.path, audioFile.mimetype, geminiApiKey);
+    console.info(`[ManagerLiveVoice][${requestId}] Gemini key configured: ${Boolean(geminiApiKey)}`);
+    const extracted = await extractProspectDetailsFromVoice(audioFile.path, audioFile.mimetype, geminiApiKey, requestId);
+
+    const populatedFields = ["customerName", "companyName", "designation", "spokenPhone", "keyTopic"]
+      .filter((field) => Boolean(extracted[field]));
+    console.info(`[ManagerLiveVoice][${requestId}] Extraction completed`, {
+      durationMs: Date.now() - startedAt,
+      populatedFields,
+    });
 
     return res.status(200).json({
       success: true,
@@ -41,7 +61,11 @@ export const extractLiveVoiceDetails = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("[ManagerLiveVoice] Voice extraction failed:", error);
+    console.error(`[ManagerLiveVoice][${requestId}] Voice extraction failed`, {
+      organizationId: orgId,
+      durationMs: Date.now() - startedAt,
+      error: error.message,
+    });
     return res.status(422).json({
       success: false,
       extractionFailed: true,
@@ -49,7 +73,12 @@ export const extractLiveVoiceDetails = async (req, res) => {
     });
   } finally {
     if (audioFile?.path && fs.existsSync(audioFile.path)) {
-      try { fs.unlinkSync(audioFile.path); } catch (error) { /* temporary upload cleanup is best effort */ }
+      try {
+        fs.unlinkSync(audioFile.path);
+        console.info(`[ManagerLiveVoice][${requestId}] Temporary upload removed`);
+      } catch (error) {
+        console.warn(`[ManagerLiveVoice][${requestId}] Temporary upload cleanup failed`, { error: error.message });
+      }
     }
   }
 };
