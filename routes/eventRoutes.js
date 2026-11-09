@@ -28,6 +28,41 @@ const voiceUpload = multer({
   limits: { fileSize: 30 * 1024 * 1024 },
 });
 
+// Multer storage for event attachments (images, PDF, documents)
+const eventUploadDir = path.resolve(process.cwd(), "uploads", "events");
+if (!fs.existsSync(eventUploadDir)) {
+  fs.mkdirSync(eventUploadDir, { recursive: true });
+}
+const eventFilesUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, eventUploadDir),
+    filename: (_req, file, cb) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      const ext = path.extname(file.originalname || "") || "";
+      cb(null, `event-${uniqueSuffix}${ext}`);
+    },
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+const handleEventFilesUpload = (req, res, next) => {
+  eventFilesUpload.any()(req, res, (err) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        return res.status(400).json({
+          success: false,
+          message: `File upload error: ${err.message}`,
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        message: err.message || "Failed to process uploaded files.",
+      });
+    }
+    next();
+  });
+};
+
 // All event routes are protected by user authentication
 router.use(protect);
 
@@ -38,9 +73,9 @@ router.post("/scan-card", scanBusinessCard);
 
 // 2. Event Management
 router.get("/", getEvents);
-router.post("/", createEvent);
+router.post("/", handleEventFilesUpload, createEvent);
 router.get("/:id", getEventById);
-router.put("/:id", updateEvent);
+router.put("/:id", handleEventFilesUpload, updateEvent);
 router.delete("/:id", deleteEvent);
 
 // 3. Contacts under Event (Strictly isolated from CRM Leads)
