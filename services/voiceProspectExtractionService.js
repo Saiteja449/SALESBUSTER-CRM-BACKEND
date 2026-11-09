@@ -81,8 +81,7 @@ export const extractProspectDetailsFromVoice = async (
     // Brief settling wait
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    const preferredModel =
-      process.env.GEMINI_AUDIO_MODEL || "gemini-3.5-flash-lite";
+    const preferredModel = "gemini-3.5-flash-lite";
 
     const prompt = `
 You are the SalesBuster AI conversation intelligence engine.

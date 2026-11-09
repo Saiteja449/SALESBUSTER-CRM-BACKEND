@@ -21,7 +21,7 @@ import {
   getTeamWhatsAppStatuses,
   requestPairingCode,
 } from "../controllers/whatsappController.js";
-import { captureAndSendLiveVoiceWhatsApp } from "../controllers/managerLiveVoiceController.js";
+import { extractLiveVoiceDetails } from "../controllers/managerLiveVoiceController.js";
 import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
 import { getMasterModels } from "../services/tenantManager.js";
 
@@ -217,14 +217,11 @@ router.post("/ai/toggle", toggleAI);
 router.post("/test-ai", requireManagerOrOwner, testAI);
 router.get("/test-ai", requireManagerOrOwner, getTestAIHistory);
 
-// Legacy Baileys socket dispatch deprecated - replaced by Event-based device WhatsApp architecture (/api/events)
-/*
 router.post(
-  "/manager/live-voice-send",
+  "/manager/live-voice-extract",
   requireManagerOrOwner,
   voiceMulter.single("audio"),
-  captureAndSendLiveVoiceWhatsApp
+  extractLiveVoiceDetails
 );
-*/
 
 export default router;
