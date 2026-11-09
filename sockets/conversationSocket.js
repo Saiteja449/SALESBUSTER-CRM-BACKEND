@@ -35,8 +35,15 @@ export function registerConversationSocketHandlers(socket) {
         `conv_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
       const eventId = data.eventId || null;
       const eventName = data.eventName || "";
-      const customVocabulary =
-        data.customVocabulary || [eventName].filter(Boolean);
+      const customVocabulary = [
+        ...(Array.isArray(data.customVocabulary) ? data.customVocabulary : []),
+        eventName,
+        "Infasta Soft Solutions",
+        "PetsFolio",
+        "Ace Web Academy",
+      ].filter((term) => typeof term === "string" && term.trim()).map((term) => term.trim()).filter((term, index, terms) =>
+        terms.findIndex((candidate) => candidate.toLowerCase() === term.toLowerCase()) === index
+      );
 
       // Session-Level Idempotency Check:
       // If an active session already exists on this socket
@@ -51,7 +58,7 @@ export function registerConversationSocketHandlers(socket) {
           socket.emit("conversation:ready", {
             sessionId: current.sessionId,
             status: "ready",
-            model: current.liveTranscriber?.liveModel || "gemini-3.8-live",
+            model: current.liveTranscriber?.liveModel || "gemini-3.5-transcribe-live",
             startedAt: current.startedAt,
           });
           return;
@@ -65,7 +72,7 @@ export function registerConversationSocketHandlers(socket) {
           socket.emit("conversation:ready", {
             sessionId: current.sessionId,
             status: "ready",
-            model: current.liveTranscriber?.liveModel || "gemini-3.8-live",
+            model: current.liveTranscriber?.liveModel || "gemini-3.5-transcribe-live",
             startedAt: current.startedAt,
           });
           return;

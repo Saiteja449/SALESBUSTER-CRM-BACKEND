@@ -1,13 +1,9 @@
 import { createGeminiClient, getGeminiApiKey, GEMINI_MODELS } from "../../configs/gemini.js";
-import {
-  EVENT_INTERIM_TOOL_DECLARATION,
-  createEventInterimTool,
-} from "../../ai/assistant/tools/eventCaptureTool.js";
 
 /**
- * LiveTranscriptionSession uses Gemini Live for transcription and contact detailing.
- * Provides real-time speech-to-text, structured contact updates and review,
- * and seamless 10-minute session rotation.
+ * LiveTranscriptionSession uses Gemini Live for real-time speech transcription.
+ * Mobile extracts contact fields from the transcript independently, with
+ * seamless 10-minute session rotation.
  */
 export class LiveTranscriptionSession {
   constructor({
@@ -33,7 +29,7 @@ export class LiveTranscriptionSession {
     this.onTranscriptFinal = onTranscriptFinal;
     this.onError = onError;
 
-    this.liveModel = GEMINI_MODELS.LIVE_EVENT_CAPTURE;
+    this.liveModel = GEMINI_MODELS.LIVE_TRANSCRIBE;
     this.ai = null;
     this.liveSession = null;
     this.isActive = false;
@@ -46,7 +42,6 @@ export class LiveTranscriptionSession {
     this.eventId = eventId;
     this.eventName = eventName;
     this.latestContact = {};
-    this.interactionStatus = "IDLE";
     this.intentionalClose = false;
     this.connectionGeneration = 0;
     this.reconnectTimer = null;
@@ -78,13 +73,8 @@ export class LiveTranscriptionSession {
       this.ai = createGeminiClient(this.organization);
 
       const config = {
-        // Extended Thinking requires AUDIO output mode and asynchronous tools.
-        responseModalities: ["AUDIO"],
-        thinkingConfig: { thinkingLevel: "LOW" },
-        systemInstruction: {
-          parts: [{ text: `You are a precise, silent event conversation capture assistant for ${this.organization?.name || "the host organization"}. Listen continuously. Do not speak back; only transcribe and update structured capture tools. Transcribe every speaker accurately in their original language. As attendee details become clear, repeatedly call update_contact_draft so the mobile form stays current. Update the name whenever new speech clarifies or corrects it. For name, only populate a clearly identified person's name after explicit self-introduction or direct identification, and provide the exact short nameEvidence phrase from the attendee. Do not infer a name from a company, job title, discussion, or context. Keep attendee name and company distinct, and never capture the host representative as attendee. Include a concise factual summary of needs and next steps when supported by the conversation. Never guess missing details. The user reviews and submits the completed form manually; do not call any popup or submission trigger.` }],
-        },
-        tools: [{ functionDeclarations: [EVENT_INTERIM_TOOL_DECLARATION] }],
+        // This model performs transcription only and returns text, not speech.
+        responseModalities: ["TEXT"],
         inputAudioTranscription: {
           languageCodes: this.languageCodes,
           customVocabulary: this.customVocabulary,
@@ -134,6 +124,7 @@ export class LiveTranscriptionSession {
 
       this.isActive = true;
       this.isConnecting = false;
+      this.sessionStartTime = Date.now();
       const wasReconnecting = this.reconnectAttempts > 0;
       this.reconnectAttempts = 0;
       if (wasReconnecting) {
@@ -176,12 +167,6 @@ export class LiveTranscriptionSession {
   async handleServerMessage(serverMsg) {
     if (!serverMsg) return;
 
-    // turnComplete does not mean the model is idle when it is still reasoning
-    // or waiting for a non-blocking tool response.
-    if (serverMsg.interactionStatus) {
-      this.interactionStatus = serverMsg.interactionStatus;
-    }
-
     if (serverMsg.goAway) {
       console.warn(
         `[LiveTranscription] goAway signal received for ${this.sessionId}. Triggering session rotation.`,
@@ -191,24 +176,6 @@ export class LiveTranscriptionSession {
     }
 
     const content = serverMsg.serverContent;
-    const functionCalls = serverMsg.toolCall?.functionCalls || [];
-    if (functionCalls.length) {
-      const interimTool = createEventInterimTool({ socket: this.socket, eventId: this.eventId, eventName: this.eventName, user: this.user, organization: this.organization });
-      const functionResponses = await Promise.all(functionCalls.map(async (call) => {
-        let result = JSON.stringify({ ok: false, message: "Unsupported capture tool" });
-        try {
-          const tool = call.name === "update_contact_draft" ? interimTool : null;
-          if (tool) {
-            result = await tool.invoke(call.args || {});
-            const parsed = JSON.parse(result);
-            if (parsed.payload) this.latestContact = { ...this.latestContact, ...parsed.payload };
-            if (parsed.captured) this.latestContact = { ...this.latestContact, ...parsed.captured, isComplete: true };
-          }
-        } catch (err) { result = JSON.stringify({ ok: false, message: err.message }); }
-        return { id: call.id, name: call.name, response: { output: result } };
-      }));
-      try { this.liveSession?.sendToolResponse({ functionResponses }); } catch (err) { console.warn(`[LiveTranscription] Tool response failed: ${err.message}`); this.scheduleReconnect(err); }
-    }
     if (!content) return;
 
     const rawInterim =

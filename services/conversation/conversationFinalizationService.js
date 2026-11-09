@@ -233,7 +233,7 @@ class ConversationFinalizationService {
           processingStatus: "completed",
           aiProvider: "gemini",
           modelMetadata: {
-            liveModel: GEMINI_MODELS.LIVE_CAPTURE,
+            liveModel: GEMINI_MODELS.LIVE_TRANSCRIBE,
           },
           usageMetrics,
         };
