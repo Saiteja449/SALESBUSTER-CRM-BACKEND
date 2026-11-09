@@ -234,16 +234,52 @@ export const createEvent = async (req, res) => {
       }
     }
 
-    // Sanitize attachments
-    const sanitizedAttachments = Array.isArray(attachments)
-      ? attachments.map((att) => ({
-          name: typeof att?.name === "string" ? att.name.trim() : "file",
-          type: typeof att?.type === "string" ? att.type.trim() : "application/octet-stream",
-          size: typeof att?.size === "number" ? att.size : 0,
-          url: typeof att?.url === "string" ? att.url.trim() : "",
-          uri: typeof att?.uri === "string" ? att.uri.trim() : "",
-        }))
-      : [];
+    // Sanitize attachments from body and uploaded files
+    let bodyAttachments = [];
+    if (typeof attachments === "string") {
+      try {
+        const parsed = JSON.parse(attachments);
+        bodyAttachments = Array.isArray(parsed) ? parsed : [parsed];
+      } catch (_) {
+        bodyAttachments = [];
+      }
+    } else if (Array.isArray(attachments)) {
+      bodyAttachments = attachments.flatMap((att) => {
+        if (typeof att === "string") {
+          try {
+            const parsed = JSON.parse(att);
+            return Array.isArray(parsed) ? parsed : [parsed];
+          } catch (_) {
+            return [];
+          }
+        }
+        return att ? [att] : [];
+      });
+    }
+
+    const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+    const uploadedAttachments = uploadedFiles.map((file) => ({
+      name: file.originalname || "attachment",
+      type: file.mimetype || "application/octet-stream",
+      size: file.size || 0,
+      url: `/uploads/events/${file.filename}`,
+      uri: `/uploads/events/${file.filename}`,
+    }));
+
+    const combinedAttachments = [...bodyAttachments, ...uploadedAttachments];
+
+    const sanitizedAttachments = combinedAttachments.map((att) => {
+      const fileUrl = typeof att?.url === "string" ? att.url.trim() : "";
+      const fileUri = typeof att?.uri === "string" ? att.uri.trim() : "";
+      const finalUrl = fileUrl || (fileUri.startsWith("/uploads/") ? fileUri : "");
+      return {
+        name: typeof att?.name === "string" ? att.name.trim() : "file",
+        type: typeof att?.type === "string" ? att.type.trim() : "application/octet-stream",
+        size: typeof att?.size === "number" ? att.size : 0,
+        url: finalUrl,
+        uri: fileUri || finalUrl,
+      };
+    });
 
     const finalTemplate = (whatsappTemplate || description || "").trim();
 
@@ -324,14 +360,53 @@ export const updateEvent = async (req, res) => {
     if (status !== undefined && ["active", "completed", "archived"].includes(status)) {
       event.status = status;
     }
-    if (Array.isArray(attachments)) {
-      event.attachments = attachments.map((att) => ({
-        name: typeof att?.name === "string" ? att.name.trim() : "file",
-        type: typeof att?.type === "string" ? att.type.trim() : "application/octet-stream",
-        size: typeof att?.size === "number" ? att.size : 0,
-        url: typeof att?.url === "string" ? att.url.trim() : "",
-        uri: typeof att?.uri === "string" ? att.uri.trim() : "",
+    const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+    const hasUploadedFiles = uploadedFiles.length > 0;
+
+    let bodyAttachments = null;
+    if (typeof attachments === "string") {
+      try {
+        const parsed = JSON.parse(attachments);
+        bodyAttachments = Array.isArray(parsed) ? parsed : [parsed];
+      } catch (_) {
+        bodyAttachments = [];
+      }
+    } else if (Array.isArray(attachments)) {
+      bodyAttachments = attachments.flatMap((att) => {
+        if (typeof att === "string") {
+          try {
+            const parsed = JSON.parse(att);
+            return Array.isArray(parsed) ? parsed : [parsed];
+          } catch (_) {
+            return [];
+          }
+        }
+        return att ? [att] : [];
+      });
+    }
+
+    if (bodyAttachments !== null || hasUploadedFiles) {
+      const existing = bodyAttachments !== null ? bodyAttachments : (event.attachments || []);
+      const uploadedAttachments = uploadedFiles.map((file) => ({
+        name: file.originalname || "attachment",
+        type: file.mimetype || "application/octet-stream",
+        size: file.size || 0,
+        url: `/uploads/events/${file.filename}`,
+        uri: `/uploads/events/${file.filename}`,
       }));
+      const combined = [...existing, ...uploadedAttachments];
+      event.attachments = combined.map((att) => {
+        const fileUrl = typeof att?.url === "string" ? att.url.trim() : "";
+        const fileUri = typeof att?.uri === "string" ? att.uri.trim() : "";
+        const finalUrl = fileUrl || (fileUri.startsWith("/uploads/") ? fileUri : "");
+        return {
+          name: typeof att?.name === "string" ? att.name.trim() : "file",
+          type: typeof att?.type === "string" ? att.type.trim() : "application/octet-stream",
+          size: typeof att?.size === "number" ? att.size : 0,
+          url: finalUrl,
+          uri: fileUri || finalUrl,
+        };
+      });
     }
 
     await event.save();
