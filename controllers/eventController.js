@@ -203,7 +203,6 @@ export const getEvents = async (req, res) => {
 export const createEvent = async (req, res) => {
   try {
     const { Event } = req.tenantModels;
-    const body = req.body || {};
     const {
       name,
       venue,
@@ -212,11 +211,11 @@ export const createEvent = async (req, res) => {
       time,
       whatsappTemplate,
       description,
-      attachments: submittedAttachments,
+      attachments,
       status,
-    } = body;
+    } = req.body;
 
-    if (typeof name !== "string" || !name.trim()) {
+    if (!name || !name.trim()) {
       return res.status(400).json({
         success: false,
         message: "Event name is required.",
@@ -235,31 +234,16 @@ export const createEvent = async (req, res) => {
       }
     }
 
-    // Multipart forms carry remote attachment metadata as JSON and local files in req.files.
-    let attachmentMetadata = submittedAttachments;
-    if (typeof attachmentMetadata === "string") {
-      try {
-        attachmentMetadata = JSON.parse(attachmentMetadata);
-      } catch {
-        attachmentMetadata = [];
-      }
-    }
-    const sanitizedAttachments = [
-      ...(Array.isArray(attachmentMetadata) ? attachmentMetadata : []),
-      ...(req.files || []).map((file) => ({
-        name: file.originalname || file.filename,
-        type: file.mimetype || "application/octet-stream",
-        size: file.size || 0,
-        url: `${req.protocol}://${req.get("host")}/uploads/events/${encodeURIComponent(file.filename)}`,
-        uri: "",
-      })),
-    ].map((att) => ({
-      name: typeof att?.name === "string" ? att.name.trim() : "file",
-      type: typeof att?.type === "string" ? att.type.trim() : "application/octet-stream",
-      size: typeof att?.size === "number" ? att.size : 0,
-      url: typeof att?.url === "string" ? att.url.trim() : "",
-      uri: typeof att?.uri === "string" ? att.uri.trim() : "",
-    }));
+    // Sanitize attachments
+    const sanitizedAttachments = Array.isArray(attachments)
+      ? attachments.map((att) => ({
+          name: typeof att?.name === "string" ? att.name.trim() : "file",
+          type: typeof att?.type === "string" ? att.type.trim() : "application/octet-stream",
+          size: typeof att?.size === "number" ? att.size : 0,
+          url: typeof att?.url === "string" ? att.url.trim() : "",
+          uri: typeof att?.uri === "string" ? att.uri.trim() : "",
+        }))
+      : [];
 
     const finalTemplate = (whatsappTemplate || description || "").trim();
 
