@@ -46,7 +46,8 @@ const resolveAudioMimeType = (filePath, fallbackMime) => {
 export const extractProspectDetailsFromVoice = async (
   filePath,
   mimeType,
-  customApiKey = null
+  customApiKey = null,
+  requestId = "untracked"
 ) => {
   const activeKey = customApiKey || process.env.GEMINI_API_KEY;
 
@@ -61,27 +62,28 @@ export const extractProspectDetailsFromVoice = async (
   const genAI = new GoogleGenerativeAI(activeKey);
   const fileManager = new GoogleAIFileManager(activeKey);
   const resolvedMime = resolveAudioMimeType(filePath, mimeType);
+  const modelName = "gemini-3.5-flash-lite";
+  const uploadStartedAt = Date.now();
+  console.info(`[VoiceExtraction][${requestId}] Uploading audio to Gemini`, { mimeType: resolvedMime });
 
   let uploadResponse = null;
 
   try {
-    console.log(
-      `[VoiceExtraction] Uploading voice recording to Gemini File API: ${filePath} (${resolvedMime})`
-    );
-
     uploadResponse = await fileManager.uploadFile(filePath, {
       mimeType: resolvedMime,
       displayName: `Live Voice Record - ${path.basename(filePath)}`,
     });
 
-    console.log(
-      `[VoiceExtraction] Upload complete. URI: ${uploadResponse.file.uri}, state: ${uploadResponse.file.state}`
-    );
+    console.info(`[VoiceExtraction][${requestId}] Gemini upload complete`, {
+      state: uploadResponse.file.state,
+      durationMs: Date.now() - uploadStartedAt,
+    });
 
     // Brief settling wait
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    const preferredModel = "gemini-3.5-flash-lite";
+    const generationStartedAt = Date.now();
+    console.info(`[VoiceExtraction][${requestId}] Generating structured fields`, { model: modelName });
 
     const prompt = `
 You are the SalesBuster AI conversation intelligence engine.
@@ -112,7 +114,7 @@ Example format:
 }
 `;
 
-    const model = genAI.getGenerativeModel({ model: preferredModel });
+    const model = genAI.getGenerativeModel({ model: modelName });
     const result = await model.generateContent([
       prompt,
       {
@@ -124,7 +126,10 @@ Example format:
     ]);
 
     const responseText = result.response.text().trim();
-    console.log(`[VoiceExtraction] Gemini Raw Response:`, responseText);
+    console.info(`[VoiceExtraction][${requestId}] Gemini response received`, {
+      durationMs: Date.now() - generationStartedAt,
+      responseLength: responseText.length,
+    });
 
     // Clean JSON markdown formatting if present
     const cleanJson = responseText
@@ -136,9 +141,7 @@ Example format:
     try {
       parsed = JSON.parse(cleanJson);
     } catch (jsonErr) {
-      console.warn(
-        `[VoiceExtraction] Could not parse JSON from Gemini output: ${responseText}`
-      );
+      console.warn(`[VoiceExtraction][${requestId}] Gemini response was not valid JSON`);
       throw new Error("Unable to parse structured prospect details from Gemini voice response.");
     }
 
@@ -174,19 +177,15 @@ Example format:
       keyTopic: (parsed.keyTopic || "our discussion").trim(),
     };
   } catch (err) {
-    console.error(`[VoiceExtraction] Error analyzing audio with Gemini:`, err);
+    console.error(`[VoiceExtraction][${requestId}] Gemini audio analysis failed`, { error: err.message });
     throw err;
   } finally {
     // Delete file from Gemini File API to prevent storage buildup
     if (uploadResponse?.file?.name) {
       fileManager
         .deleteFile(uploadResponse.file.name)
-        .catch((delErr) =>
-          console.warn(
-            `[VoiceExtraction] Non-critical: Could not delete Gemini temp file:`,
-            delErr.message
-          )
-        );
+        .then(() => console.info(`[VoiceExtraction][${requestId}] Gemini temporary file deleted`))
+        .catch((delErr) => console.warn(`[VoiceExtraction][${requestId}] Gemini temporary file cleanup failed`, { error: delErr.message }));
     }
   }
 };
