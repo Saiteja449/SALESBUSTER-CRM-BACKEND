@@ -96,10 +96,25 @@ export const summarizeTranscript = async (req, res) => {
       organization,
     });
 
-    const customerName = extractedContact.customerName || "";
-    const cleanPhone = extractedContact.spokenPhone || "";
-    const companyName = extractedContact.companyName || "";
-    const designation = extractedContact.designation || "";
+    const customerName =
+      extractedContact.customerName ||
+      extractedContact.name ||
+      extractedContact.contact?.name?.value ||
+      "";
+    const cleanPhone =
+      extractedContact.spokenPhone ||
+      extractedContact.phone ||
+      extractedContact.contact?.phone?.value ||
+      "";
+    const companyName =
+      extractedContact.companyName ||
+      extractedContact.company ||
+      extractedContact.contact?.company?.value ||
+      "";
+    const designation =
+      extractedContact.designation ||
+      extractedContact.contact?.designation?.value ||
+      "";
     const summary = summaryResult.keyDiscussion || transcript.slice(0, 150);
 
     const greetingName = customerName || "there";
@@ -115,7 +130,9 @@ export const summarizeTranscript = async (req, res) => {
       success: true,
       data: {
         name: customerName,
+        customerName,
         phone: cleanPhone,
+        spokenPhone: cleanPhone,
         companyName,
         designation,
         summary,
