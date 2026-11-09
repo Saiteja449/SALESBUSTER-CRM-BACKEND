@@ -7,6 +7,7 @@ export const EVENT_INTERIM_TOOL_DECLARATION = {
   name: "update_contact_draft",
   description:
     "Progressively updates attendee contact fields on mobile. Keep name and company strictly distinct: name is only a clearly identified person's name; companyName is only an explicitly identified business or organization. Never put a person's name in companyName or a company, role, or location in name. Send summary as a concise factual note when discussion needs or next steps are mentioned.",
+  behavior: "NON_BLOCKING",
   parameters: {
     type: "OBJECT",
     properties: {
