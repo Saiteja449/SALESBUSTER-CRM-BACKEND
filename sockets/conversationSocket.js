@@ -124,6 +124,7 @@ export function registerConversationSocketHandlers(socket) {
         user: socket.user,
         liveTranscriber,
         startedAt: Date.now(),
+        audioChunkCount: 0,
       };
 
       socket.emit("conversation:ready", {
@@ -162,6 +163,8 @@ export function registerConversationSocketHandlers(socket) {
 
     if (!base64Data) return;
 
+    session.audioChunkCount += 1;
+
     // Buffer chunk on server for finalization
     audioBufferService.pushChunk({
       sessionId: session.sessionId,
@@ -191,7 +194,7 @@ export function registerConversationSocketHandlers(socket) {
       return;
     }
 
-    console.log(`[ConversationSocket] Stop received for session: ${sessionId}`);
+    console.log(`[ConversationSocket] Stop received for session: ${sessionId} (audioChunks=${session?.audioChunkCount || 0}, transcriptChars=${session?.liveTranscriber?.accumulatedLiveTranscript?.length || 0})`);
     socket._lastActiveSessionId = sessionId;
 
     let liveTranscript = "";

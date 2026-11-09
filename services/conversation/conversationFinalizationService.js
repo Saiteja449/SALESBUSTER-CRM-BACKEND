@@ -239,11 +239,24 @@ class ConversationFinalizationService {
         };
 
         if (typeof Conversation?.findOneAndUpdate === "function") {
-          savedConversation = await Conversation.findOneAndUpdate(
+          const persist = () => Conversation.findOneAndUpdate(
             { sessionId },
             { $set: updateData },
-            { upsert: true, new: true, setDefaultsOnInsert: true },
+            { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
           );
+          try {
+            savedConversation = await persist();
+          } catch (indexErr) {
+            const isLegacyNullLeadIndex = indexErr?.code === 11000 &&
+              String(indexErr?.message || "").includes("leadId_1") &&
+              String(indexErr?.message || "").includes("null");
+            if (!isLegacyNullLeadIndex || !Conversation.collection?.dropIndex) throw indexErr;
+
+            console.warn("[FinalizationService] Replacing stale unique leadId_1 index with the non-unique index declared by Conversation schema.");
+            await Conversation.collection.dropIndex("leadId_1");
+            await Conversation.collection.createIndex({ leadId: 1 }, { name: "leadId_1", sparse: true });
+            savedConversation = await persist();
+          }
         }
       } catch (dbErr) {
         console.error(
