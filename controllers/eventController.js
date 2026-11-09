@@ -204,29 +204,15 @@ export const createEvent = async (req, res) => {
     }
 
     // Sanitize attachments
-    let bodyAttachments = attachments;
-    if (typeof bodyAttachments === "string") {
-      try { bodyAttachments = JSON.parse(bodyAttachments); } catch { bodyAttachments = []; }
-    }
-    const uploadedAttachments = Array.isArray(req.files)
-      ? req.files.map((file) => ({
-          name: file.originalname || file.filename,
-          type: file.mimetype || "application/octet-stream",
-          size: file.size || 0,
-          url: `/uploads/event-attachments/${file.filename}`,
-          uri: "",
-        }))
-      : [];
-    const sanitizedAttachments = [
-      ...uploadedAttachments,
-      ...(Array.isArray(bodyAttachments) ? bodyAttachments.map((att) => ({
+    const sanitizedAttachments = Array.isArray(attachments)
+      ? attachments.map((att) => ({
           name: typeof att?.name === "string" ? att.name.trim() : "file",
           type: typeof att?.type === "string" ? att.type.trim() : "application/octet-stream",
           size: typeof att?.size === "number" ? att.size : 0,
           url: typeof att?.url === "string" ? att.url.trim() : "",
           uri: typeof att?.uri === "string" ? att.uri.trim() : "",
-        })) : []),
-    ];
+        }))
+      : [];
 
     const finalTemplate = (whatsappTemplate || description || "").trim();
 
