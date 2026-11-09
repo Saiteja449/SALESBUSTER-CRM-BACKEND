@@ -37,11 +37,7 @@ export const createGeminiClient = (organization = null) => {
  * Configured Gemini Model IDs
  */
 export const GEMINI_MODELS = {
-  LIVE_TRANSCRIBE:
-    process.env.GEMINI_LIVE_TRANSCRIPTION_MODEL || "gemini-3.5-transcribe-live",
-  FINAL_TRANSCRIBE:
-    process.env.GEMINI_FINAL_TRANSCRIPTION_MODEL || "gemini-3.5-transcribe",
-  EXTRACTION_SUMMARY:
-    process.env.GEMINI_EXTRACTION_MODEL || "gemini-3.5-flash",
+  LIVE_CAPTURE: "gemini-3.8-live",
+  LIVE_TRANSCRIBE: "gemini-3.8-live",
 };
 

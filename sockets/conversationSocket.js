@@ -51,9 +51,7 @@ export function registerConversationSocketHandlers(socket) {
           socket.emit("conversation:ready", {
             sessionId: current.sessionId,
             status: "ready",
-            model:
-              current.liveTranscriber?.liveModel ||
-              "gemini-3.5-transcribe-live",
+            model: current.liveTranscriber?.liveModel || "gemini-3.8-live",
             startedAt: current.startedAt,
           });
           return;
@@ -67,9 +65,7 @@ export function registerConversationSocketHandlers(socket) {
           socket.emit("conversation:ready", {
             sessionId: current.sessionId,
             status: "ready",
-            model:
-              current.liveTranscriber?.liveModel ||
-              "gemini-3.5-transcribe-live",
+            model: current.liveTranscriber?.liveModel || "gemini-3.8-live",
             startedAt: current.startedAt,
           });
           return;
@@ -98,13 +94,15 @@ export function registerConversationSocketHandlers(socket) {
         organizationId: socket.user?.organizationId,
       });
 
-      // Start Model 1: Live Transcription with gemini-3.5-transcribe-live
+      // One Gemini Live session handles transcription and structured field capture.
       const liveTranscriber = new LiveTranscriptionSession({
         sessionId,
         socket,
         organization,
         user: socket.user,
         customVocabulary,
+        eventId,
+        eventName,
         onTranscriptInterim: (interimData) => {
           // Provisional updates emitted by liveTranscriber
         },
@@ -226,7 +224,7 @@ export function registerConversationSocketHandlers(socket) {
     const eventId = data.eventId || session?.eventId || null;
 
     try {
-      // Trigger post-processing: Model 2 (Diarization) -> Model 3 (Extraction & Summary) -> DB
+      // Persist the transcript and structured fields collected by the live model.
       await conversationFinalizationService.finalizeConversation({
         sessionId,
         socket,
@@ -234,6 +232,7 @@ export function registerConversationSocketHandlers(socket) {
         user,
         eventId,
         liveTranscript,
+        liveCaptureData: session?.liveTranscriber?.latestContact || {},
         liveDurationSec,
       });
     } catch (err) {

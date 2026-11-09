@@ -195,15 +195,7 @@ const conversationSchema = new mongoose.Schema(
     modelMetadata: {
       liveModel: {
         type: String,
-        default: "gemini-3.5-transcribe-live",
-      },
-      finalModel: {
-        type: String,
-        default: "gemini-3.5-transcribe",
-      },
-      extractionModel: {
-        type: String,
-        default: "gemini-3.5-flash",
+        default: "gemini-3.8-live",
       },
     },
     usageMetrics: {
