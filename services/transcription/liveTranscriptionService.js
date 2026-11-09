@@ -1,8 +1,14 @@
 import { createGeminiClient, getGeminiApiKey, GEMINI_MODELS } from "../../configs/gemini.js";
+import {
+  EVENT_CAPTURE_TOOL_DECLARATION,
+  EVENT_INTERIM_TOOL_DECLARATION,
+  createEventCaptureTool,
+  createEventInterimTool,
+} from "../../ai/assistant/tools/eventCaptureTool.js";
 
 /**
- * LiveTranscriptionSession manages a live WebSocket transcription session with gemini-3.5-transcribe-live.
- * Provides real-time speech-to-text, interim and final transcription broadcasts,
+ * LiveTranscriptionSession uses Gemini Live for transcription and contact detailing.
+ * Provides real-time speech-to-text, structured contact updates and review,
  * and seamless 10-minute session rotation.
  */
 export class LiveTranscriptionSession {
@@ -12,6 +18,8 @@ export class LiveTranscriptionSession {
     organization = null,
     user = null,
     customVocabulary = [],
+    eventId = null,
+    eventName = "",
     languageCodes = ["en-IN", "hi-IN", "te-IN"],
     onTranscriptInterim = null,
     onTranscriptFinal = null,
@@ -27,7 +35,7 @@ export class LiveTranscriptionSession {
     this.onTranscriptFinal = onTranscriptFinal;
     this.onError = onError;
 
-    this.liveModel = GEMINI_MODELS.LIVE_TRANSCRIBE;
+    this.liveModel = GEMINI_MODELS.LIVE_CAPTURE;
     this.ai = null;
     this.liveSession = null;
     this.isActive = false;
@@ -37,10 +45,13 @@ export class LiveTranscriptionSession {
     this.rotationTimer = null;
     this.accumulatedLiveTranscript = "";
     this.lastInterimText = "";
+    this.eventId = eventId;
+    this.eventName = eventName;
+    this.latestContact = {};
   }
 
   /**
-   * Initializes the WebSocket connection to Gemini 3.5 Transcribe Live.
+   * Initializes the single Gemini Live audio and contact-capture session.
    */
   async start() {
     if (this.isActive || this.isConnecting) return;
@@ -63,6 +74,10 @@ export class LiveTranscriptionSession {
 
       const config = {
         responseModalities: ["TEXT"],
+        systemInstruction: {
+          parts: [{ text: `You are a precise, silent event conversation capture assistant for ${this.organization?.name || "the host organization"}. Listen continuously. Transcribe every speaker accurately in their original language. As attendee details become clear, call update_contact_draft with only explicitly supported fields. For name, only populate a clearly identified person's name after explicit self-introduction or direct identification, and provide the exact short nameEvidence phrase from the attendee. Do not infer a name from a company, job title, discussion, or context. Keep attendee name and company distinct, and never capture the host representative as attendee. Include a concise factual summary of needs and next steps when supported by the conversation. When name with explicit evidence, valid 10 digit phone and company are all explicit, call trigger_contact_review. Never guess missing details.` }],
+        },
+        tools: [{ functionDeclarations: [EVENT_INTERIM_TOOL_DECLARATION, EVENT_CAPTURE_TOOL_DECLARATION] }],
         inputAudioTranscription: {
           languageCodes: this.languageCodes,
           customVocabulary: this.customVocabulary,
@@ -138,7 +153,7 @@ export class LiveTranscriptionSession {
    * Handles incoming WebSocket messages from Gemini Transcribe Live.
    * @param {Object} serverMsg
    */
-  handleServerMessage(serverMsg) {
+  async handleServerMessage(serverMsg) {
     if (!serverMsg) return;
 
     if (serverMsg.goAway) {
@@ -150,6 +165,25 @@ export class LiveTranscriptionSession {
     }
 
     const content = serverMsg.serverContent;
+    const functionCalls = serverMsg.toolCall?.functionCalls || [];
+    if (functionCalls.length) {
+      const interimTool = createEventInterimTool({ socket: this.socket, eventId: this.eventId, eventName: this.eventName, user: this.user, organization: this.organization });
+      const captureTool = createEventCaptureTool({ socket: this.socket, eventId: this.eventId, eventName: this.eventName, user: this.user, organization: this.organization });
+      const functionResponses = await Promise.all(functionCalls.map(async (call) => {
+        let result = JSON.stringify({ ok: false, message: "Unsupported capture tool" });
+        try {
+          const tool = call.name === "update_contact_draft" ? interimTool : call.name === "trigger_contact_review" ? captureTool : null;
+          if (tool) {
+            result = await tool.invoke(call.args || {});
+            const parsed = JSON.parse(result);
+            if (parsed.payload) this.latestContact = { ...this.latestContact, ...parsed.payload };
+            if (parsed.captured) this.latestContact = { ...this.latestContact, ...parsed.captured, isComplete: true };
+          }
+        } catch (err) { result = JSON.stringify({ ok: false, message: err.message }); }
+        return { id: call.id, name: call.name, response: { output: result } };
+      }));
+      try { this.liveSession?.sendToolResponse({ functionResponses }); } catch (err) { console.warn(`[LiveTranscription] Tool response failed: ${err.message}`); }
+    }
     if (!content) return;
 
     const rawInterim =

@@ -174,7 +174,7 @@ export function parseDiarizedTranscriptText(rawText = "", baseOffsetSec = 0) {
 }
 
 /**
- * Transcribes complete recorded audio with verbatim accuracy using gemini-3.5-transcribe.
+ * Legacy offline helper retained for transcript parsing compatibility; configured to Gemini Live.
  * Optimized for single-person high-fidelity speech-to-text.
  * @param {Object} options
  * @param {Buffer} options.pcmBuffer - Complete recorded 16kHz PCM16 audio
@@ -194,7 +194,7 @@ export async function transcribeWithDiarization({
   }
 
   const ai = createGeminiClient(organization);
-  const modelName = GEMINI_MODELS.FINAL_TRANSCRIBE;
+  const modelName = GEMINI_MODELS.LIVE_CAPTURE;
   const totalDurationSec = calculatePcmDuration(pcmBuffer.length, 16000);
 
   // If audio is under 25 minutes, process in a single request.

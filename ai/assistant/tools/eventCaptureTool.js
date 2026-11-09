@@ -12,8 +12,9 @@ export const EVENT_INTERIM_TOOL_DECLARATION = {
     properties: {
       name: {
         type: "STRING",
-        description: "Attendee person's name only, based on self-introduction or explicit identification. Never a company, role, location, or generic label. Must not be the sales representative.",
+        description: "Attendee person's name only, and only after explicit self-introduction or clear identification. Never a company, role, location, or generic label. Must not be the sales representative.",
       },
+      nameEvidence: { type: "STRING", description: "Exact short phrase from the attendee that explicitly identifies this name, such as 'my name is ...', 'I am ...', 'mera naam ...', or 'naa peru ...'. Leave name empty when there is no such evidence." },
       phone: {
         type: "STRING",
         description: "Mobile phone digits spoken. Can be partial or complete.",
@@ -49,6 +50,7 @@ export const EVENT_CAPTURE_TOOL_DECLARATION = {
         type: "STRING",
         description: "Attendee person's full name only; never a company or job title. Mandatory.",
       },
+      nameEvidence: { type: "STRING", description: "Exact short phrase from the attendee explicitly identifying this name. Required evidence such as 'my name is ...', 'I am ...', 'mera naam ...', or 'naa peru ...'." },
       phone: {
         type: "STRING",
         description: "10-digit mobile number spoken. Extract only digits. Mandatory. Must be a complete 10-digit number.",
@@ -71,9 +73,29 @@ export const EVENT_CAPTURE_TOOL_DECLARATION = {
           "Personalized, professional WhatsApp greeting message ready to send from the sales rep to this contact.",
       },
     },
-    required: ["name", "phone", "companyName"],
+    required: ["name", "nameEvidence", "phone", "companyName"],
   },
 };
+
+const NON_PERSON_NAME_TERMS = new Set([
+  "attendee", "customer", "contact", "visitor", "guest", "client", "lead",
+  "ceo", "cto", "coo", "cfo", "director", "manager", "owner", "founder",
+  "partner", "engineer", "consultant", "president", "head", "staff", "sales",
+  "marketing", "operations", "interested", "looking", "planning", "discussing",
+]);
+
+function isExplicitPersonName(name, evidence, repName = "") {
+  const candidate = String(name || "").trim();
+  const phrase = String(evidence || "").trim();
+  if (!candidate || candidate.length > 70 || !phrase || phrase.length > 120) return false;
+  const tokens = candidate.split(/\s+/);
+  if (tokens.length > 4 || tokens.some((token) => !/^\p{L}[\p{L}'’-]{0,24}\.?$/u.test(token))) return false;
+  if (tokens.some((token) => NON_PERSON_NAME_TERMS.has(token.toLowerCase().replace(/\.$/, "")))) return false;
+  if (!phrase.toLowerCase().includes(candidate.toLowerCase())) return false;
+  if (!/(?:my name is|myself|name is|i am|i'm|this is|call me|mera naam|naam hai|naa peru|na peru|nenu)\b/i.test(phrase)) return false;
+  const rep = String(repName || "").trim().toLowerCase();
+  return !rep || candidate.toLowerCase() !== rep;
+}
 
 const COMPANY_INDICATOR_REGEX = /\b(?:pvt|ltd|limited|private|llp|inc|incorporated|corp|corporation|technologies|technology|tech|solutions|enterprises|enterprise|industries|industry|services|service|consulting|consultancy|group|agency|logistics|infotech|software|holdings|motors|textiles|pharmaceuticals|pharma|labs|systems|traders|trading|ventures|digital|retail|infra|power|energy|steel)\b/i;
 
@@ -126,9 +148,12 @@ export const createEventInterimTool = ({ socket, eventId, eventName, user, organ
     }
 
     let rawName = (typeof args.name === 'string' ? args.name : (args.name ? String(args.name) : "")).trim();
+    const nameEvidence = String(args.nameEvidence || "").trim();
     let companyName = (typeof args.companyName === 'string' ? args.companyName : (args.companyName ? String(args.companyName) : "")).trim();
     const designation = (typeof args.designation === 'string' ? args.designation : (args.designation ? String(args.designation) : "")).trim();
     const summary = (typeof args.summary === 'string' ? args.summary : (args.summary ? String(args.summary) : "")).trim();
+
+    if (!isExplicitPersonName(rawName, nameEvidence, repName)) rawName = "";
 
     // Cross-field company name leakage check
     if (rawName) {
@@ -164,6 +189,7 @@ export const createEventInterimTool = ({ socket, eventId, eventName, user, organ
       eventId: eventId || null,
       eventName: currentEvent,
       name: rawName,
+      nameEvidence: rawName ? nameEvidence : "",
       phone: cleanPhone,
       partialPhone: partialPhone || null,
       companyName,
@@ -216,9 +242,14 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
     }
 
     let rawName = (typeof args.name === 'string' ? args.name : (args.name ? String(args.name) : "")).trim();
+    const nameEvidence = String(args.nameEvidence || "").trim();
     let companyName = (typeof args.companyName === 'string' ? args.companyName : (args.companyName ? String(args.companyName) : "")).trim();
     const designation = (typeof args.designation === 'string' ? args.designation : (args.designation ? String(args.designation) : "")).trim();
     const summary = (typeof args.summary === 'string' ? args.summary : (args.summary ? String(args.summary) : "")).trim();
+
+    if (!isExplicitPersonName(rawName, nameEvidence, repName)) {
+      rawName = "";
+    }
 
     // STRICT DEFENSE: Cross-field company name leakage check
     if (rawName) {
@@ -300,6 +331,7 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
       eventId: eventId || null,
       eventName: currentEvent,
       name: rawName,
+      nameEvidence: nameEvidence,
       displayName: attendeeName,
       phone: cleanPhone,
       companyName,

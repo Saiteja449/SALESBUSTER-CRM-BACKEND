@@ -1,8 +1,4 @@
 import audioBufferService from "../audio/audioBufferService.js";
-import { transcribeWithDiarization } from "../transcription/finalTranscriptionService.js";
-import { reconcileDiarization } from "../transcription/diarizationService.js";
-import { extractSpeakerAwareContact } from "../ai/contactExtractionService.js";
-import { generateConversationSummary } from "../ai/conversationSummaryService.js";
 import Conversation from "../../models/Conversation.js";
 import { GEMINI_MODELS } from "../../configs/gemini.js";
 
@@ -50,6 +46,7 @@ class ConversationFinalizationService {
     user = null,
     eventId = null,
     liveTranscript = "",
+    liveCaptureData = {},
     liveDurationSec = 0,
   }) {
     if (!sessionId) throw new Error("sessionId is required for finalization");
@@ -163,120 +160,45 @@ class ConversationFinalizationService {
 
       const audioDuration = audioResult.durationSec || liveDurationSec || 0;
 
-      // Step 2: Model 2 - Gemini 3.5 Transcribe with Speaker Diarization
+      // Gemini Live is the only model in conversational detail capture.
       this.emitProgress(socket, sessionId, "diarizing", 40);
-      let diarizationRaw = { segments: [], fullTranscript: liveTranscript };
+      const transcript = String(liveTranscript || "").trim();
+      const segments = transcript ? [{ speakerId: "unknown", text: transcript }] : [];
+      const speakers = [];
 
-      if (audioResult.pcmBuffer && audioResult.pcmBuffer.length > 0) {
-        try {
-          diarizationRaw = await transcribeWithDiarization({
-            pcmBuffer: audioResult.pcmBuffer,
-            organization,
-          });
-        } catch (transcribeErr) {
-          console.warn(
-            `[FinalizationService] Gemini 3.5 Transcribe failed for ${sessionId}: ${transcribeErr.message}. Falling back to live transcript.`,
-          );
-        }
-      }
-
-      // Step 3: Reconcile speaker segments
-      const { segments, speakers } = reconcileDiarization({
-        diarizedSegments: diarizationRaw.segments,
-        liveTranscript: diarizationRaw.fullTranscript || liveTranscript,
-      });
-
-      // Step 4: Model 3 - Gemini Flash Speaker-Aware Contact Extraction
+      // Fields and summary are emitted progressively by Gemini Live during capture.
       this.emitProgress(socket, sessionId, "extracting_contact", 70);
-      let extractionResult;
-      try {
-        extractionResult = await extractSpeakerAwareContact({
-          segments,
-          rawTranscript: diarizationRaw.fullTranscript || liveTranscript,
-          hostUser: user,
-          organization,
-        });
-      } catch (extractErr) {
-        console.error(
-          `[FinalizationService] Contact extraction error for ${sessionId}:`,
-          extractErr.message,
-        );
-        extractionResult = {
-          selectedSpeakerId: null,
-          identityStatus: "uncertain",
-          selectionReason: "Contact extraction failed",
-          requiresManualReview: true,
-          isComplete: false,
-          contact: {
-            name: {
-              value: null,
-              speakerId: null,
-              evidence: null,
-              confidence: 0,
-            },
-            company: {
-              value: null,
-              speakerId: null,
-              evidence: null,
-              confidence: 0,
-            },
-            designation: {
-              value: null,
-              speakerId: null,
-              evidence: null,
-              confidence: 0,
-            },
-            phone: {
-              value: null,
-              speakerId: null,
-              evidence: null,
-              confidence: 0,
-            },
-          },
-          otherSpeakers: [],
-        };
-      }
+      const asField = (value) => ({ value: value || null, speakerId: null, evidence: null, confidence: value ? 0.9 : 0 });
+      const extractionResult = {
+        selectedSpeakerId: null,
+        identityStatus: liveCaptureData?.name ? "identified" : "provisional",
+        selectionReason: "Captured progressively by Gemini Live",
+        requiresManualReview: !liveCaptureData?.isComplete,
+        isComplete: Boolean(liveCaptureData?.isComplete),
+        contact: {
+          name: asField(liveCaptureData?.name),
+          phone: asField(liveCaptureData?.phone),
+          company: asField(liveCaptureData?.companyName),
+          designation: asField(liveCaptureData?.designation),
+          summary: asField(liveCaptureData?.summary),
+        },
+      };
 
-      // Step 5: Model 3 - Gemini Flash Conversation Summarization
       this.emitProgress(socket, sessionId, "summarizing", 85);
-      let summaryResult;
-      try {
-        summaryResult = await generateConversationSummary({
-          segments,
-          rawTranscript: diarizationRaw.fullTranscript || liveTranscript,
-          contact: extractionResult.contact,
-          organization,
-          isInterim: false,
-        });
-      } catch (sumErr) {
-        console.warn(
-          `[FinalizationService] Summary generation warning for ${sessionId}:`,
-          sumErr.message,
-        );
-        summaryResult = {
-          keyDiscussion:
-            liveTranscript.slice(0, 150) || "Conversation captured.",
-          topics: [],
-          actionItems: [],
-          decisions: [],
-          participants: [],
-        };
-      }
+      const summaryResult = { keyDiscussion: liveCaptureData?.summary || "", topics: [], actionItems: [], decisions: [], participants: [] };
 
       // Step 6: Compute Usage Metrics & Estimated Cost
       const finalDurationSec = audioDuration;
       const liveDuration = liveDurationSec || finalDurationSec;
       const liveCost = (liveDuration / 60) * 0.003;
-      const diarizationCost = (finalDurationSec / 60) * 0.002;
-      const flashCost = 0.0005;
       const estimatedCostUsd = Number(
-        (liveCost + diarizationCost + flashCost).toFixed(5),
+        liveCost.toFixed(5),
       );
 
       const usageMetrics = {
         liveDurationSec: liveDuration,
-        finalDiarizationDurationSec: finalDurationSec,
-        modelCallsCount: 3,
+        finalDiarizationDurationSec: 0,
+        modelCallsCount: 1,
         estimatedCostUsd,
       };
 
@@ -290,7 +212,7 @@ class ConversationFinalizationService {
           sessionId,
           endedAt: new Date(),
           duration: Math.round(audioDuration),
-          originalTranscript: diarizationRaw.fullTranscript || liveTranscript,
+          originalTranscript: transcript,
           transcriptSegments: segments,
           speakers,
           selectedSpeakerId: extractionResult.selectedSpeakerId,
@@ -311,9 +233,7 @@ class ConversationFinalizationService {
           processingStatus: "completed",
           aiProvider: "gemini",
           modelMetadata: {
-            liveModel: GEMINI_MODELS.LIVE_TRANSCRIBE,
-            finalModel: GEMINI_MODELS.FINAL_TRANSCRIBE,
-            extractionModel: GEMINI_MODELS.EXTRACTION_SUMMARY,
+            liveModel: GEMINI_MODELS.LIVE_CAPTURE,
           },
           usageMetrics,
         };
@@ -353,11 +273,12 @@ class ConversationFinalizationService {
         status: "completed",
         // Direct top-level accessors for instant field auto-fill on mobile
         name: extractionResult.contact?.name?.value || null,
+        nameEvidence: liveCaptureData?.nameEvidence || "",
         phone: extractionResult.contact?.phone?.value || null,
         companyName: extractionResult.contact?.company?.value || null,
         designation: extractionResult.contact?.designation?.value || null,
         discussionSummary: finalSummaryText,
-        rawTranscript: diarizationRaw.fullTranscript || liveTranscript,
+        rawTranscript: transcript,
       };
 
       // Step 8: Emit Completion to Client Socket
