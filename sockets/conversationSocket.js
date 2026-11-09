@@ -38,8 +38,6 @@ export function registerConversationSocketHandlers(socket) {
       const customVocabulary = [
         ...(Array.isArray(data.customVocabulary) ? data.customVocabulary : []),
         eventName,
-        "Infasta Soft Solutions",
-        "PetsFolio",
         "Ace Web Academy",
       ].filter((term) => typeof term === "string" && term.trim()).map((term) => term.trim()).filter((term, index, terms) =>
         terms.findIndex((candidate) => candidate.toLowerCase() === term.toLowerCase()) === index

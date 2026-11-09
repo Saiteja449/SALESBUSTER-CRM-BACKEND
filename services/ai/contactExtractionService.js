@@ -509,7 +509,7 @@ CRITICAL EXTRACTION RULES:
    - designation: Job title or role of attendee if mentioned. Null if not mentioned.
    - phone: 10-digit Indian mobile number spoken by attendee (starting with 6, 7, 8, or 9). Null if incomplete or missing. Never salesperson's phone.
 5. PHONETIC SPELLING CORRECTION & PROPER NOUN NORMALIZATION:
-   - Speech-to-text engines often transcribe proper nouns phonetically with spelling errors (e.g., "sooresh" -> "Suresh", "info cis" -> "Infosys", "pet folio" -> "PetsFolio", "cogni zant" -> "Cognizant", "tata motors" -> "Tata Motors").
+   - Speech-to-text engines often transcribe proper nouns phonetically with spelling errors (e.g., "sooresh" -> "Suresh", "info cis" -> "Infosys", "cogni zant" -> "Cognizant", "tata motors" -> "Tata Motors").
    - Automatically correct obvious phonetic spelling mistakes in attendee names, companies, and locations using canonical proper noun spellings.
    - Properly capitalize and format company legal suffixes (e.g., "Pvt Ltd", "Technologies", "Solutions", "Enterprises", "LLP", "Limited").
 6. SUMMARY:
