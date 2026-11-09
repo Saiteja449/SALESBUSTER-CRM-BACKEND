@@ -1,5 +1,4 @@
-import { extractSpeakerAwareContact } from "../services/ai/contactExtractionService.js";
-import { generateConversationSummary } from "../services/ai/conversationSummaryService.js";
+import { extractSpeakerAwareContactDeterministically } from "../services/ai/contactExtractionService.js";
 import { extractBusinessCardData } from "../services/ai/cardVisionExtractionService.js";
 import { getMasterModels } from "../services/tenantManager.js";
 import { decryptApiKey } from "../utils/encryption.js";
@@ -50,8 +49,8 @@ export const scanBusinessCard = async (req, res) => {
 };
 
 /**
- * Summarize real-time speech transcript using Intelligent Speaker-Aware AI
- * Powered by Gemini Flash (gemini-3.5-flash) Contact Extraction & Conversation Summary
+ * Return a deterministic transcript parse. Live voice capture is the sole AI model
+ * path; this compatibility endpoint must not start a second post-capture model call.
  * @route POST /api/events/summarize-text
  */
 export const summarizeTranscript = async (req, res) => {
@@ -61,61 +60,27 @@ export const summarizeTranscript = async (req, res) => {
     if (!transcript || typeof transcript !== "string" || !transcript.trim()) {
       return res.status(400).json({
         success: false,
-        message: "Speech transcript text is required for AI summarization.",
+        message: "Speech transcript text is required.",
       });
     }
 
-    const { Organization } = getMasterModels();
-    const orgId = req.user?.organizationId
-      ? req.user.organizationId.toString()
-      : req.organization?._id?.toString();
-
-    const organization = orgId ? await Organization.findById(orgId).lean() : null;
-    const activeKey =
-      decryptApiKey(organization?.aiSettings?.geminiApiKey) ||
-      process.env.GEMINI_API_KEY;
-
     const senderName = req.user?.name || "Sales Manager";
-    const orgName = organization?.name || "Our Team";
+    const orgName = req.organization?.name || req.user?.organizationName || "Our Team";
     const repPhone = (req.user?.phone || "").replace(/\D/g, "").slice(-10);
     const currentEvent = eventName || "our discussion";
 
-    // 1. Speaker-aware contact extraction using Gemini Flash
-    const extractedContact = await extractSpeakerAwareContact({
-      rawTranscript: transcript.trim(),
-      hostName: senderName,
-      hostOrg: orgName,
-      hostPhone: repPhone,
-      geminiApiKey: activeKey,
-    });
-
-    // 2. Structured conversation summary
-    const summaryResult = await generateConversationSummary({
+    const extractedContact = extractSpeakerAwareContactDeterministically({
       segments: [{ speakerId: "attendee", text: transcript.trim() }],
-      contact: extractedContact,
-      organization,
+      rawTranscript: transcript.trim(),
+      hostUser: { name: senderName, phone: repPhone, organizationName: orgName },
+      organization: req.organization || { name: orgName },
     });
 
-    const customerName =
-      extractedContact.customerName ||
-      extractedContact.name ||
-      extractedContact.contact?.name?.value ||
-      "";
-    const cleanPhone =
-      extractedContact.spokenPhone ||
-      extractedContact.phone ||
-      extractedContact.contact?.phone?.value ||
-      "";
-    const companyName =
-      extractedContact.companyName ||
-      extractedContact.company ||
-      extractedContact.contact?.company?.value ||
-      "";
-    const designation =
-      extractedContact.designation ||
-      extractedContact.contact?.designation?.value ||
-      "";
-    const summary = summaryResult.keyDiscussion || transcript.slice(0, 150);
+    const customerName = extractedContact.contact?.name?.value || "";
+    const cleanPhone = extractedContact.contact?.phone?.value || "";
+    const companyName = extractedContact.contact?.company?.value || "";
+    const designation = extractedContact.contact?.designation?.value || "";
+    const summary = extractedContact.summary || transcript.trim().slice(0, 1000);
 
     const greetingName = customerName || "there";
     const defaultMessage =
