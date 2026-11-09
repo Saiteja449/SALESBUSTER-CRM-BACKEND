@@ -9,6 +9,52 @@ import { sessions, connectWhatsApp } from "../whatsapp/whatsappService.js";
 import { getIO } from "../socket/socket.js";
 
 /**
+ * Analyze a recorded prospect conversation and return editable CRM fields.
+ * @route POST /api/whatsapp/manager/live-voice-extract
+ */
+export const extractLiveVoiceDetails = async (req, res) => {
+  const audioFile = req.file;
+  try {
+    if (!audioFile) {
+      return res.status(400).json({ success: false, message: "Audio recording file is required." });
+    }
+
+    const { Organization } = getMasterModels();
+    const orgId = req.user?.organizationId?.toString() || req.organization?._id?.toString();
+    if (!orgId) {
+      return res.status(401).json({ success: false, message: "Organization context required." });
+    }
+
+    const organization = await Organization.findById(orgId).lean();
+    const geminiApiKey = decryptApiKey(organization?.aiSettings?.geminiApiKey) || process.env.GEMINI_API_KEY;
+    const extracted = await extractProspectDetailsFromVoice(audioFile.path, audioFile.mimetype, geminiApiKey);
+
+    return res.status(200).json({
+      success: true,
+      message: "Voice details extracted successfully.",
+      extracted: {
+        customerName: extracted.customerName || "",
+        companyName: extracted.companyName || "",
+        designation: extracted.designation || "",
+        phone: extracted.spokenPhone || req.body?.phone || "",
+        keyTopic: extracted.keyTopic || "",
+      },
+    });
+  } catch (error) {
+    console.error("[ManagerLiveVoice] Voice extraction failed:", error);
+    return res.status(422).json({
+      success: false,
+      extractionFailed: true,
+      message: error.message || "Failed to analyze the recording. Please try again.",
+    });
+  } finally {
+    if (audioFile?.path && fs.existsSync(audioFile.path)) {
+      try { fs.unlinkSync(audioFile.path); } catch (error) { /* temporary upload cleanup is best effort */ }
+    }
+  }
+};
+
+/**
  * Capture customer details from live voice recording and send automated WhatsApp template
  * @route POST /api/whatsapp/manager/live-voice-send
  */
