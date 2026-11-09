@@ -48,6 +48,10 @@ export class LiveTranscriptionSession {
     this.eventId = eventId;
     this.eventName = eventName;
     this.latestContact = {};
+    this.intentionalClose = false;
+    this.connectionGeneration = 0;
+    this.reconnectTimer = null;
+    this.reconnectAttempts = 0;
   }
 
   /**
@@ -56,6 +60,8 @@ export class LiveTranscriptionSession {
   async start() {
     if (this.isActive || this.isConnecting) return;
     this.isConnecting = true;
+    this.intentionalClose = false;
+    const generation = ++this.connectionGeneration;
 
     try {
       const apiKey = getGeminiApiKey(this.organization);
@@ -73,9 +79,11 @@ export class LiveTranscriptionSession {
       this.ai = createGeminiClient(this.organization);
 
       const config = {
-        responseModalities: ["TEXT"],
+        // Gemini 3.8 Live is a native audio agent model; TEXT-only response mode
+        // belongs to the dedicated transcription models and can close this session.
+        responseModalities: ["AUDIO"],
         systemInstruction: {
-          parts: [{ text: `You are a precise, silent event conversation capture assistant for ${this.organization?.name || "the host organization"}. Listen continuously. Transcribe every speaker accurately in their original language. As attendee details become clear, call update_contact_draft with only explicitly supported fields. For name, only populate a clearly identified person's name after explicit self-introduction or direct identification, and provide the exact short nameEvidence phrase from the attendee. Do not infer a name from a company, job title, discussion, or context. Keep attendee name and company distinct, and never capture the host representative as attendee. Include a concise factual summary of needs and next steps when supported by the conversation. When name with explicit evidence, valid 10 digit phone and company are all explicit, call trigger_contact_review. Never guess missing details.` }],
+          parts: [{ text: `You are a precise, silent event conversation capture assistant for ${this.organization?.name || "the host organization"}. Listen continuously. Do not speak back; only transcribe and update structured capture tools. Transcribe every speaker accurately in their original language. As attendee details become clear, call update_contact_draft with only explicitly supported fields. For name, only populate a clearly identified person's name after explicit self-introduction or direct identification, and provide the exact short nameEvidence phrase from the attendee. Do not infer a name from a company, job title, discussion, or context. Keep attendee name and company distinct, and never capture the host representative as attendee. Include a concise factual summary of needs and next steps when supported by the conversation. When name with explicit evidence, valid 10 digit phone and company are all explicit, call trigger_contact_review. Never guess missing details.` }],
         },
         tools: [{ functionDeclarations: [EVENT_INTERIM_TOOL_DECLARATION, EVENT_CAPTURE_TOOL_DECLARATION] }],
         inputAudioTranscription: {
@@ -91,6 +99,7 @@ export class LiveTranscriptionSession {
         config,
         callbacks: {
           onopen: () => {
+            if (generation !== this.connectionGeneration) return;
             console.log(
               `[LiveTranscription] Connected to ${this.liveModel} for session ${this.sessionId}`,
             );
@@ -99,27 +108,38 @@ export class LiveTranscriptionSession {
             this.handleServerMessage(serverMsg);
           },
           onerror: (err) => {
+            if (generation !== this.connectionGeneration) return;
             console.error(
               `[LiveTranscription] Error in session ${this.sessionId}:`,
               err?.message || err,
             );
-            if (typeof this.onError === "function") this.onError(err);
-            this.emitSocket("conversation:error", {
-              sessionId: this.sessionId,
-              message: err?.message || "Live transcription error",
-            });
+            this.scheduleReconnect(err);
           },
           onclose: (closeEvt) => {
+            if (generation !== this.connectionGeneration) return;
             console.log(
-              `[LiveTranscription] Session closed for ${this.sessionId}`,
+              `[LiveTranscription] Session closed for ${this.sessionId} (code=${closeEvt?.code ?? "unknown"}, reason=${closeEvt?.reason || "none"})`,
             );
             this.isActive = false;
+            this.isConnecting = false;
+            this.liveSession = null;
+            if (!this.intentionalClose) this.scheduleReconnect(closeEvt);
           },
         },
       });
 
+      if (generation !== this.connectionGeneration || this.intentionalClose) {
+        try { this.liveSession?.close(); } catch {}
+        return;
+      }
+
       this.isActive = true;
       this.isConnecting = false;
+      const wasReconnecting = this.reconnectAttempts > 0;
+      this.reconnectAttempts = 0;
+      if (wasReconnecting) {
+        this.emitSocket("conversation:connection_state", { sessionId: this.sessionId, state: "connected" });
+      }
 
       // Flush buffered chunks
       if (this.pendingChunksQueue.length > 0) {
@@ -145,12 +165,13 @@ export class LiveTranscriptionSession {
         `[LiveTranscription] Failed to start live session for ${this.sessionId}:`,
         err,
       );
+      if (this.connectionGeneration > 1 && !this.intentionalClose) this.scheduleReconnect(err);
       throw err;
     }
   }
 
   /**
-   * Handles incoming WebSocket messages from Gemini Transcribe Live.
+   * Handles incoming WebSocket messages from Gemini Live.
    * @param {Object} serverMsg
    */
   async handleServerMessage(serverMsg) {
@@ -182,7 +203,7 @@ export class LiveTranscriptionSession {
         } catch (err) { result = JSON.stringify({ ok: false, message: err.message }); }
         return { id: call.id, name: call.name, response: { output: result } };
       }));
-      try { this.liveSession?.sendToolResponse({ functionResponses }); } catch (err) { console.warn(`[LiveTranscription] Tool response failed: ${err.message}`); }
+      try { this.liveSession?.sendToolResponse({ functionResponses }); } catch (err) { console.warn(`[LiveTranscription] Tool response failed: ${err.message}`); this.scheduleReconnect(err); }
     }
     if (!content) return;
 
@@ -268,7 +289,37 @@ export class LiveTranscriptionSession {
         `[LiveTranscription] Error streaming chunk for ${this.sessionId}:`,
         err.message,
       );
+      this.scheduleReconnect(err);
     }
+  }
+
+  scheduleReconnect(reason = null) {
+    if (this.intentionalClose || this.reconnectTimer) return;
+    this.isActive = false;
+    this.isConnecting = false;
+    const staleSession = this.liveSession;
+    this.liveSession = null;
+    this.connectionGeneration += 1;
+    try { staleSession?.close(); } catch {}
+    this.reconnectAttempts += 1;
+    const delayMs = Math.min(30000, 1000 * (2 ** Math.min(this.reconnectAttempts - 1, 5)));
+    this.emitSocket("conversation:connection_state", {
+      sessionId: this.sessionId,
+      state: "reconnecting",
+      attempt: this.reconnectAttempts,
+      retryInMs: delayMs,
+      message: reason?.message || reason?.reason || undefined,
+    });
+    console.warn(`[LiveTranscription] Reconnecting session ${this.sessionId} in ${delayMs}ms (attempt ${this.reconnectAttempts})`);
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      if (this.intentionalClose) return;
+      try {
+        await this.start();
+      } catch (err) {
+        this.scheduleReconnect(err);
+      }
+    }, delayMs);
   }
 
   /**
@@ -322,6 +373,12 @@ export class LiveTranscriptionSession {
    * Closes the live transcription session gracefully.
    */
   close() {
+    this.intentionalClose = true;
+    this.connectionGeneration += 1;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.isActive = false;
     this.isConnecting = false;
     if (this.rotationTimer) {
