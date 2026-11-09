@@ -92,7 +92,7 @@ function isExplicitPersonName(name, evidence, repName = "") {
   if (tokens.length > 4 || tokens.some((token) => !/^\p{L}[\p{L}'’-]{0,24}\.?$/u.test(token))) return false;
   if (tokens.some((token) => NON_PERSON_NAME_TERMS.has(token.toLowerCase().replace(/\.$/, "")))) return false;
   if (!phrase.toLowerCase().includes(candidate.toLowerCase())) return false;
-  if (!/(?:my name is|myself|name is|i am|i'm|this is|call me|mera naam|naam hai|naa peru|na peru|nenu)\b/i.test(phrase)) return false;
+  if (!/(?:my name is|myself|name is|i am|i'm|this is|call me|mera naam|naam hai|naa peru|na peru|nenu|main|hum)\b/i.test(phrase)) return false;
   const rep = String(repName || "").trim().toLowerCase();
   return !rep || candidate.toLowerCase() !== rep;
 }
