@@ -101,7 +101,7 @@ Identify and extract:
    - Convert spoken number words into a continuous numeric digit string (e.g. "9876543210").
    - If country code (+91 or 91) is mentioned, include it or return the 10 digits.
    - If no valid phone number was spoken, return null.
-5. keyTopic: A short 3-6 word summary of the service or product discussed.
+5. keyTopic: A useful discussion summary containing important information OTHER THAN the extracted name, company, designation, or phone. Capture the prospect's needs, requirements, interests, pain points, product details, budget or timing if mentioned, decisions, and agreed follow-up or next steps. Write 1-3 concise sentences grounded only in the recording. Do not repeat the identity fields. Return an empty string if the conversation contains no useful extra details.
 
 CRITICAL FORMAT REQUIREMENT:
 Respond ONLY with a valid, raw JSON object and nothing else. Do NOT include markdown code blocks, backticks, or explanatory text.
@@ -110,7 +110,7 @@ Example format:
   "customerName": "Rahul Sharma",
   "companyName": "Apex Technologies",
   "spokenPhone": "9876543210",
-  "keyTopic": "CRM automation & WhatsApp marketing"
+  "keyTopic": "The prospect needs CRM automation for a five-person sales team. They asked for a product demo next week and will confirm their budget after reviewing the proposal."
 }
 `;
 
@@ -174,7 +174,7 @@ Example format:
       companyName: companyName || "",
       designation: designation || "",
       spokenPhone: cleanSpokenPhone,
-      keyTopic: (parsed.keyTopic || "our discussion").trim(),
+      keyTopic: (parsed.keyTopic || "").trim(),
     };
   } catch (err) {
     console.error(`[VoiceExtraction][${requestId}] Gemini audio analysis failed`, { error: err.message });

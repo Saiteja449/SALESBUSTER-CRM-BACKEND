@@ -19,7 +19,19 @@ import { protect } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 const voiceUploadDir = path.resolve(process.cwd(), "uploads", "voice");
+const eventAttachmentDir = path.resolve(process.cwd(), "uploads", "events");
 fs.mkdirSync(voiceUploadDir, { recursive: true });
+fs.mkdirSync(eventAttachmentDir, { recursive: true });
+const eventAttachmentUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, eventAttachmentDir),
+    filename: (_req, file, cb) => {
+      const safeName = path.basename(file.originalname || "attachment").replace(/[^a-zA-Z0-9._-]/g, "_");
+      cb(null, `event-${Date.now()}-${Math.round(Math.random() * 1e9)}-${safeName}`);
+    },
+  }),
+  limits: { fileSize: 20 * 1024 * 1024, files: 10 },
+});
 const voiceUpload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, voiceUploadDir),
@@ -38,7 +50,7 @@ router.post("/scan-card", scanBusinessCard);
 
 // 2. Event Management
 router.get("/", getEvents);
-router.post("/", createEvent);
+router.post("/", eventAttachmentUpload.array("attachments", 10), createEvent);
 router.get("/:id", getEventById);
 router.put("/:id", updateEvent);
 router.delete("/:id", deleteEvent);
