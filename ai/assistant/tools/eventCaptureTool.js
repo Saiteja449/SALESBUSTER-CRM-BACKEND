@@ -102,7 +102,7 @@ const COMPANY_INDICATOR_REGEX = /\b(?:pvt|ltd|limited|private|llp|inc|incorporat
 
 const KNOWN_COMPANY_BRANDS = new Set([
   'infosys', 'tcs', 'wipro', 'cognizant', 'accenture', 'hcl', 'reliance', 'tata',
-  'petsfolio', 'bajaj', 'mahindra', 'godrej', 'adani', 'airtel', 'jio', 'hdfc',
+  'bajaj', 'mahindra', 'godrej', 'adani', 'airtel', 'jio', 'hdfc',
   'icici', 'sbi', 'google', 'microsoft', 'amazon', 'apple', 'meta', 'netflix',
   'uber', 'ola', 'zomato', 'swiggy', 'paytm', 'flipkart', 'deloitte', 'ey',
   'kpmg', 'pwc', 'capgemini', 'oracle', 'sap', 'cisco', 'intel', 'ibm', 'samsung',
