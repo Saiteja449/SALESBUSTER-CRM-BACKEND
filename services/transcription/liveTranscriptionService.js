@@ -5,6 +5,12 @@ import {
   createEventCaptureTool,
   createEventInterimTool,
 } from "../../ai/assistant/tools/eventCaptureTool.js";
+import {
+  extractNameFromText,
+  extractPhoneFromText,
+  extractCompanyFromText,
+  extractDesignationFromText,
+} from "../../services/ai/contactExtractionService.js";
 
 /**
  * LiveTranscriptionSession uses Gemini Live for transcription and contact detailing.
@@ -52,6 +58,7 @@ export class LiveTranscriptionSession {
     this.connectionGeneration = 0;
     this.reconnectTimer = null;
     this.reconnectAttempts = 0;
+    this.messageQueue = Promise.resolve();
   }
 
   /**
@@ -105,7 +112,11 @@ export class LiveTranscriptionSession {
             );
           },
           onmessage: async (serverMsg) => {
-            this.handleServerMessage(serverMsg);
+            this.messageQueue = this.messageQueue
+              .then(() => this.handleServerMessage(serverMsg))
+              .catch((err) => {
+                console.error(`[LiveTranscription] Message processing failed for ${this.sessionId}:`, err?.message || err);
+              });
           },
           onerror: (err) => {
             if (generation !== this.connectionGeneration) return;
@@ -205,11 +216,11 @@ export class LiveTranscriptionSession {
       }));
       try { this.liveSession?.sendToolResponse({ functionResponses }); } catch (err) { console.warn(`[LiveTranscription] Tool response failed: ${err.message}`); this.scheduleReconnect(err); }
     }
-    if (!content) return;
+    if (!content && !serverMsg.inputTranscription && !serverMsg.interimInputTranscription) return;
 
     const rawInterim =
-      content.interimInputTranscription || serverMsg.interimInputTranscription;
-    const rawFinal = content.inputTranscription || serverMsg.inputTranscription;
+      content?.interimInputTranscription || serverMsg.interimInputTranscription;
+    const rawFinal = content?.inputTranscription || serverMsg.inputTranscription;
 
     const interimText =
       typeof rawInterim?.text === "string" ? rawInterim.text : null;
@@ -231,6 +242,8 @@ export class LiveTranscriptionSession {
       }
 
       this.emitSocket("conversation:transcript_interim", payload);
+      const combinedInterim = [this.accumulatedLiveTranscript, interimText].filter(Boolean).join(" ");
+      await this.captureStructuredFieldsFromTranscript(combinedInterim);
     }
 
     // 2. Final Committed User Speech Segment
@@ -256,6 +269,52 @@ export class LiveTranscriptionSession {
       }
 
       this.emitSocket("conversation:transcript_final", payload);
+      await this.captureStructuredFieldsFromTranscript();
+    }
+  }
+
+  /**
+   * Deterministic backup for live function calling. Gemini transcription and
+   * function-call messages can arrive independently; parse every committed
+   * transcript so clear details still populate if the model skips a tool call.
+   */
+  async captureStructuredFieldsFromTranscript(transcriptText = this.accumulatedLiveTranscript) {
+    const transcript = String(transcriptText || "").trim();
+    if (!transcript) return;
+
+    try {
+      const hostName = this.user?.name || "";
+      const hostPhone = this.user?.phone || "";
+      const hostOrg = this.organization?.name || this.user?.organizationName || "";
+      const name = extractNameFromText(transcript, hostName);
+      const phone = extractPhoneFromText(transcript, hostPhone);
+      const company = extractCompanyFromText(transcript, hostOrg);
+      const designation = extractDesignationFromText(transcript);
+      const candidate = {
+        name: name?.value || "",
+        nameEvidence: name?.evidence || "",
+        phone: phone?.value || "",
+        companyName: company?.value || "",
+        designation: designation?.value || "",
+      };
+
+      const changed = Object.entries(candidate).some(([key, value]) =>
+        value && String(value).toLowerCase() !== String(this.latestContact?.[key] || "").toLowerCase(),
+      );
+      if (!changed) return;
+
+      const tool = createEventInterimTool({
+        socket: this.socket,
+        eventId: this.eventId,
+        eventName: this.eventName,
+        user: this.user,
+        organization: this.organization,
+      });
+      const result = await tool.invoke(candidate);
+      const parsed = JSON.parse(result);
+      if (parsed.payload) this.latestContact = { ...this.latestContact, ...parsed.payload };
+    } catch (err) {
+      console.warn(`[LiveTranscription] Deterministic field extraction failed for ${this.sessionId}: ${err.message}`);
     }
   }
 
