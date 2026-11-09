@@ -39,5 +39,6 @@ export const createGeminiClient = (organization = null) => {
 export const GEMINI_MODELS = {
   LIVE_CAPTURE: "gemini-3.8-live",
   LIVE_TRANSCRIBE: "gemini-3.8-live",
+  LIVE_EVENT_CAPTURE: "gemini-3.8-live-extended-thinking",
 };
 
