@@ -62,11 +62,7 @@ export const extractProspectDetailsFromVoice = async (
   const genAI = new GoogleGenerativeAI(activeKey);
   const fileManager = new GoogleAIFileManager(activeKey);
   const resolvedMime = resolveAudioMimeType(filePath, mimeType);
-  const modelNames = [
-    "gemini-3.1-flash",
-    "gemini-3.5-flash",
-    "gemini-3.8-flash",
-  ];
+  const modelName = "gemini-3.5-flash-lite";
   const uploadStartedAt = Date.now();
   console.info(`[VoiceExtraction][${requestId}] Uploading audio to Gemini`, { mimeType: resolvedMime });
 
@@ -87,6 +83,8 @@ export const extractProspectDetailsFromVoice = async (
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
     const generationStartedAt = Date.now();
+    console.info(`[VoiceExtraction][${requestId}] Generating structured fields`, { model: modelName });
+
     const prompt = `
 You are the SalesBuster AI conversation intelligence engine.
 Analyze the attached live recorded voice conversation between a Sales Manager and a prospective customer.
@@ -103,7 +101,7 @@ Identify and extract:
    - Convert spoken number words into a continuous numeric digit string (e.g. "9876543210").
    - If country code (+91 or 91) is mentioned, include it or return the 10 digits.
    - If no valid phone number was spoken, return null.
-5. keyTopic: A useful discussion summary containing important information OTHER THAN the extracted name, company, designation, or phone. Capture the prospect's needs, requirements, interests, pain points, product details, budget or timing if mentioned, decisions, and agreed follow-up or next steps. Write 1-3 concise sentences grounded only in the recording. Do not repeat the identity fields. Return an empty string if the conversation contains no useful extra details.
+5. keyTopic: A short 3-6 word summary of the service or product discussed.
 
 CRITICAL FORMAT REQUIREMENT:
 Respond ONLY with a valid, raw JSON object and nothing else. Do NOT include markdown code blocks, backticks, or explanatory text.
@@ -112,45 +110,23 @@ Example format:
   "customerName": "Rahul Sharma",
   "companyName": "Apex Technologies",
   "spokenPhone": "9876543210",
-  "keyTopic": "The prospect needs CRM automation for a five-person sales team. They asked for a product demo next week and will confirm their budget after reviewing the proposal."
+  "keyTopic": "CRM automation & WhatsApp marketing"
 }
 `;
 
-    let result = null;
-    let modelName = null;
-    let lastModelError = null;
-
-    for (const candidate of modelNames) {
-      try {
-        console.info(`[VoiceExtraction][${requestId}] Generating structured fields`, { model: candidate });
-        const model = genAI.getGenerativeModel({ model: candidate });
-        result = await model.generateContent([
-          prompt,
-          {
-            fileData: {
-              fileUri: uploadResponse.file.uri,
-              mimeType: uploadResponse.file.mimeType,
-            },
-          },
-        ]);
-        modelName = candidate;
-        break;
-      } catch (modelErr) {
-        lastModelError = modelErr;
-        console.warn(`[VoiceExtraction][${requestId}] Gemini model failed; trying next fallback`, {
-          model: candidate,
-          error: modelErr.message,
-        });
-      }
-    }
-
-    if (!result) {
-      throw lastModelError || new Error("All configured Gemini models failed.");
-    }
+    const model = genAI.getGenerativeModel({ model: modelName });
+    const result = await model.generateContent([
+      prompt,
+      {
+        fileData: {
+          fileUri: uploadResponse.file.uri,
+          mimeType: uploadResponse.file.mimeType,
+        },
+      },
+    ]);
 
     const responseText = result.response.text().trim();
     console.info(`[VoiceExtraction][${requestId}] Gemini response received`, {
-      model: modelName,
       durationMs: Date.now() - generationStartedAt,
       responseLength: responseText.length,
     });
@@ -198,7 +174,7 @@ Example format:
       companyName: companyName || "",
       designation: designation || "",
       spokenPhone: cleanSpokenPhone,
-      keyTopic: (parsed.keyTopic || "").trim(),
+      keyTopic: (parsed.keyTopic || "our discussion").trim(),
     };
   } catch (err) {
     console.error(`[VoiceExtraction][${requestId}] Gemini audio analysis failed`, { error: err.message });

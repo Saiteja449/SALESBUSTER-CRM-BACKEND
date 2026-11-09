@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { getTenantModels, getMasterModels } from "../services/tenantManager.js";
 import { GeminiLiveSessionManager } from "../ai/assistant/geminiLiveGateway.js";
 import { checkAiQuotaAvailable, recordAiUsage } from "../services/aiUsageService.js";
+import { registerConversationSocketHandlers } from "../sockets/conversationSocket.js";
 
 let io;
 
@@ -199,6 +200,11 @@ export const initSocket = (server) => {
           // console.log(`Socket ${socket.id} left organization room: ${roomName}`);
         }
       });
+
+      // =========================================================================
+      // INTELLIGENT REAL-TIME CONVERSATION CAPTURE SYSTEM (3-MODEL PIPELINE)
+      // =========================================================================
+      registerConversationSocketHandlers(socket);
 
       // =========================================================================
       // BI ANALYST - GEMINI MULTIMODAL LIVE REAL-TIME VOICE CHAT
