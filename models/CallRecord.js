@@ -4,8 +4,6 @@ const callRecordSchema = new mongoose.Schema(
   {
     callEventId: {
       type: String,
-      index: true,
-      sparse: true,
     },
     organizationId: {
       type: mongoose.Schema.Types.ObjectId,

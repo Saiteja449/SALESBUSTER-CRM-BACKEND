@@ -47,6 +47,18 @@ export async function generateConversationSummary({
     };
   }
 
+  // A missing legacy summary model must never be sent to the GenAI SDK.
+  // Live conversation capture already records the live summary as it is spoken.
+  if (!GEMINI_MODELS.EXTRACTION_SUMMARY) {
+    return {
+      keyDiscussion: formattedTranscript.trim().slice(0, 1000),
+      topics: [],
+      actionItems: [],
+      decisions: [],
+      participants: [],
+    };
+  }
+
   const prompt = `You are a Senior Business Conversation Analyst.
 Analyze the following complete conversation transcript.
 ${isInterim ? "Provide a concise interim summary of the discussion in progress." : "Provide a comprehensive, factual final summary covering the WHOLE face-to-face conversation from start to finish."}

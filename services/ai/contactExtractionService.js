@@ -587,6 +587,10 @@ export async function extractSpeakerAwareContact({
     return baseline;
   }
 
+  // Conversation detail capture now uses the Gemini Live session directly.
+  // Never pass an absent/retired fallback model name into the GenAI SDK.
+  if (!GEMINI_MODELS.EXTRACTION_SUMMARY) return baseline;
+
   // Format segments text for LLM
   let segmentsText = "";
   if (Array.isArray(segments) && segments.length > 0) {
@@ -715,6 +719,11 @@ export async function extractSpeakerAwareContact({
   }
 
   return baseline;
+}
+
+/** Returns the deterministic capture baseline without invoking another model. */
+export function extractSpeakerAwareContactDeterministically(options = {}) {
+  return analyzeConversationSpeakers(options);
 }
 
 export default {
