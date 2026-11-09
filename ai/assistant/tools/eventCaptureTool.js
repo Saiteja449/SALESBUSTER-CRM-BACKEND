@@ -75,6 +75,34 @@ export const EVENT_CAPTURE_TOOL_DECLARATION = {
   },
 };
 
+const COMPANY_INDICATOR_REGEX = /\b(?:pvt|ltd|limited|private|llp|inc|incorporated|corp|corporation|technologies|technology|tech|solutions|enterprises|enterprise|industries|industry|services|service|consulting|consultancy|group|agency|logistics|infotech|software|holdings|motors|textiles|pharmaceuticals|pharma|labs|systems|traders|trading|ventures|digital|retail|infra|power|energy|steel)\b/i;
+
+const KNOWN_COMPANY_BRANDS = new Set([
+  'infosys', 'tcs', 'wipro', 'cognizant', 'accenture', 'hcl', 'reliance', 'tata',
+  'petsfolio', 'bajaj', 'mahindra', 'godrej', 'adani', 'airtel', 'jio', 'hdfc',
+  'icici', 'sbi', 'google', 'microsoft', 'amazon', 'apple', 'meta', 'netflix',
+  'uber', 'ola', 'zomato', 'swiggy', 'paytm', 'flipkart', 'deloitte', 'ey',
+  'kpmg', 'pwc', 'capgemini', 'oracle', 'sap', 'cisco', 'intel', 'ibm', 'samsung',
+  'sony', 'lg', 'hyundai', 'maruti', 'suzuki', 'toyota', 'honda', 'hero', 'itc',
+  'l&t', 'larsen', 'toubro', 'apex', 'vertex', 'zenith', 'acme', 'birla', 'vedanta',
+  'apollo', 'fortis', 'bosch', 'siemens', 'dell', 'hp', 'lenovo', 'asus', 'salesforce',
+  'zoho', 'freshworks', 'zepto', 'blinkit', 'phonepe', 'cred', 'razorpay', 'zerodha'
+]);
+
+function isLikelyCompany(str = '') {
+  if (!str || typeof str !== 'string') return false;
+  const clean = str.trim().toLowerCase();
+  if (clean.length < 2) return false;
+  if (KNOWN_COMPANY_BRANDS.has(clean)) return true;
+  if (COMPANY_INDICATOR_REGEX.test(clean)) return true;
+  const tokens = clean.split(/[\s&,-]+/).filter(Boolean);
+  for (const t of tokens) {
+    if (KNOWN_COMPANY_BRANDS.has(t)) return true;
+    if (COMPANY_INDICATOR_REGEX.test(t)) return true;
+  }
+  return false;
+}
+
 export const createEventInterimTool = ({ socket, eventId, eventName, user, organization }) => {
   const handler = async (args = {}) => {
     const repName = user?.name || "Sales Manager";
@@ -101,6 +129,23 @@ export const createEventInterimTool = ({ socket, eventId, eventName, user, organ
     let companyName = (typeof args.companyName === 'string' ? args.companyName : (args.companyName ? String(args.companyName) : "")).trim();
     const designation = (typeof args.designation === 'string' ? args.designation : (args.designation ? String(args.designation) : "")).trim();
     const summary = (typeof args.summary === 'string' ? args.summary : (args.summary ? String(args.summary) : "")).trim();
+
+    // Cross-field company name leakage check
+    if (rawName) {
+      const rawLower = rawName.toLowerCase();
+      if (companyName) {
+        const compLower = companyName.toLowerCase();
+        if (rawLower === compLower || compLower.includes(rawLower) || rawLower.includes(compLower)) {
+          rawName = "";
+        }
+      }
+      if (rawName && isLikelyCompany(rawName)) {
+        if (!companyName) {
+          companyName = rawName;
+        }
+        rawName = "";
+      }
+    }
 
     // Anti-self capture filters
     const repNameLower = repName.toLowerCase();
@@ -170,10 +215,29 @@ export const createEventCaptureTool = ({ socket, eventId, eventName, user, organ
       }
     }
 
-    const rawName = (typeof args.name === 'string' ? args.name : (args.name ? String(args.name) : "")).trim();
-    const companyName = (typeof args.companyName === 'string' ? args.companyName : (args.companyName ? String(args.companyName) : "")).trim();
+    let rawName = (typeof args.name === 'string' ? args.name : (args.name ? String(args.name) : "")).trim();
+    let companyName = (typeof args.companyName === 'string' ? args.companyName : (args.companyName ? String(args.companyName) : "")).trim();
     const designation = (typeof args.designation === 'string' ? args.designation : (args.designation ? String(args.designation) : "")).trim();
     const summary = (typeof args.summary === 'string' ? args.summary : (args.summary ? String(args.summary) : "")).trim();
+
+    // STRICT DEFENSE: Cross-field company name leakage check
+    if (rawName) {
+      const rawLower = rawName.toLowerCase();
+      if (companyName) {
+        const compLower = companyName.toLowerCase();
+        if (rawLower === compLower || compLower.includes(rawLower) || rawLower.includes(compLower)) {
+          console.log(`[EventCaptureTool] Withholding popup trigger - rawName "${rawName}" matches companyName "${companyName}"`);
+          rawName = "";
+        }
+      }
+      if (rawName && isLikelyCompany(rawName)) {
+        console.log(`[EventCaptureTool] Withholding popup trigger - rawName "${rawName}" is a company entity`);
+        if (!companyName) {
+          companyName = rawName;
+        }
+        rawName = "";
+      }
+    }
 
     // STRICT VALIDATION 1: Require full name, complete 10-digit phone, and company before triggering complete review
     if (!rawName || rawName.length < 2 || !cleanPhone || cleanPhone.length !== 10 || !companyName || companyName.length < 2) {
