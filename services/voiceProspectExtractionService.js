@@ -62,7 +62,11 @@ export const extractProspectDetailsFromVoice = async (
   const genAI = new GoogleGenerativeAI(activeKey);
   const fileManager = new GoogleAIFileManager(activeKey);
   const resolvedMime = resolveAudioMimeType(filePath, mimeType);
-  const modelName = "gemini-3.5-flash-lite";
+  const modelNames = [
+    "gemini-3.1-flash",
+    "gemini-3.5-flash",
+    "gemini-3.8-flash",
+  ];
   const uploadStartedAt = Date.now();
   console.info(`[VoiceExtraction][${requestId}] Uploading audio to Gemini`, { mimeType: resolvedMime });
 
@@ -83,8 +87,6 @@ export const extractProspectDetailsFromVoice = async (
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
     const generationStartedAt = Date.now();
-    console.info(`[VoiceExtraction][${requestId}] Generating structured fields`, { model: modelName });
-
     const prompt = `
 You are the SalesBuster AI conversation intelligence engine.
 Analyze the attached live recorded voice conversation between a Sales Manager and a prospective customer.
@@ -114,19 +116,41 @@ Example format:
 }
 `;
 
-    const model = genAI.getGenerativeModel({ model: modelName });
-    const result = await model.generateContent([
-      prompt,
-      {
-        fileData: {
-          fileUri: uploadResponse.file.uri,
-          mimeType: uploadResponse.file.mimeType,
-        },
-      },
-    ]);
+    let result = null;
+    let modelName = null;
+    let lastModelError = null;
+
+    for (const candidate of modelNames) {
+      try {
+        console.info(`[VoiceExtraction][${requestId}] Generating structured fields`, { model: candidate });
+        const model = genAI.getGenerativeModel({ model: candidate });
+        result = await model.generateContent([
+          prompt,
+          {
+            fileData: {
+              fileUri: uploadResponse.file.uri,
+              mimeType: uploadResponse.file.mimeType,
+            },
+          },
+        ]);
+        modelName = candidate;
+        break;
+      } catch (modelErr) {
+        lastModelError = modelErr;
+        console.warn(`[VoiceExtraction][${requestId}] Gemini model failed; trying next fallback`, {
+          model: candidate,
+          error: modelErr.message,
+        });
+      }
+    }
+
+    if (!result) {
+      throw lastModelError || new Error("All configured Gemini models failed.");
+    }
 
     const responseText = result.response.text().trim();
     console.info(`[VoiceExtraction][${requestId}] Gemini response received`, {
+      model: modelName,
       durationMs: Date.now() - generationStartedAt,
       responseLength: responseText.length,
     });
