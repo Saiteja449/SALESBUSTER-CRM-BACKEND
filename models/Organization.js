@@ -517,7 +517,6 @@ const organizationSchema = new mongoose.Schema(
       type: workflowSettingsSubSchema,
       default: () => ({}),
     },
-    },
   },
   {
     timestamps: true,
