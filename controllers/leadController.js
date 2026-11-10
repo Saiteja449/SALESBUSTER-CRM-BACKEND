@@ -251,8 +251,25 @@ export const getLeads = async (req, res) => {
       }
       query.assignedTo = { $in: matchArray };
     }
-    const leads = await LeadModel.find(query);
-    res.json({ success: true, data: leads });
+    const page = Math.max(0, Number.parseInt(req.query.page, 10) || 0);
+    const requestedLimit = Number.parseInt(req.query.limit, 10) || 50;
+    const limit = Math.min(100, Math.max(1, requestedLimit));
+    const [leads, total] = await Promise.all([
+      LeadModel.find(query)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(page * limit)
+        .limit(limit)
+        .lean(),
+      LeadModel.countDocuments(query),
+    ]);
+    res.json({
+      success: true,
+      data: leads.map((lead) => ({ ...lead, id: String(lead._id) })),
+      total,
+      page,
+      limit,
+      hasMore: (page + 1) * limit < total,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -274,9 +291,13 @@ export const getPaginatedLeads = async (req, res) => {
 
     const { LeadModel, UserModel } = getModels(req);
 
-    const pageNum = parseInt(page) || 0;
-    const isAll = limit === "All" || limit === "all";
-    const limitNum = isAll ? 0 : parseInt(limit) || 10;
+    const parsedPage = Number.parseInt(page, 10);
+    const pageNum = Number.isFinite(parsedPage) ? Math.max(0, parsedPage) : 0;
+    const parsedLimit = Number.parseInt(limit, 10);
+    // Legacy clients may still send "All". Keep the request bounded regardless.
+    const limitNum = limit === "All" || limit === "all"
+      ? 100
+      : Math.min(100, Math.max(1, Number.isFinite(parsedLimit) ? parsedLimit : 10));
 
     let query = {};
 
@@ -405,13 +426,6 @@ export const getPaginatedLeads = async (req, res) => {
 
     applyTabFilter(query, leadTypeTab);
 
-    const totalCount = await LeadModel.countDocuments(query);
-    let leadsQuery = LeadModel.find(query).sort({ createdAt: -1 });
-    if (!isAll) {
-      leadsQuery = leadsQuery.skip(pageNum * limitNum).limit(limitNum);
-    }
-    const leads = await leadsQuery;
-
     const baseCountQuery = {};
     if (assigneeMatchConditions) {
       baseCountQuery.assignedTo = assigneeMatchConditions;
@@ -449,10 +463,20 @@ export const getPaginatedLeads = async (req, res) => {
     if (service !== "All") baseCountQuery.service = service;
     if (status !== "All") baseCountQuery.status = status;
 
-    const facetCounts = await LeadModel.aggregate([
+    const [leadResults = {}] = await LeadModel.aggregate([
       { $match: baseCountQuery },
       {
         $facet: {
+          page: [
+            { $match: query },
+            { $sort: { createdAt: -1, _id: -1 } },
+            { $skip: pageNum * limitNum },
+            { $limit: limitNum },
+          ],
+          total: [
+            { $match: query },
+            { $count: "count" },
+          ],
           OldLeads: [
             {
               $match: {
@@ -534,22 +558,25 @@ export const getPaginatedLeads = async (req, res) => {
       },
     ]);
 
+    const leads = (leadResults.page || []).map((lead) => ({ ...lead, id: String(lead._id) }));
+    const totalCount = leadResults.total?.[0]?.count || 0;
+
     const counts = {
-      OldLeads: facetCounts[0]?.OldLeads?.[0]?.count || 0,
-      New: facetCounts[0]?.New?.[0]?.count || 0,
-      TodayFollowup: facetCounts[0]?.TodayFollowup?.[0]?.count || 0,
-      UpcomingFollowup: facetCounts[0]?.UpcomingFollowup?.[0]?.count || 0,
-      Converted: facetCounts[0]?.Converted?.[0]?.count || 0,
-      NotAttended: facetCounts[0]?.NotAttended?.[0]?.count || 0,
-      Lost: facetCounts[0]?.Lost?.[0]?.count || 0,
-      MissedCalls: facetCounts[0]?.MissedCalls?.[0]?.count || 0,
+      OldLeads: leadResults.OldLeads?.[0]?.count || 0,
+      New: leadResults.New?.[0]?.count || 0,
+      TodayFollowup: leadResults.TodayFollowup?.[0]?.count || 0,
+      UpcomingFollowup: leadResults.UpcomingFollowup?.[0]?.count || 0,
+      Converted: leadResults.Converted?.[0]?.count || 0,
+      NotAttended: leadResults.NotAttended?.[0]?.count || 0,
+      Lost: leadResults.Lost?.[0]?.count || 0,
+      MissedCalls: leadResults.MissedCalls?.[0]?.count || 0,
     };
 
     res.json({
       success: true,
       leads,
       totalCount,
-      totalPages: isAll ? 1 : Math.ceil(totalCount / (limitNum || 10)),
+      totalPages: Math.ceil(totalCount / limitNum),
       currentPage: pageNum,
       tabCounts: counts,
     });

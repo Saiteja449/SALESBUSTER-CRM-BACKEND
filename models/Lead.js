@@ -311,6 +311,13 @@ const leadSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+// Supports the common lead-list filter and newest-first ordering.
+leadSchema.index({ assignedTo: 1, createdAt: -1, _id: -1 });
+leadSchema.index({ createdAt: -1, _id: -1 });
+leadSchema.index({ status: 1 });
+leadSchema.index({ service: 1 });
+leadSchema.index({ source: 1 });
+
 const normalizeLeadPhone = function () {
   if (this.phone) {
     const digits = String(this.phone).replace(/\D/g, "");

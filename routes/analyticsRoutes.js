@@ -3,6 +3,7 @@ import {
   logCall,
   getAnalyticsBySalesperson,
   getTodayAnalyticsForAll,
+  getDashboardSummary,
   getAILimits,
   refreshAILimits,
 } from "../controllers/analyticsController.js";
@@ -15,6 +16,7 @@ router.use(protect);
 router.use(requireCrmAccount);
 
 router.post("/log-call", logCall);
+router.get("/dashboard", getDashboardSummary);
 router.get("/today", getTodayAnalyticsForAll);
 router.get("/ai-limits", getAILimits);
 router.post("/ai-limits/refresh", refreshAILimits);
