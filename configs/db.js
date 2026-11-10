@@ -16,7 +16,19 @@ const connectDB = async () => {
       process.exit(0);
     });
 
-    const dbUri = process.env.NODE_ENV === "production" ? process.env.MONGODB_URI : process.env.MONGODB_URI_BETA;
+    const configuredUri =
+      process.env.MONGODB_URI_BETA ||
+      process.env.MONGODB_URI ||
+      process.env.MONGO_URI;
+
+    if (!configuredUri) {
+      console.warn(
+        "\n⚠️  [MongoDB Warning] No MONGODB_URI or MONGODB_URI_BETA detected in .env file." +
+        "\n   Attempting local fallback to: mongodb://127.0.0.1:27017/salesbuster\n"
+      );
+    }
+
+    const dbUri = configuredUri || "mongodb://127.0.0.1:27017/salesbuster";
     const conn = await mongoose.connect(dbUri);
     console.log(`MongoDB Connected: ${conn.connection.host}`);
   } catch (error) {

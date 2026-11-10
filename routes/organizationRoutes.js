@@ -28,6 +28,8 @@ import {
   uploadServiceImage,
   updateQuotaSplit,
   regenerateWebhookKey,
+  getMyWorkflowSettings,
+  updateMyWorkflowSettings,
 } from "../controllers/organizationController.js";
 import { protect, verifySuperAdmin } from "../middleware/authMiddleware.js";
 
@@ -105,6 +107,10 @@ router.post(
   requireManagerOrOwner,
   regenerateWebhookKey,
 );
+
+// Lead Workflow & Automation Settings
+router.get("/my-org/workflow-settings", protect, getMyWorkflowSettings);
+router.put("/my-org/workflow-settings", protect, requireManagerOrOwner, updateMyWorkflowSettings);
 
 // Tenant AI Settings & Knowledge Base (Tenant Owner / Sales Manager)
 router.get("/my-org/ai-settings", protect, getMyAISettings);

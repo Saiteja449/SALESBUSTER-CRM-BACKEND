@@ -40,6 +40,7 @@ import {
 } from "./whatsapp/whatsappService.js";
 import { resumeInterruptedCampaigns } from "./services/whatsappCampaignWorker.js";
 import { startCampaignScheduler } from "./services/whatsappCampaignScheduler.js";
+import { startLeadWorkflowScheduler } from "./services/leadWorkflowWorker.js";
 
 dotenv.config();
 
@@ -63,15 +64,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Middlewares
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // Allow all origins
-      callback(null, true);
-    },
-    credentials: true,
-  }),
-);
+const corsOptions = {
+  origin: true,
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "x-tenant-db",
+    "x-tenant-id",
+    "x-admin-key",
+    "x-requested-with",
+  ],
+};
+app.use(cors(corsOptions));
+
 app.use(
   express.json({
     limit: "25mb",
@@ -142,4 +149,7 @@ server.listen(PORT, () => {
 
   // Start background scheduler for scheduled & recurring campaigns
   startCampaignScheduler();
+
+  // Start automated Lead Workflow scheduler (SLA breach, reminders, cadences)
+  startLeadWorkflowScheduler();
 });

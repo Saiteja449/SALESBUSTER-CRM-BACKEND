@@ -349,11 +349,24 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
     lead.serviceWindowExpiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     lead.lastActivity = now;
 
-    // 3. Handle Opt-Out Keywords (STOP, UNSUBSCRIBE, OPT OUT)
+    // 3. Handle Opt-Out & Workflow Intent Routing
     const normalizedText = messageText.trim().toLowerCase();
-    if (/^(stop|unsubscribe|opt\s*out|cancel)$/i.test(normalizedText)) {
+    const dndKeywords = org.workflowSettings?.dndKeywords || [
+      "stop",
+      "unsubscribe",
+      "dnd",
+      "cancel",
+      "dont call",
+      "opt out",
+    ];
+    const isDnd = dndKeywords.some((k) => normalizedText.includes(k.toLowerCase()));
+
+    if (isDnd) {
       lead.isOptedOut = true;
       lead.optedOutAt = now;
+      lead.folder = "DND";
+      lead.status = "DND";
+      if (lead.cadence) lead.cadence.type = "None";
       await lead.save();
 
       await WhatsAppOptOut.findOneAndUpdate(
@@ -367,13 +380,14 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
         { upsert: true }
       );
 
-      console.log(`[WhatsAppWebhook] Recorded marketing opt-out for ${cleanPhone}`);
+      console.log(`[WhatsAppWebhook] Recorded marketing opt-out/DND for ${cleanPhone}`);
 
       if (io) {
         io.to(`org_${org._id}`).emit("lead_opted_out", {
           leadId: lead._id,
           phone: cleanPhone,
         });
+        io.to(`org_${org._id}`).emit("lead_updated", lead.toJSON ? lead.toJSON() : lead);
       }
       continue;
     }
@@ -383,6 +397,7 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
     const currentStatusLower = String(lead.status || "").trim().toLowerCase();
     if (currentStatusLower === "missed call") {
       lead.status = "New";
+      lead.folder = "New Leads";
       if (lead.isOldLead) {
         lead.isOldLead = false;
       }
@@ -394,6 +409,58 @@ const processInboundMessages = async (messages, contacts, tenantModels, org) => 
       console.log(
         `[WhatsAppWebhook] Lead ${lead._id} (${cleanPhone}) replied on WhatsApp. Transitioned status from 'Missed Call' to 'New'.`
       );
+    }
+
+    // Dynamic Intent Classification & Folder Routing
+    if (/interested|i am interested|yes i am interested/i.test(normalizedText)) {
+      lead.folder = "Priority";
+      lead.status = "Priority";
+      lead.priorityLevel = "High";
+      if (lead.cadence) lead.cadence.type = "None";
+      console.log(`[WhatsAppWebhook] Lead ${lead._id} classified as Interested -> Priority`);
+    } else if (/take up later|call later|later|not now|busy/i.test(normalizedText)) {
+      lead.folder = "Upcoming Followup";
+      lead.status = "Follow Up";
+      if (lead.cadence) lead.cadence.type = "None";
+      console.log(`[WhatsAppWebhook] Lead ${lead._id} classified as Take Up Later -> Upcoming Followup`);
+    } else if (/job|job seeker|hiring|vacancy|career/i.test(normalizedText)) {
+      lead.folder = "Jobs";
+      lead.status = "Job Seeker";
+      if (lead.cadence) lead.cadence.type = "None";
+      console.log(`[WhatsAppWebhook] Lead ${lead._id} classified as Job Seeker -> Jobs`);
+    } else if (/collab|collaboration|partnership|tie up|partner/i.test(normalizedText)) {
+      lead.folder = "Collab Opportunity";
+      lead.status = "Collab Opportunity";
+      if (lead.cadence) lead.cadence.type = "None";
+      const targetPhone = org.workflowSettings?.collabNotificationPhone;
+      if (targetPhone) {
+        lead.collabDetails = {
+          notifiedPhone: targetPhone,
+          notifiedAt: now,
+          notificationStatus: "sent",
+        };
+        console.log(`[WhatsAppWebhook] Alerting collab phone: ${targetPhone} for lead ${lead.phone}`);
+      }
+    } else if (/not interested|not required|dont need|no thanks/i.test(normalizedText)) {
+      lead.folder = "Not Interested";
+      lead.status = "Not Interested";
+      if (lead.cadence) lead.cadence.type = "None";
+      console.log(`[WhatsAppWebhook] Lead ${lead._id} classified as Not Interested`);
+    } else if (/price issue|too costly|expensive|high price|budget/i.test(normalizedText)) {
+      lead.folder = "Price Issue";
+      lead.status = "Price Issue";
+      if (lead.cadence) lead.cadence.type = "None";
+      console.log(`[WhatsAppWebhook] Lead ${lead._id} classified as Price Issue`);
+    } else if (
+      (lead.folder === "Future Leads" || lead.folder === "Not Responding") &&
+      /yes|interested|call|tell me/i.test(normalizedText)
+    ) {
+      // Reactivation from drip or unresponsive cadence
+      lead.folder = "Priority";
+      lead.status = "New";
+      lead.priorityLevel = "High";
+      if (lead.cadence) lead.cadence.type = "None";
+      console.log(`[WhatsAppWebhook] Lead ${lead._id} reactivated from ${lead.folder}`);
     }
 
     await lead.save();

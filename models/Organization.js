@@ -104,6 +104,95 @@ export const qualificationFieldSubSchema = new mongoose.Schema(
   { _id: true }
 );
 
+// Formal Sub-Schema for Organization Lead Workflow & Automation Settings
+export const workflowSettingsSubSchema = new mongoose.Schema(
+  {
+    // 1. SLA & Attendance Configuration
+    leadAttendanceSlaHours: {
+      type: Number,
+      default: 24, // Configurable e.g. 2, 4, 12, 24, 48 hours
+      min: [1, "SLA must be at least 1 hour"],
+    },
+    enableAutoAttendanceEscalation: {
+      type: Boolean,
+      default: true,
+    },
+    retriggerAutoMsgOnBreach: {
+      type: Boolean,
+      default: true,
+    },
+
+    // 2. Scheduled Follow-up (Take Up Later) Reminders
+    callerReminderMinutesBefore: {
+      type: Number,
+      default: 30, // Configurable e.g. 10, 15, 30, 60 minutes
+      min: [0, "Cannot be negative"],
+    },
+    clientReminderMinutesBefore: {
+      type: Number,
+      default: 0, // 0 = at scheduled time; or 15, 30 mins before
+      min: [0, "Cannot be negative"],
+    },
+    callerOverdueThresholdMinutes: {
+      type: Number,
+      default: 120, // 2 hours grace period before flagging in caller accountability report
+      min: [15, "Threshold must be at least 15 minutes"],
+    },
+
+    // 3. "Not Responding" Cadence Configuration
+    notRespondingMaxFollowups: {
+      type: Number,
+      default: 5, // Configurable e.g. 3, 5, 7 attempts
+      min: [1, "Must have at least 1 follow-up"],
+    },
+    notRespondingWindowDays: {
+      type: Number,
+      default: 15, // Configurable duration e.g. 7, 10, 15, 30 days
+      min: [1, "Window must be at least 1 day"],
+    },
+    notRespondingIntervalDays: {
+      type: [Number],
+      default: [1, 3, 6, 10, 15],
+    },
+    notRespondingFallbackFolder: {
+      type: String,
+      default: "Future Leads",
+    },
+
+    // 4. "Future Leads" Long-Term Drip Configuration
+    futureLeadsDripIntervalDays: {
+      type: Number,
+      default: 15, // Configurable e.g. 7, 15, 30 days
+      min: [1, "Drip interval must be at least 1 day"],
+    },
+    futureLeadsMaxDrips: {
+      type: Number,
+      default: 0, // 0 = unlimited / ongoing until unsubscribe
+    },
+
+    // 5. Special Routing Numbers & Opt-Out Keywords
+    collabNotificationPhone: {
+      type: String,
+      default: "", // Target phone number for collaboration opportunity alerts
+      trim: true,
+    },
+    jobNotificationPhone: {
+      type: String,
+      default: "", // Target phone or HR number for job applicant alerts
+      trim: true,
+    },
+    dndKeywords: {
+      type: [String],
+      default: ["stop", "unsubscribe", "dnd", "cancel", "dont call", "opt out"],
+    },
+    reactivationKeywords: {
+      type: [String],
+      default: ["yes", "interested", "call me", "details", "info", "price"],
+    },
+  },
+  { _id: false }
+);
+
 const organizationSchema = new mongoose.Schema(
   {
     name: {
@@ -423,6 +512,11 @@ const organizationSchema = new mongoose.Schema(
       trim: true,
       index: true,
       default: () => "sb_whk_" + crypto.randomBytes(16).toString("hex"),
+    },
+    workflowSettings: {
+      type: workflowSettingsSubSchema,
+      default: () => ({}),
+    },
     },
   },
   {
