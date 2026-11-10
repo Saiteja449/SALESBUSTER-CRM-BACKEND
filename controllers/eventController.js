@@ -162,26 +162,35 @@ export const getEvents = async (req, res) => {
       filter.status = status;
     }
 
-    const events = await Event.find(filter).sort({ createdAt: -1 }).lean();
-
-    // Attach up-to-date counts
-    const eventsWithCounts = await Promise.all(
-      events.map(async (ev) => {
-        const totalCaptured = await EventContact.countDocuments({ eventId: ev._id });
-        const whatsappSentCount = await EventContact.countDocuments({
-          eventId: ev._id,
-          status: { $in: ["whatsapp_opened", "completed"] },
-        });
-
-        return {
-          ...ev,
-          stats: {
-            totalCaptured,
-            whatsappSentCount,
+    const events = await Event.find(filter).sort({ createdAt: -1, _id: -1 }).lean();
+    const eventIds = events.map((event) => event._id);
+    const contactCounts = eventIds.length
+      ? await EventContact.aggregate([
+          { $match: { eventId: { $in: eventIds } } },
+          {
+            $group: {
+              _id: "$eventId",
+              totalCaptured: { $sum: 1 },
+              whatsappSentCount: {
+                $sum: {
+                  $cond: [{ $in: ["$status", ["whatsapp_opened", "completed"]] }, 1, 0],
+                },
+              },
+            },
           },
-        };
-      })
-    );
+        ])
+      : [];
+    const countsByEventId = new Map(contactCounts.map((row) => [String(row._id), row]));
+    const eventsWithCounts = events.map((event) => {
+      const counts = countsByEventId.get(String(event._id));
+      return {
+        ...event,
+        stats: {
+          totalCaptured: counts?.totalCaptured || 0,
+          whatsappSentCount: counts?.whatsappSentCount || 0,
+        },
+      };
+    });
 
     return res.status(200).json({
       success: true,

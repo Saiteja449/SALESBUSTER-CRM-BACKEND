@@ -40,6 +40,12 @@ const followupSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+// Indexes for fast dashboard aggregations, date-based queries, and lead association
+followupSchema.index({ date: 1, done: 1 });
+followupSchema.index({ leadId: 1 });
+followupSchema.index({ author: 1 });
+followupSchema.index({ done: 1, updatedAt: -1 });
+
 followupSchema.set("toJSON", {
   virtuals: true,
   versionKey: false,

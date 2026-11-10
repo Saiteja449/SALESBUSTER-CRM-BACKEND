@@ -57,8 +57,31 @@ export const getFollowups = async (req, res) => {
       };
     }
 
-    const followups = await FollowupModel.find(filter).sort({ createdAt: -1 });
-    res.json({ success: true, data: followups });
+    if (req.query.leadId) {
+      filter.leadId = req.query.leadId;
+    }
+    if (req.query.date) {
+      filter.date = req.query.date;
+    }
+    if (req.query.done !== undefined) {
+      filter.done = req.query.done === "true";
+    }
+
+    const limit = req.query.limit ? Math.min(500, Math.max(1, parseInt(req.query.limit, 10))) : 0;
+    let queryExec = FollowupModel.find(filter).sort({ createdAt: -1 }).lean();
+    if (limit > 0) {
+      queryExec = queryExec.limit(limit);
+    }
+
+    const followups = await queryExec;
+    res.json({
+      success: true,
+      data: followups.map((f) => ({
+        ...f,
+        id: f._id ? f._id.toString() : f.id,
+        leadId: f.leadId ? f.leadId.toString() : f.leadId,
+      })),
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

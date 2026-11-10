@@ -2,6 +2,8 @@ import mongoose from "mongoose";
 import TelecallerAnalytics from "../models/TelecallerAnalytics.js";
 import AILimit from "../models/AILimit.js";
 import Lead from "../models/Lead.js";
+import Followup from "../models/Followup.js";
+import User from "../models/User.js";
 import CallRecord from "../models/CallRecord.js";
 import { getIO } from "../socket/socket.js";
 import { recordLeadCallAtomic } from "../services/leadCallService.js";
@@ -19,6 +21,8 @@ const getModels = (req) => ({
   AnalyticsModel: req.tenantModels?.TelecallerAnalytics || TelecallerAnalytics,
   AILimitModel: req.tenantModels?.AILimit || AILimit,
   LeadModel: req.tenantModels?.Lead || Lead,
+  FollowupModel: req.tenantModels?.Followup || Followup,
+  UserModel: req.tenantModels?.User || User,
   CallRecordModel: req.tenantModels?.CallRecord || (mongoose.models.CallRecord || CallRecord),
 });
 
@@ -255,6 +259,270 @@ export const getTodayAnalyticsForAll = async (req, res) => {
     const analytics = await AnalyticsModel.find({ date: today });
     res.status(200).json({ success: true, data: analytics });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Gets dedicated, high-performance aggregated summary for Dashboard view
+export const getDashboardSummary = async (req, res) => {
+  try {
+    const { LeadModel, FollowupModel, UserModel, AnalyticsModel } = getModels(req);
+
+    // Build role-based lead filtering
+    let leadFilter = {};
+    const isSalesPerson = req.user?.role === "sales person";
+    let repIdStr = "";
+    let repNameStr = "";
+
+    if (isSalesPerson && req.user) {
+      repIdStr = (req.user._id || req.user.id).toString();
+      repNameStr = req.user.name || "";
+      const matchConditions = [repIdStr];
+      if (mongoose.Types.ObjectId.isValid(repIdStr)) {
+        matchConditions.push(new mongoose.Types.ObjectId(repIdStr));
+      }
+      if (repNameStr) {
+        matchConditions.push(new RegExp("^" + repNameStr + "$", "i"));
+      }
+      leadFilter.assignedTo = { $in: matchConditions };
+    }
+
+    const clientDate = req.query.clientDate || new Date().toISOString().split("T")[0];
+
+    // Concurrently aggregate Lead KPIs and Followup KPIs directly inside MongoDB
+    const [leadAggResult, followupAggResult, salesUsers, todayAnalytics] = await Promise.all([
+      LeadModel.aggregate([
+        { $match: leadFilter },
+        {
+          $facet: {
+            overall: [
+              {
+                $group: {
+                  _id: null,
+                  total: { $sum: 1 },
+                  converted: {
+                    $sum: { $cond: [{ $eq: ["$status", "Converted"] }, 1, 0] },
+                  },
+                  unassigned: {
+                    $sum: {
+                      $cond: [
+                        {
+                          $or: [
+                            { $eq: ["$assignedTo", "Unassigned"] },
+                            { $eq: ["$assignedTo", ""] },
+                            { $eq: ["$assignedTo", null] },
+                            { $not: ["$assignedTo"] },
+                          ],
+                        },
+                        1,
+                        0,
+                      ],
+                    },
+                  },
+                  activePipeline: {
+                    $sum: {
+                      $cond: [
+                        {
+                          $not: {
+                            $in: ["$status", ["Converted", "Lost", "Not Interested"]],
+                          },
+                        },
+                        1,
+                        0,
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+            byService: [
+              {
+                $group: {
+                  _id: { $ifNull: ["$service", "General Enquiry"] },
+                  count: { $sum: 1 },
+                  won: {
+                    $sum: { $cond: [{ $eq: ["$status", "Converted"] }, 1, 0] },
+                  },
+                },
+              },
+            ],
+            bySource: [
+              {
+                $group: {
+                  _id: { $ifNull: ["$source", "Manual Entry"] },
+                  count: { $sum: 1 },
+                },
+              },
+            ],
+            byAssignedTo: [
+              {
+                $group: {
+                  _id: "$assignedTo",
+                  assigned: { $sum: 1 },
+                  won: {
+                    $sum: { $cond: [{ $eq: ["$status", "Converted"] }, 1, 0] },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      ]),
+      FollowupModel ? FollowupModel.aggregate([
+        {
+          $facet: {
+            todayPending: [
+              { $match: { date: clientDate, done: false } },
+              { $count: "count" },
+            ],
+            overdue: [
+              { $match: { date: { $lt: clientDate }, done: false } },
+              { $count: "count" },
+            ],
+            recentActivities: [
+              { $match: { done: true } },
+              { $sort: { updatedAt: -1, createdAt: -1 } },
+              { $limit: 10 },
+              {
+                $project: {
+                  id: "$_id",
+                  leadId: 1,
+                  leadName: 1,
+                  type: 1,
+                  date: 1,
+                  time: 1,
+                  priority: 1,
+                  notes: 1,
+                  author: 1,
+                  done: 1,
+                  updatedAt: 1,
+                },
+              },
+            ],
+          },
+        },
+      ]) : Promise.resolve([]),
+      UserModel.find({
+        role: { $in: ["sales person", "Sales Representative"] },
+        status: { $ne: "inactive" },
+      })
+        .select("_id name email phone role")
+        .lean(),
+      AnalyticsModel.find({ date: clientDate }).lean(),
+    ]);
+
+    const leadFacet = leadAggResult?.[0] || {};
+    const overall = leadFacet.overall?.[0] || {
+      total: 0,
+      converted: 0,
+      unassigned: 0,
+      activePipeline: 0,
+    };
+
+    const totalLeads = overall.total || 0;
+    const totalWonCount = overall.converted || 0;
+    const convertedCount = totalWonCount;
+    const conversionRate = totalLeads > 0 ? Math.round((totalWonCount / totalLeads) * 100) : 0;
+    const unassignedCount = overall.unassigned || 0;
+    const activePipelineCount = overall.activePipeline || 0;
+
+    // Service Breakdown formatting
+    const leadsByServiceData = (leadFacet.byService || []).map((item) => ({
+      name: item._id || "Other",
+      value: item.count || 0,
+    }));
+
+    const wonLeadsByServiceData = (leadFacet.byService || []).map((item) => ({
+      name: item._id || "Other",
+      pipeline: item.count || 0,
+      won: item.won || 0,
+    }));
+
+    // Source Breakdown formatting
+    const leadSourceData = (leadFacet.bySource || []).map((item) => ({
+      name: item._id || "Other",
+      value: item.count || 0,
+    }));
+
+    // Follow-up statistics
+    const followupFacet = followupAggResult?.[0] || {};
+    const todaysFollowupsCount = followupFacet.todayPending?.[0]?.count || 0;
+    const overdueFollowupsCount = followupFacet.overdue?.[0]?.count || 0;
+    const recentActivities = (followupFacet.recentActivities || []).map((a) => ({
+      ...a,
+      id: a._id ? a._id.toString() : a.id,
+    }));
+
+    // Build Performers Leaderboard
+    const assignedMap = {};
+    (leadFacet.byAssignedTo || []).forEach((item) => {
+      if (item._id) {
+        assignedMap[String(item._id)] = {
+          assigned: item.assigned || 0,
+          won: item.won || 0,
+        };
+      }
+    });
+
+    const performersList = (salesUsers || []).map((user) => {
+      const uId = user._id.toString();
+      const uName = (user.name || "").trim().toLowerCase();
+
+      // Match metrics by user ID or user name
+      let repAssigned = 0;
+      let repWon = 0;
+      for (const [key, val] of Object.entries(assignedMap)) {
+        if (key === uId || (uName && key.trim().toLowerCase() === uName)) {
+          repAssigned += val.assigned || 0;
+          repWon += val.won || 0;
+        }
+      }
+
+      const repAnalytics = (todayAnalytics || []).find(
+        (a) =>
+          (a.salespersonId && String(a.salespersonId) === uId) ||
+          (a.salesperson && a.salesperson.trim().toLowerCase() === uName)
+      );
+
+      const convPct = repAssigned > 0 ? Math.round((repWon / repAssigned) * 100) : 0;
+      const callsCount = repAnalytics?.totalCalls || 0;
+
+      return {
+        id: uId,
+        name: user.name,
+        email: user.email,
+        phone: user.phone || "",
+        role: "Sales Representative",
+        assigned: repAssigned,
+        won: repWon,
+        callsMade: callsCount,
+        conversionRate: convPct,
+        activityScore: Math.min(100, Math.round(convPct * 0.7 + Math.min(callsCount * 2, 30))),
+      };
+    }).sort((a, b) => b.won - a.won);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalLeads,
+        totalWonCount,
+        convertedCount,
+        conversionRate,
+        jobsAssignedCount: convertedCount,
+        unassignedCount,
+        activePipelineCount,
+        leadsByServiceData,
+        wonLeadsByServiceData,
+        leadSourceData,
+        todaysFollowupsCount,
+        overdueFollowupsCount,
+        recentActivities,
+        performersList,
+        todayAnalytics: todayAnalytics || [],
+      },
+    });
+  } catch (error) {
+    console.error("[getDashboardSummary] Error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

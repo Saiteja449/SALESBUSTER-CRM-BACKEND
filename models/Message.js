@@ -118,6 +118,10 @@ const messageSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Supports per-conversation chronological pagination without scanning/sorting
+// the full message history for a lead.
+messageSchema.index({ leadId: 1, timestamp: -1, _id: -1 });
+
 // Convert _id to id for frontend compatibility
 messageSchema.set("toJSON", {
   virtuals: true,
