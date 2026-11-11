@@ -692,6 +692,74 @@ export const isRepAIAutoReplyEnabled = async (lead, sessionId, models) => {
   }
 };
 
+export const classifyMessageIntentAndRoute = (lead, textContent, org) => {
+  if (!textContent || typeof textContent !== "string") return false;
+  const normalizedText = textContent.toLowerCase().trim();
+  let changed = false;
+
+  if (/job|job seeker|hiring|vacancy|career/i.test(normalizedText)) {
+    lead.folder = "Jobs";
+    lead.status = "Job Seeker";
+    if (lead.cadence) lead.cadence.type = "None";
+    lead.aiEnabled = false;
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} classified as Job Seeker -> Jobs folder`);
+    changed = true;
+  } else if (/collab|collaboration|partnership|tie up|partner/i.test(normalizedText)) {
+    lead.folder = "Collab Opportunity";
+    lead.status = "Collab Opportunity";
+    if (lead.cadence) lead.cadence.type = "None";
+    lead.aiEnabled = false;
+    const targetPhone = org?.workflowSettings?.collabNotificationPhone;
+    if (targetPhone) {
+      lead.collabDetails = {
+        notifiedPhone: targetPhone,
+        notifiedAt: new Date(),
+        notificationStatus: "sent",
+      };
+      console.log(`[WhatsApp] Alerting collab phone: ${targetPhone} for lead ${lead.phone}`);
+    }
+    changed = true;
+  } else if (/not interested|not required|dont need|no thanks/i.test(normalizedText)) {
+    lead.folder = "Not Interested";
+    lead.status = "Not Interested";
+    if (lead.cadence) lead.cadence.type = "None";
+    lead.aiEnabled = false;
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} classified as Not Interested`);
+    changed = true;
+  } else if (/price issue|too costly|expensive|high price|budget/i.test(normalizedText)) {
+    lead.folder = "Price Issue";
+    lead.status = "Price Issue";
+    if (lead.cadence) lead.cadence.type = "None";
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} classified as Price Issue`);
+    changed = true;
+  } else if (/take up later|call later|later|not now|busy/i.test(normalizedText)) {
+    lead.folder = "Upcoming Followup";
+    lead.status = "Follow Up";
+    if (lead.cadence) lead.cadence.type = "None";
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} classified as Take Up Later -> Upcoming Followup`);
+    changed = true;
+  } else if (/interested|i am interested|yes i am interested/i.test(normalizedText)) {
+    lead.folder = "Priority";
+    lead.status = "Priority";
+    lead.priorityLevel = "High";
+    if (lead.cadence) lead.cadence.type = "None";
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} classified as Interested -> Priority`);
+    changed = true;
+  } else if (
+    (lead.folder === "Future Leads" || lead.folder === "Not Responding") &&
+    /yes|interested|call|tell me/i.test(normalizedText)
+  ) {
+    lead.folder = "Priority";
+    lead.status = "New";
+    lead.priorityLevel = "High";
+    if (lead.cadence) lead.cadence.type = "None";
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} reactivated from ${lead.folder}`);
+    changed = true;
+  }
+
+  return changed;
+};
+
 const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
   try {
     const models = await getModelsForSession(sessionId);
@@ -882,10 +950,12 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
     // Dynamic service detection strictly scoped to the organization's own configured catalog
     let detectedService = null;
     let orgServices = [];
+    let resolvedOrgDoc = null;
     if (orgId) {
       try {
         const { Organization: MasterOrg } = getMasterModels();
-        const orgDoc = await MasterOrg.findById(orgId).select("aiSettings.services").lean();
+        const orgDoc = await MasterOrg.findById(orgId).select("aiSettings.services workflowSettings").lean();
+        resolvedOrgDoc = orgDoc;
         if (Array.isArray(orgDoc?.aiSettings?.services) && orgDoc.aiSettings.services.length > 0) {
           orgServices = orgDoc.aiSettings.services.filter((s) => s.isActive !== false);
         }
@@ -947,6 +1017,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
 
     let isNewLead = false;
     let statusChangedFromMissedCall = false;
+    let intentChanged = false;
     let assignedRepName = "Sales Representative";
 
     // Detect if this is a rep's personal session — used for direct assignment and message tagging
@@ -1029,11 +1100,20 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
         source: "WhatsApp",
         service: detectedService || (orgServices[0]?.name) || "General Enquiry",
         status: "New",
+        folder: "New Leads",
+        sla: {
+          enteredNewAt: new Date(),
+          slaBreached: false,
+        },
         joinedAt: new Date(),
         notes: fromMe
           ? `Created via WhatsApp outgoing message: "${textContent.substring(0, 100)}"`
           : `Discovered via WhatsApp message: "${textContent.substring(0, 100)}"`,
       });
+
+      if (!fromMe) {
+        classifyMessageIntentAndRoute(lead, textContent, resolvedOrgDoc);
+      }
 
       let assignedRep = null;
 
@@ -1151,6 +1231,18 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
         console.log(
           `[Missed Call -> New Lead] Lead ${lead._id} (${lead.phone}) replied on WhatsApp. Transitioned status from 'Missed Call' to 'New'.`
         );
+      }
+
+      if (!fromMe) {
+        intentChanged = classifyMessageIntentAndRoute(lead, textContent, resolvedOrgDoc);
+        if (intentChanged) {
+          updatedFields.folder = lead.folder;
+          updatedFields.status = lead.status;
+          if (lead.priorityLevel) updatedFields.priorityLevel = lead.priorityLevel;
+          if (lead.cadence) updatedFields.cadence = lead.cadence;
+          if (lead.collabDetails) updatedFields.collabDetails = lead.collabDetails;
+          if (lead.aiEnabled !== undefined) updatedFields.aiEnabled = lead.aiEnabled;
+        }
       }
 
       await LeadModel.findByIdAndUpdate(lead._id, {
@@ -1287,9 +1379,8 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
         console.log(`[DEBUG] Emitted whatsapp_new_lead alert for ${lead.phone} (${lead.name})`);
       }
 
-      if (statusChangedFromMissedCall) {
+      if (statusChangedFromMissedCall || intentChanged) {
         const leadObj = typeof lead.toObject === "function" ? lead.toObject() : { ...lead };
-        leadObj.status = "New";
         if (orgId) {
           io.to(`org_${orgId}`).emit("lead_updated", { leadId: lead._id, lead: leadObj });
         }
@@ -1297,7 +1388,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
           io.to(`user_${assignedUserId}`).emit("lead_updated", { leadId: lead._id, lead: leadObj });
         }
         io.to(lead._id.toString()).emit("lead_updated", { leadId: lead._id, lead: leadObj });
-        console.log(`[DEBUG] Emitted lead_updated for missed call reply transition to New Leads for ${lead.phone}`);
+        console.log(`[DEBUG] Emitted lead_updated for status/intent transition to ${lead.folder} (${lead.status}) for ${lead.phone}`);
       }
     }
 
