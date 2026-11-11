@@ -96,11 +96,11 @@ Identify and extract:
 1. customerName: The customer's spoken name or greeting (e.g. "Rahul", "Suresh Sharma", "Dr. Mehta", "Ramesh"). If no clear person name was spoken, return null.
 2. companyName: The business, shop, firm, or company name associated with the customer (e.g. "Apex Technologies", "Balaji Textiles", "Kiran Hospital"). If none was mentioned, return null.
 3. designation: The customer's spoken job title, role, or designation (e.g. "Managing Director", "Founder", "CEO", "Owner", "Procurement Manager", "Operations Head", "Partner", "Doctor", "Purchase In-charge", "Manager"). If not mentioned, return null.
-4. spokenPhone: The customer's 10-digit mobile or WhatsApp number verbally spoken, dictated, or exchanged anywhere in the conversation.
+4. spokenPhone: The customer's mobile or WhatsApp number verbally spoken, dictated, or exchanged anywhere in the conversation (10 digits or partial digits if spoken incompletely, at least 6 digits).
    - May be spoken as digits or words in English, Hindi, or Telugu (e.g. "nine eight seven six five four three two one zero", "double nine, eight seven six...", "mera number 9876543210", "na number note cheyandi 9876543210").
-   - Convert spoken number words into a continuous numeric digit string (e.g. "9876543210").
-   - If country code (+91 or 91) is mentioned, include it or return the 10 digits.
-   - If no valid phone number was spoken, return null.
+   - Convert spoken number words into a continuous numeric digit string (e.g. "9876543210" or "9848012").
+   - If country code (+91 or 91) is mentioned, include it or return the digits.
+   - If no phone number was spoken or fewer than 6 digits were spoken, return null.
 5. keyTopic: A short 3-6 word summary of the service or product discussed.
 
 CRITICAL FORMAT REQUIREMENT:
@@ -164,8 +164,8 @@ Example format:
     let cleanSpokenPhone = null;
     if (parsed.spokenPhone && parsed.spokenPhone !== "null") {
       const rawDigits = String(parsed.spokenPhone).replace(/\D/g, "");
-      if (rawDigits.length >= 10) {
-        cleanSpokenPhone = rawDigits.slice(-10);
+      if (rawDigits.length >= 6) {
+        cleanSpokenPhone = rawDigits.length >= 10 ? rawDigits.slice(-10) : rawDigits;
       }
     }
 
