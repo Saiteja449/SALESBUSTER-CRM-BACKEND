@@ -219,6 +219,7 @@ export const createEvent = async (req, res) => {
       eventDate,
       time,
       whatsappTemplate,
+      customMessage,
       description,
       attachments,
       status,
@@ -299,6 +300,7 @@ export const createEvent = async (req, res) => {
       eventDate: parsedEventDate,
       time: (time || "").trim(),
       whatsappTemplate: finalTemplate,
+      customMessage: (customMessage || "").trim(),
       description: (description || finalTemplate).trim(),
       attachments: sanitizedAttachments,
       status: status && ["active", "completed", "archived"].includes(status) ? status : "active",
@@ -340,6 +342,7 @@ export const updateEvent = async (req, res) => {
       eventDate,
       time,
       whatsappTemplate,
+      customMessage,
       description,
       attachments,
       status,
@@ -365,6 +368,7 @@ export const updateEvent = async (req, res) => {
     }
     if (time !== undefined) event.time = (time || "").trim();
     if (whatsappTemplate !== undefined) event.whatsappTemplate = (whatsappTemplate || "").trim();
+    if (customMessage !== undefined) event.customMessage = (customMessage || "").trim();
     if (description !== undefined) event.description = (description || "").trim();
     if (status !== undefined && ["active", "completed", "archived"].includes(status)) {
       event.status = status;
