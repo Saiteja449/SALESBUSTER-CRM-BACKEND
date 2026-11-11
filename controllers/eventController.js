@@ -3,6 +3,7 @@ import { extractBusinessCardData } from "../services/ai/cardVisionExtractionServ
 import { getMasterModels } from "../services/tenantManager.js";
 import { decryptApiKey } from "../utils/encryption.js";
 import fs from "fs";
+import path from "path";
 import { extractProspectDetailsFromVoice } from "../services/voiceProspectExtractionService.js";
 
 export const analyzeVoiceAudio = async (req, res) => {
@@ -412,7 +413,10 @@ export const updateEvent = async (req, res) => {
     if (shouldReplace || hasUploadedFiles) {
       const existing = bodyAttachments !== null ? bodyAttachments : [];
       const uploadedAttachments = uploadedFiles.map((file) => {
-        const ext = path.extname(file.originalname || "").toLowerCase();
+        const ext = (path?.extname
+          ? path.extname(file.originalname || "")
+          : (file.originalname || "").slice((file.originalname || "").lastIndexOf("."))
+        ).toLowerCase();
         const isImg =
           (file.mimetype && file.mimetype.startsWith("image/")) ||
           [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"].includes(ext);
