@@ -377,15 +377,20 @@ export const updateEvent = async (req, res) => {
     const hasUploadedFiles = uploadedFiles.length > 0;
 
     let bodyAttachments = null;
-    if (typeof attachments === "string") {
+    const rawAttachments =
+      req.body.existingAttachments !== undefined
+        ? req.body.existingAttachments
+        : attachments;
+
+    if (typeof rawAttachments === "string") {
       try {
-        const parsed = JSON.parse(attachments);
+        const parsed = JSON.parse(rawAttachments);
         bodyAttachments = Array.isArray(parsed) ? parsed : [parsed];
       } catch (_) {
         bodyAttachments = [];
       }
-    } else if (Array.isArray(attachments)) {
-      bodyAttachments = attachments.flatMap((att) => {
+    } else if (Array.isArray(rawAttachments)) {
+      bodyAttachments = rawAttachments.flatMap((att) => {
         if (typeof att === "string") {
           try {
             const parsed = JSON.parse(att);
@@ -398,26 +403,48 @@ export const updateEvent = async (req, res) => {
       });
     }
 
-    if (bodyAttachments !== null || hasUploadedFiles) {
-      const existing = bodyAttachments !== null ? bodyAttachments : (event.attachments || []);
-      const uploadedAttachments = uploadedFiles.map((file) => ({
-        name: file.originalname || "attachment",
-        type: file.mimetype || "application/octet-stream",
-        size: file.size || 0,
-        url: `/uploads/events/${file.filename}`,
-        uri: `/uploads/events/${file.filename}`,
-      }));
+    const shouldReplace =
+      req.body.replaceAttachments === "true" ||
+      req.body.replaceAttachments === true ||
+      req.body.existingAttachments !== undefined ||
+      bodyAttachments !== null;
+
+    if (shouldReplace || hasUploadedFiles) {
+      const existing = bodyAttachments !== null ? bodyAttachments : [];
+      const uploadedAttachments = uploadedFiles.map((file) => {
+        const ext = path.extname(file.originalname || "").toLowerCase();
+        const isImg =
+          (file.mimetype && file.mimetype.startsWith("image/")) ||
+          [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"].includes(ext);
+        return {
+          name: file.originalname || "photo.jpg",
+          type: file.mimetype || (isImg ? "image/jpeg" : "application/octet-stream"),
+          size: file.size || 0,
+          url: `/uploads/events/${file.filename}`,
+          uri: `/uploads/events/${file.filename}`,
+          isImage: isImg,
+        };
+      });
       const combined = [...existing, ...uploadedAttachments];
       event.attachments = combined.map((att) => {
         const fileUrl = typeof att?.url === "string" ? att.url.trim() : "";
         const fileUri = typeof att?.uri === "string" ? att.uri.trim() : "";
         const finalUrl = fileUrl || (fileUri.startsWith("/uploads/") ? fileUri : "");
+        const rawType = typeof att?.type === "string" ? att.type.trim() : "";
+        const rawName = typeof att?.name === "string" ? att.name.trim() : "file";
+        const isImg =
+          att?.isImage === true ||
+          rawType.startsWith("image/") ||
+          /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(rawName) ||
+          /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(finalUrl);
+
         return {
-          name: typeof att?.name === "string" ? att.name.trim() : "file",
-          type: typeof att?.type === "string" ? att.type.trim() : "application/octet-stream",
+          name: rawName,
+          type: rawType || (isImg ? "image/jpeg" : "application/octet-stream"),
           size: typeof att?.size === "number" ? att.size : 0,
           url: finalUrl,
           uri: fileUri || finalUrl,
+          isImage: isImg,
         };
       });
     }
