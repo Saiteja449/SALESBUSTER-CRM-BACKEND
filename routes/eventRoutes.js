@@ -38,7 +38,12 @@ const eventFilesUpload = multer({
     destination: (_req, _file, cb) => cb(null, eventUploadDir),
     filename: (_req, file, cb) => {
       const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-      const ext = path.extname(file.originalname || "") || "";
+      let ext = path.extname(file.originalname || "") || "";
+      if (!ext && file.mimetype) {
+        if (file.mimetype.includes("png")) ext = ".png";
+        else if (file.mimetype.includes("webp")) ext = ".webp";
+        else if (file.mimetype.includes("jpeg") || file.mimetype.includes("jpg")) ext = ".jpg";
+      }
       cb(null, `event-${uniqueSuffix}${ext}`);
     },
   }),
