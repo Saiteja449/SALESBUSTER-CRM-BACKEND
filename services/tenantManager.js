@@ -36,6 +36,7 @@ import WAAccount, { waAccountSchema } from "../models/WhatsAppAccount.js";
 import WAContact, { waContactSchema } from "../models/WhatsAppContact.js";
 import WAMessage, { waMessageSchema } from "../models/WhatsAppMessage.js";
 import WAWebhookEvent, { waWebhookEventSchema } from "../models/WhatsAppWebhookEvent.js";
+import ShowcaseService, { showcaseServiceSchema } from "../models/ShowcaseService.js";
 
 let _masterModelsOverride = null;
 let _tenantModelsOverride = null;
@@ -72,6 +73,9 @@ export const getMasterModels = () => {
   const MasterWAWebhookEvent =
     masterDb.models.WAWebhookEvent ||
     masterDb.model("WAWebhookEvent", waWebhookEventSchema);
+  const MasterShowcaseService =
+    masterDb.models.ShowcaseService ||
+    masterDb.model("ShowcaseService", showcaseServiceSchema);
 
   return {
     Organization: MasterOrg,
@@ -79,6 +83,7 @@ export const getMasterModels = () => {
     AppRelease: MasterAppRelease,
     WAAccount: MasterWAAccount,
     WAWebhookEvent: MasterWAWebhookEvent,
+    ShowcaseService: MasterShowcaseService,
     masterDb,
   };
 };

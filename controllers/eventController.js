@@ -575,7 +575,7 @@ export const getEventContacts = async (req, res) => {
     const { EventContact } = req.tenantModels;
     const { search, limit = 100, page = 1 } = req.query;
 
-    const filter = { eventId: req.params.id };
+    const filter = { eventId: req.params.id, isDeleted: { $ne: true } };
 
     if (search && search.trim()) {
       const q = search.trim();
@@ -829,6 +829,127 @@ export const updateContactStatus = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: err.message || "Failed to update contact status.",
+    });
+  }
+};
+
+/**
+ * Update an existing Contact under an Event
+ * @route PUT /api/events/:id/contacts/:contactId
+ */
+export const updateEventContact = async (req, res) => {
+  try {
+    const { EventContact } = req.tenantModels;
+    const { id, contactId } = req.params;
+    const {
+      name,
+      phone,
+      companyName,
+      designation,
+      summary,
+      messageText,
+    } = req.body;
+
+    const contact = await EventContact.findOne({
+      _id: contactId,
+      eventId: id,
+      isDeleted: { $ne: true },
+    });
+
+    if (!contact) {
+      return res.status(404).json({
+        success: false,
+        message: "Event contact not found or has been removed.",
+      });
+    }
+
+    if (name !== undefined) {
+      if (!name.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Contact name cannot be empty.",
+        });
+      }
+      contact.name = name.trim();
+    }
+
+    if (phone !== undefined) {
+      contact.phone = String(phone).trim();
+    }
+    if (companyName !== undefined) contact.companyName = String(companyName).trim();
+    if (designation !== undefined) contact.designation = String(designation).trim();
+    if (summary !== undefined) contact.summary = String(summary).trim();
+    if (messageText !== undefined) contact.messageText = String(messageText).trim();
+
+    await contact.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Contact updated successfully.",
+      data: contact,
+    });
+  } catch (err) {
+    console.error("[EventController] updateEventContact error:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message || "Failed to update event contact.",
+    });
+  }
+};
+
+/**
+ * Soft Delete a Contact under an Event
+ * (Records are preserved in MongoDB with isDeleted: true, never permanently removed)
+ * @route DELETE /api/events/:id/contacts/:contactId
+ */
+export const deleteEventContact = async (req, res) => {
+  try {
+    const { Event, EventContact } = req.tenantModels;
+    const { id, contactId } = req.params;
+
+    const contact = await EventContact.findOne({
+      _id: contactId,
+      eventId: id,
+      isDeleted: { $ne: true },
+    });
+
+    if (!contact) {
+      return res.status(404).json({
+        success: false,
+        message: "Event contact not found or already removed.",
+      });
+    }
+
+    // Strictly perform SOFT DELETE only
+    contact.isDeleted = true;
+    contact.deletedAt = new Date();
+    contact.deletedBy = req.user?._id || null;
+    await contact.save();
+
+    // Decrement stats counter safely if > 0
+    try {
+      const event = await Event.findById(id);
+      if (event && event.stats && event.stats.totalCaptured > 0) {
+        event.stats.totalCaptured = Math.max(0, event.stats.totalCaptured - 1);
+        if (contact.status === "whatsapp_opened" || contact.status === "completed") {
+          event.stats.whatsappSentCount = Math.max(0, (event.stats.whatsappSentCount || 0) - 1);
+        }
+        await event.save();
+      }
+    } catch (statErr) {
+      console.warn("[EventController] Error updating event stats on soft delete:", statErr.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Contact removed successfully.",
+      data: { contactId, isDeleted: true },
+    });
+  } catch (err) {
+    console.error("[EventController] deleteEventContact error:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message || "Failed to remove event contact.",
     });
   }
 };

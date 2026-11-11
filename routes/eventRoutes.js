@@ -13,6 +13,8 @@ import {
   getEventContacts,
   createEventContact,
   updateContactStatus,
+  updateEventContact,
+  deleteEventContact,
   analyzeVoiceAudio,
 } from "../controllers/eventController.js";
 import { protect } from "../middleware/authMiddleware.js";
@@ -87,6 +89,8 @@ router.delete("/:id", deleteEvent);
 router.get("/:id/contacts", getEventContacts);
 router.post("/:id/contacts", createEventContact);
 router.patch("/:id/contacts/:contactId/status", updateContactStatus);
+router.put("/:id/contacts/:contactId", updateEventContact);
+router.delete("/:id/contacts/:contactId", deleteEventContact);
 
 export default router;
 

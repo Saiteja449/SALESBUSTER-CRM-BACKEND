@@ -31,6 +31,7 @@ import supportRoutes from "./routes/supportRoutes.js";
 import eventRoutes from "./routes/eventRoutes.js";
 import conversationRoutes from "./routes/conversationRoutes.js";
 import targetIntelligenceRoutes from "./routes/targetIntelligenceRoutes.js";
+import showcaseServiceRoutes from "./routes/showcaseServiceRoutes.js";
 
 // Socket & WhatsApp Cloud Imports
 import { initSocket } from "./socket/socket.js";
@@ -120,6 +121,7 @@ app.use("/api/support", supportRoutes);
 app.use("/api/events", eventRoutes);
 app.use("/api/conversations", conversationRoutes);
 app.use("/api/target-intelligence", targetIntelligenceRoutes);
+app.use("/api/showcase-services", showcaseServiceRoutes);
 
 // Base route
 app.get("/", (req, res) => {
