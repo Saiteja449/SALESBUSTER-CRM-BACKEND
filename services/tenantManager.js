@@ -32,6 +32,7 @@ import CallRecord from "../models/CallRecord.js";
 import Organization, { organizationSchema } from "../models/Organization.js";
 import AuthUser, { authUserSchema } from "../models/AuthUser.js";
 import AppRelease, { appReleaseSchema } from "../models/AppRelease.js";
+import ShowcaseService, { showcaseServiceSchema } from "../models/ShowcaseService.js";
 
 let _masterModelsOverride = null;
 let _tenantModelsOverride = null;
@@ -62,11 +63,15 @@ export const getMasterModels = () => {
   const MasterAppRelease =
     masterDb.models.AppRelease ||
     masterDb.model("AppRelease", appReleaseSchema);
+  const MasterShowcaseService =
+    masterDb.models.ShowcaseService ||
+    masterDb.model("ShowcaseService", showcaseServiceSchema);
 
   return {
     Organization: MasterOrg,
     AuthUser: MasterAuthUser,
     AppRelease: MasterAppRelease,
+    ShowcaseService: MasterShowcaseService,
     masterDb,
   };
 };
