@@ -32,6 +32,11 @@ const eventSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    customMessage: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     description: {
       type: String,
       trim: true,
