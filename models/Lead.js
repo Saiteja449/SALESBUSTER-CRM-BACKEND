@@ -119,6 +119,10 @@ const leadSchema = new mongoose.Schema(
       slaBreached: { type: Boolean, default: false, index: true },
       breachedAt: { type: Date, default: null },
     },
+    callerReminded: {
+      type: Boolean,
+      default: false,
+    },
     cadence: {
       type: {
         type: String,
