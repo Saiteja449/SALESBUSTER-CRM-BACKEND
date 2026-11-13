@@ -41,7 +41,7 @@ export const createFollowupTool = ({ tenantModels, toolName = "get_followup_stat
     {
       name: toolName,
       description:
-        "Analyzes scheduled and pending follow-ups and CRM tasks. Reports total pending, overdue, pending today, upcoming, completed follow-ups, priority breakdown, salesperson-wise follow-up distribution, and missed-call follow-ups. Answers: 'Which salesperson has highest overdue missed-call follow-ups?', 'Show pending follow-ups for Shanmukh', and 'How many tasks are overdue?'.",
+        "Analyzes scheduled and pending follow-ups and CRM tasks. Reports total pending, overdue, pending today, upcoming, completed follow-ups, priority breakdown, salesperson-wise follow-up distribution, and missed-call follow-ups. Answers: 'Which salesperson has highest overdue missed-call follow-ups?', 'Show pending follow-ups for Shanmukh', and 'How many tasks are overdue?'. Internal IDs are for tooling only; never expose MongoDB ObjectIds to the user. Always use resolved human names.",
       schema: z.object({
         status: z
           .enum([

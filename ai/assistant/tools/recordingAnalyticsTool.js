@@ -38,7 +38,7 @@ export const createRecordingAnalyticsTool = ({ tenantModels }) => {
     {
       name: "get_recording_analytics",
       description:
-        "Analyzes call audio recordings: available recordings, missing recordings for connected calls, AI analysis and transcription status, recordings by salesperson, and inspects transcription summaries. Answers: 'Show call recordings for Shanmukh', 'Which calls have missing recordings?', and 'How many call recordings were analyzed?'.",
+        "Analyzes call audio recordings: available recordings, missing recordings for connected calls, AI analysis and transcription status, recordings by salesperson, and inspects transcription summaries. Answers: 'Show call recordings for Shanmukh', 'Which calls have missing recordings?', and 'How many call recordings were analyzed?'. Internal IDs are for tooling only; never expose MongoDB ObjectIds to the user. Always use resolved human names.",
       schema: z.object({
         salespersonNameOrId: z.string().optional().describe("Filter recordings by salesperson"),
         period: z.string().default("all_time").describe("Period to evaluate: 'all_time', 'this_month', 'today', 'custom'"),

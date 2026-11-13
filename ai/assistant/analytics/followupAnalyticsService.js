@@ -5,6 +5,7 @@ import { validateAnalyticsQuery, formatPaginatedResponse } from "./analyticsQuer
 import { getISTDateBoundaries } from "../dateUtils.js";
 import { wrapUntrustedData } from "../securityUtils.js";
 import { composeMongoQuery } from "./queryComposer.js";
+import { buildOwnerDirectory } from "./ownerResolver.js";
 
 const canQuery = (model) => {
   if (!model) return false;
@@ -37,7 +38,20 @@ export const getFollowupAnalytics = async ({
   const LeadModel = tenantModels.Lead;
 
   if (!canQuery(FollowupModel)) {
-    return { success: false, error: "Followup model not available" };
+    return formatPaginatedResponse({
+      success: false,
+      coverage: "unavailable",
+      errorCode: "FOLLOWUP_MODEL_UNAVAILABLE",
+      message: "Followup model is not available in tenant database.",
+      page,
+      limit,
+      totalCount: 0,
+      records: [],
+      filtersApplied: {
+        statusFilter: status,
+        salesperson: salespersonNameOrId,
+      },
+    });
   }
 
   const boundaries = getISTDateBoundaries();
@@ -198,6 +212,8 @@ export const getFollowupAnalytics = async ({
     } catch (_) {}
   }
 
+  const ownerDir = await buildOwnerDirectory({ tenantModels });
+
   const formattedRecords = (rawFollowups || []).map((fu) => {
     const l = fu.leadId ? leadMap.get(fu.leadId.toString()) : null;
     let urgency = "Normal";
@@ -209,14 +225,19 @@ export const getFollowupAnalytics = async ({
       urgency = "Completed";
     }
 
+    const owner = ownerDir.resolveOwner(l?.assignedTo || fu.author);
+    const displayName = (l?.name && l?.name.trim()) || (l?.company && l?.company.trim()) || l?.phone || "Customer";
+
     return {
       followupId: fu._id ? fu._id.toString() : "",
       leadId: fu.leadId ? fu.leadId.toString() : "",
-      customerName: l?.name || "Customer",
+      displayName,
+      customerName: (l?.name && l?.name.trim()) || displayName,
       customerPhone: l?.phone || "Unknown",
       service: l?.service,
       leadStatus: l?.status,
-      assignedRep: l?.assignedTo ? String(l.assignedTo) : "Unassigned",
+      assignedRep: owner.name,
+      assignedRepId: owner.id || undefined,
       scheduledDateIST: fu.date,
       scheduledTimeIST: fu.time || "Not specified",
       priority: fu.priority || "Medium",

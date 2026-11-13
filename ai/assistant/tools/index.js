@@ -3,7 +3,13 @@ import { createLeadSearchTool, createAdvancedLeadSearchTool } from "./leadSearch
 import { createPhoneLookupTool } from "./phoneLookupTool.js";
 import { createSalesPerformanceTool } from "./salesPerformanceTool.js";
 import { createFollowupTool } from "./followupTool.js";
-import { createWhatsAppAnalyticsTool } from "./whatsappAnalyticsTool.js";
+import {
+  createWhatsAppAnalyticsTool,
+  createWhatsAppConnectionStatusTool,
+  createSearchConversationsTool,
+  createConversationMessagesTool,
+  createSummarizeConversationTool,
+} from "./whatsappAnalyticsTool.js";
 import { createOrgConfigTool } from "./orgConfigTool.js";
 import { createCRMRAGTool } from "./crmRAGTool.js";
 import { createClarificationTool } from "./clarificationTool.js";
@@ -31,6 +37,10 @@ export const TOOL_METADATA = {
   get_conversion_analytics: { isReadOnly: true, sideEffect: false, timeoutMs: 6000 },
   get_recording_analytics: { isReadOnly: true, sideEffect: false, timeoutMs: 6000 },
   get_whatsapp_analytics: { isReadOnly: true, sideEffect: false, timeoutMs: 6000 },
+  get_whatsapp_connection_status: { isReadOnly: true, sideEffect: false, timeoutMs: 6000 },
+  search_whatsapp_conversations: { isReadOnly: true, sideEffect: false, timeoutMs: 6000 },
+  get_conversation_messages: { isReadOnly: true, sideEffect: false, timeoutMs: 6000 },
+  summarize_whatsapp_conversation: { isReadOnly: true, sideEffect: false, timeoutMs: 7000 },
   lookup_phone_number: { isReadOnly: true, sideEffect: false, timeoutMs: 5000 },
   get_org_integrations_and_config: { isReadOnly: true, sideEffect: false, timeoutMs: 5000 },
   search_crm_documentation_and_features: { isReadOnly: true, sideEffect: false, timeoutMs: 7500 },
@@ -62,7 +72,11 @@ export const buildAssistantTools = ({ tenantModels, organization, user, socket }
     createFollowupTool({ tenantModels, toolName: "get_followup_analytics" }),
     createConversionAnalyticsTool({ tenantModels }),
     createRecordingAnalyticsTool({ tenantModels }),
-    createWhatsAppAnalyticsTool({ tenantModels }),
+    createWhatsAppAnalyticsTool({ tenantModels, organization }),
+    createWhatsAppConnectionStatusTool({ tenantModels, organization }),
+    createSearchConversationsTool({ tenantModels }),
+    createConversationMessagesTool({ tenantModels }),
+    createSummarizeConversationTool({ tenantModels }),
     createPhoneLookupTool({ tenantModels }),
     createOrgConfigTool({ organization, tenantModels }),
     createCRMRAGTool({ organization }),

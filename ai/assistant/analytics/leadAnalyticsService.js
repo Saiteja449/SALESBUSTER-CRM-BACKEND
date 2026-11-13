@@ -5,6 +5,7 @@ import { validateAnalyticsQuery, formatPaginatedResponse } from "./analyticsQuer
 import { escapeRegex, wrapUntrustedData } from "../securityUtils.js";
 import { getISTDateBoundaries } from "../dateUtils.js";
 import { composeMongoQuery } from "./queryComposer.js";
+import { buildOwnerDirectory } from "./ownerResolver.js";
 
 const canQuery = (model) => {
   if (!model) return false;
@@ -45,7 +46,19 @@ export const searchLeadsAdvanced = async ({
   const FollowupModel = tenantModels.Followup;
 
   if (!canQuery(LeadModel)) {
-    return { success: false, error: "Lead model not available" };
+    return formatPaginatedResponse({
+      success: false,
+      coverage: "unavailable",
+      errorCode: "LEAD_MODEL_UNAVAILABLE",
+      message: "Lead model is not available in tenant database.",
+      page,
+      limit,
+      totalCount: 0,
+      records: [],
+      filtersApplied: {
+        salesperson: salespersonNameOrId || (unassignedOnly ? "Unassigned Only" : "All"),
+      },
+    });
   }
 
   const queryConditions = [];
@@ -55,6 +68,7 @@ export const searchLeadsAdvanced = async ({
     queryConditions.push({
       $or: [
         { assignedTo: "Unassigned" },
+        { assignedTo: "unassigned" },
         { assignedTo: null },
         { assignedTo: "" },
         { assignedTo: { $exists: false } },
@@ -111,21 +125,40 @@ export const searchLeadsAdvanced = async ({
     }
   }
 
-  // 4. Inactive for X days (e.g. 7 days without contact)
+  // 4. Inactive for X days (checks lastActivity, fallback to lastCallAt and createdAt)
   if (inactiveDays && parseInt(inactiveDays, 10) > 0) {
     const days = parseInt(inactiveDays, 10);
     const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     queryConditions.push({
       $or: [
-        { lastCallAt: { $lt: cutoffDate } },
-        { lastCallAt: null, createdAt: { $lt: cutoffDate } },
+        { lastActivity: { $lt: cutoffDate } },
+        {
+          $and: [
+            { $or: [{ lastActivity: null }, { lastActivity: { $exists: false } }] },
+            { lastCallAt: { $lt: cutoffDate } },
+          ],
+        },
+        {
+          $and: [
+            { $or: [{ lastActivity: null }, { lastActivity: { $exists: false } }] },
+            { $or: [{ lastCallAt: null }, { lastCallAt: { $exists: false } }] },
+            { createdAt: { $lt: cutoffDate } },
+          ],
+        },
       ],
     });
   }
 
-  // 5. Standard Lead Attributes
+  // 5. Standard Lead Attributes (supports legacy Lost and statuses)
   if (status && status !== "all") {
-    queryConditions.push({ status: new RegExp(`^${escapeRegex(status.trim())}$`, "i") });
+    const sTrim = status.trim();
+    if (sTrim.toLowerCase() === "lost") {
+      queryConditions.push({
+        status: { $in: ["Not Interested", "Price Issue", "Not Attended", "Lost", "lost"] },
+      });
+    } else {
+      queryConditions.push({ status: new RegExp(`^${escapeRegex(sTrim)}$`, "i") });
+    }
   }
   if (source && source !== "all") {
     queryConditions.push({ source: new RegExp(`^${escapeRegex(source.trim())}$`, "i") });
@@ -173,8 +206,26 @@ export const searchLeadsAdvanced = async ({
     });
   }
 
-  // 8. Follow-up status filter (if requiring Followup cross-reference)
-  if (followupStatusFilter && canQuery(FollowupModel)) {
+  // 8. Follow-up status filter (with strict error handling and distinct no_followup vs no_pending semantics)
+  if (followupStatusFilter) {
+    if (!canQuery(FollowupModel)) {
+      return formatPaginatedResponse({
+        success: false,
+        totalCount: 0,
+        page,
+        limit,
+        records: [],
+        coverage: "unavailable",
+        errorCode: "FOLLOWUP_MODEL_UNAVAILABLE",
+        message: "Follow-up cross-reference unavailable: Followup model cannot be queried.",
+        filtersApplied: {
+          salesperson: salespersonNameOrId || (unassignedOnly ? "Unassigned Only" : "All"),
+          followupStatus: followupStatusFilter,
+        },
+        coverageWarnings: ["Followup model is not available in tenant database."],
+      });
+    }
+
     const boundaries = getISTDateBoundaries();
     const todayStr = boundaries.todayStr;
     try {
@@ -184,7 +235,7 @@ export const searchLeadsAdvanced = async ({
           date: { $lt: todayStr },
         });
         queryConditions.push({ _id: { $in: overdueLeadIds } });
-      } else if (followupStatusFilter === "pending_today") {
+      } else if (followupStatusFilter === "pending_today" || followupStatusFilter === "today") {
         const todayLeadIds = await FollowupModel.distinct("leadId", {
           done: false,
           date: todayStr,
@@ -193,12 +244,35 @@ export const searchLeadsAdvanced = async ({
       } else if (followupStatusFilter === "has_pending") {
         const pendingLeadIds = await FollowupModel.distinct("leadId", { done: false });
         queryConditions.push({ _id: { $in: pendingLeadIds } });
+      } else if (followupStatusFilter === "completed") {
+        const completedLeadIds = await FollowupModel.distinct("leadId", { done: true });
+        queryConditions.push({ _id: { $in: completedLeadIds } });
       } else if (followupStatusFilter === "no_followup") {
+        // Excludes leads with ANY follow-up records (pending or completed)
+        const anyFollowupLeadIds = await FollowupModel.distinct("leadId");
+        queryConditions.push({ _id: { $nin: anyFollowupLeadIds } });
+      } else if (followupStatusFilter === "no_pending_followup" || followupStatusFilter === "no_pending") {
+        // Excludes leads with pending follow-ups
         const anyPendingIds = await FollowupModel.distinct("leadId", { done: false });
         queryConditions.push({ _id: { $nin: anyPendingIds } });
       }
     } catch (fuErr) {
       console.warn("[LeadAnalytics] Followup cross-ref error:", fuErr.message);
+      return formatPaginatedResponse({
+        success: false,
+        totalCount: 0,
+        page,
+        limit,
+        records: [],
+        coverage: "unavailable",
+        errorCode: "FOLLOWUP_QUERY_ERROR",
+        message: `Follow-up cross-reference failed: ${fuErr.message}`,
+        filtersApplied: {
+          salesperson: salespersonNameOrId || (unassignedOnly ? "Unassigned Only" : "All"),
+          followupStatus: followupStatusFilter,
+        },
+        coverageWarnings: [`Followup cross-reference error: ${fuErr.message}`],
+      });
     }
   }
 
@@ -224,24 +298,33 @@ export const searchLeadsAdvanced = async ({
 
   const leads = typeof queryBuilder.lean === "function" ? await queryBuilder.lean() : await queryBuilder;
 
-  const formatted = (leads || []).map((l) => ({
-    id: l._id ? l._id.toString() : "",
-    name: l.name || "Unnamed Customer",
-    phone: l.phone,
-    company: l.company || undefined,
-    service: l.service,
-    status: l.status,
-    source: l.source,
-    priority: l.priority,
-    assignedTo: l.assignedTo ? String(l.assignedTo) : "Unassigned",
-    dealValue: l.dealValue ? `₹${l.dealValue.toLocaleString("en-IN")}` : undefined,
-    callCount: l.callCount || 0,
-    lastCallDateIST: l.lastCallAt
-      ? new Date(l.lastCallAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })
-      : "Never Called",
-    createdDateIST: new Date(l.createdAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }),
-    notesSnippet: l.notes ? wrapUntrustedData(l.notes.slice(0, 100)) : undefined,
-  }));
+  const ownerDir = await buildOwnerDirectory({ tenantModels });
+
+  const formatted = (leads || []).map((l) => {
+    const owner = ownerDir.resolveOwner(l.assignedTo);
+    const displayName = (l.name && l.name.trim()) || (l.company && l.company.trim()) || l.phone || "Unnamed Customer";
+    const leadId = l._id ? l._id.toString() : "";
+    return {
+      leadId,
+      displayName,
+      name: (l.name && l.name.trim()) || displayName,
+      phone: l.phone,
+      company: l.company || undefined,
+      service: l.service,
+      status: l.status,
+      source: l.source,
+      priority: l.priority,
+      assignedTo: owner.name,
+      assignedToId: owner.id || undefined,
+      dealValue: l.dealValue ? `₹${l.dealValue.toLocaleString("en-IN")}` : undefined,
+      callCount: l.callCount || 0,
+      lastCallDateIST: l.lastCallAt
+        ? new Date(l.lastCallAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })
+        : "Never Called",
+      createdDateIST: new Date(l.createdAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }),
+      notesSnippet: l.notes ? wrapUntrustedData(l.notes.slice(0, 100)) : undefined,
+    };
+  });
 
   return formatPaginatedResponse({
     totalCount,

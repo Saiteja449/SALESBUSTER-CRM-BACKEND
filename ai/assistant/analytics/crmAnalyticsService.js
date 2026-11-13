@@ -6,8 +6,15 @@ import { searchLeadsAdvanced } from "./leadAnalyticsService.js";
 import { getFollowupAnalytics } from "./followupAnalyticsService.js";
 import { getConversionAnalytics } from "./conversionAnalyticsService.js";
 import { getRecordingAnalytics } from "./recordingAnalyticsService.js";
-import { getWhatsAppAnalytics } from "./whatsappAnalyticsService.js";
+import {
+  getWhatsAppAnalytics,
+  getWhatsAppConnectionStatus,
+  searchWhatsAppConversations,
+  getConversationMessages,
+  summarizeWhatsAppConversation,
+} from "./whatsappAnalyticsService.js";
 import { formatDuration, getISTDateBoundaries } from "../dateUtils.js";
+import { buildOwnerDirectory } from "./ownerResolver.js";
 
 const canQuery = (model) => {
   if (!model) return false;
@@ -37,6 +44,22 @@ export const getCRMOverview = async ({
   const boundaries = getISTDateBoundaries();
   const todayStr = boundaries.todayStr;
 
+  const anyModelAvailable = canQuery(LeadModel) || canQuery(CallRecordModel) || canQuery(FollowupModel) || canQuery(MessageModel);
+  if (!anyModelAvailable) {
+    return {
+      success: false,
+      coverage: "unavailable",
+      dataCoverage: "unavailable",
+      errorCode: "ALL_MODELS_UNAVAILABLE",
+      message: "Database models unavailable in tenant context.",
+      periodEvaluated: dateRange.label,
+      timezone: "Asia/Kolkata",
+      coverageWarnings: ["No CRM database models were available to query."],
+    };
+  }
+
+  const coverageWarnings = [];
+
   // 1. Lead KPI Facet
   let leadStats = {
     totalLeads: 0,
@@ -45,6 +68,8 @@ export const getCRMOverview = async ({
     convertedLeads: 0,
     lostLeads: 0,
     unassignedLeads: 0,
+    convertedRevenue: "₹0",
+    activePipelineValue: "₹0",
     totalDealValue: "₹0",
   };
 
@@ -74,7 +99,12 @@ export const getCRMOverview = async ({
                   lost: {
                     $sum: {
                       $cond: [
-                        { $in: ["$status", ["Not Interested", "Price Issue", "Not Attended"]] },
+                        {
+                          $in: [
+                            "$status",
+                            ["Not Interested", "Price Issue", "Not Attended", "Lost", "lost"],
+                          ],
+                        },
                         1,
                         0,
                       ],
@@ -86,11 +116,27 @@ export const getCRMOverview = async ({
                         {
                           $or: [
                             { $eq: ["$assignedTo", "Unassigned"] },
+                            { $eq: ["$assignedTo", "unassigned"] },
                             { $eq: ["$assignedTo", null] },
                             { $eq: ["$assignedTo", ""] },
+                            { $not: ["$assignedTo"] },
                           ],
                         },
                         1,
+                        0,
+                      ],
+                    },
+                  },
+                  convRev: {
+                    $sum: {
+                      $cond: [{ $eq: ["$status", "Converted"] }, { $ifNull: ["$dealValue", 0] }, 0],
+                    },
+                  },
+                  pipeVal: {
+                    $sum: {
+                      $cond: [
+                        { $in: ["$status", ["New", "Follow Up", "Missed Call"]] },
+                        { $ifNull: ["$dealValue", 0] },
                         0,
                       ],
                     },
@@ -112,10 +158,13 @@ export const getCRMOverview = async ({
           convertedLeads: t.converted || 0,
           lostLeads: t.lost || 0,
           unassignedLeads: t.unassigned || 0,
+          convertedRevenue: t.convRev > 0 ? `₹${t.convRev.toLocaleString("en-IN")}` : "₹0",
+          activePipelineValue: t.pipeVal > 0 ? `₹${t.pipeVal.toLocaleString("en-IN")}` : "₹0",
           totalDealValue: t.dealVal > 0 ? `₹${t.dealVal.toLocaleString("en-IN")}` : "₹0",
         };
       }
     } catch (lErr) {
+      coverageWarnings.push(`Lead aggregation error: ${lErr.message}`);
       console.warn("[CRMOverview] Lead aggregation error:", lErr.message);
     }
   }
@@ -203,21 +252,47 @@ export const getCRMOverview = async ({
     } catch (_) {}
   }
 
-  // 3. Followup KPIs
+  // 3. Followup KPIs (period-scoped tasks plus all-time backlog)
   let followupStats = {
     pendingFollowups: 0,
     overdueFollowups: 0,
     completedFollowups: 0,
+    periodEvaluated: dateRange.label,
+    allTimeBacklog: {
+      totalPending: 0,
+      totalOverdue: 0,
+    },
   };
 
   if (canQuery(FollowupModel)) {
     try {
-      const [fRes] = await FollowupModel.aggregate([
-        {
-          $facet: {
+      const periodFacet = dateRange.isAllTime
+        ? {
             pending: [{ $match: { done: false } }, { $count: "c" }],
             overdue: [{ $match: { done: false, date: { $lt: todayStr } } }, { $count: "c" }],
             completed: [{ $match: { done: true } }, { $count: "c" }],
+          }
+        : {
+            pending: [
+              { $match: { done: false, date: { $gte: dateRange.startStr, $lte: dateRange.endStr } } },
+              { $count: "c" },
+            ],
+            overdue: [
+              { $match: { done: false, date: { $gte: dateRange.startStr, $lte: dateRange.endStr, $lt: todayStr } } },
+              { $count: "c" },
+            ],
+            completed: [
+              { $match: { done: true, date: { $gte: dateRange.startStr, $lte: dateRange.endStr } } },
+              { $count: "c" },
+            ],
+          };
+
+      const [fRes] = await FollowupModel.aggregate([
+        {
+          $facet: {
+            ...periodFacet,
+            allPending: [{ $match: { done: false } }, { $count: "c" }],
+            allOverdue: [{ $match: { done: false, date: { $lt: todayStr } } }, { $count: "c" }],
           },
         },
       ]);
@@ -225,8 +300,15 @@ export const getCRMOverview = async ({
         pendingFollowups: fRes?.pending[0]?.c || 0,
         overdueFollowups: fRes?.overdue[0]?.c || 0,
         completedFollowups: fRes?.completed[0]?.c || 0,
+        periodEvaluated: dateRange.label,
+        allTimeBacklog: {
+          totalPending: fRes?.allPending[0]?.c || 0,
+          totalOverdue: fRes?.allOverdue[0]?.c || 0,
+        },
       };
-    } catch (_) {}
+    } catch (fuErr) {
+      coverageWarnings.push(`Followup overview query error: ${fuErr.message}`);
+    }
   }
 
   // 4. WhatsApp KPIs
@@ -245,7 +327,9 @@ export const getCRMOverview = async ({
   }
   if (canQuery(MessageModel)) {
     try {
+      const msgMatch = dateRange.isAllTime ? {} : { timestamp: { $gte: dateRange.start, $lte: dateRange.end } };
       const [mRes] = await MessageModel.aggregate([
+        { $match: msgMatch },
         {
           $facet: {
             outgoing: [{ $match: { direction: "outgoing" } }, { $count: "c" }],
@@ -258,21 +342,65 @@ export const getCRMOverview = async ({
     } catch (_) {}
   }
 
-  // 5. Recordings
+  // 5. Recordings (Lead uploads + CallRecord recordings)
   let availableRecordings = 0;
   if (canQuery(LeadModel)) {
     try {
+      const leadRecMatch = dateRange.isAllTime
+        ? {}
+        : {
+            $or: [
+              { "recordings.uploadedAt": { $gte: dateRange.start, $lte: dateRange.end } },
+              { createdAt: { $gte: dateRange.start, $lte: dateRange.end } },
+            ],
+          };
       const [rRes] = await LeadModel.aggregate([
+        { $match: leadRecMatch },
         { $unwind: "$recordings" },
+        ...(dateRange.isAllTime
+          ? []
+          : [
+              {
+                $match: {
+                  $or: [
+                    { "recordings.uploadedAt": { $gte: dateRange.start, $lte: dateRange.end } },
+                    {
+                      $and: [
+                        { "recordings.uploadedAt": { $exists: false } },
+                        { createdAt: { $gte: dateRange.start, $lte: dateRange.end } },
+                      ],
+                    },
+                  ],
+                },
+              },
+            ]),
         { $count: "c" },
       ]);
-      availableRecordings = rRes?.c || 0;
+      availableRecordings += rRes?.c || 0;
+    } catch (_) {}
+  }
+  if (canQuery(CallRecordModel)) {
+    try {
+      const crFilter = { recordingUrl: { $exists: true, $ne: null } };
+      if (!dateRange.isAllTime) {
+        crFilter.calledAt = { $gte: dateRange.start, $lte: dateRange.end };
+      }
+      const crRecordingsCount = await CallRecordModel.countDocuments(crFilter);
+      availableRecordings += crRecordingsCount;
     } catch (_) {}
   }
 
   return {
     success: true,
+    coverage: coverageWarnings.length > 0 ? "partial" : "complete",
+    dataCoverage: coverageWarnings.length > 0 ? "partial" : "complete",
     periodEvaluated: dateRange.label,
+    timezone: "Asia/Kolkata",
+    ownershipAttribution: {
+      leadAttribution: "Current Lead Assignment (Lead.assignedTo)",
+      callAttribution: "Historical Event Activity (CallRecord.salespersonId / CallRecord.salespersonName)",
+      followupAttribution: "Current Lead Assignment (Lead.assignedTo)",
+    },
     leads: leadStats,
     calls: callStats,
     followups: followupStats,
@@ -280,6 +408,7 @@ export const getCRMOverview = async ({
     recordings: {
       availableRecordings,
     },
+    coverageWarnings,
   };
 };
 
@@ -304,18 +433,23 @@ export const getSalespersonAnalytics = async ({
   const CallRecordModel = tenantModels.CallRecord;
 
   if (!canQuery(LeadModel) || !canQuery(UserModel)) {
-    return { success: false, error: "Required models not available in tenant database" };
+    return {
+      success: false,
+      coverage: "unavailable",
+      dataCoverage: "unavailable",
+      errorCode: "MODELS_UNAVAILABLE",
+      message: "Required models (Lead, User) are not available in tenant database.",
+      periodEvaluated: dateRange.label,
+      timezone: "Asia/Kolkata",
+      teamLeaderboard: [],
+    };
   }
 
   const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate });
 
-  // 1. Fetch all salespeople (active and inactive)
-  const allUsers = await listAllSalespeople({ tenantModels });
-  const userMap = new Map();
-  for (const u of allUsers) {
-    userMap.set(u._id.toString(), u);
-    if (u.name) userMap.set(u.name.toLowerCase(), u);
-  }
+  // 1. Fetch all users directory (active and inactive, all roles)
+  const ownerDir = await buildOwnerDirectory({ tenantModels });
+  const allUsers = ownerDir.allUsers;
 
   // 2. Aggregate Leads by assignedTo
   const leadMatch = dateRange.isAllTime ? {} : { createdAt: { $gte: dateRange.start, $lte: dateRange.end } };
@@ -329,7 +463,11 @@ export const getSalespersonAnalytics = async ({
         convertedLeads: { $sum: { $cond: [{ $eq: ["$status", "Converted"] }, 1, 0] } },
         lostLeads: {
           $sum: {
-            $cond: [{ $in: ["$status", ["Not Interested", "Price Issue", "Not Attended"]] }, 1, 0],
+            $cond: [
+              { $in: ["$status", ["Not Interested", "Price Issue", "Not Attended", "Lost", "lost"]] },
+              1,
+              0,
+            ],
           },
         },
         dealValue: { $sum: { $ifNull: ["$dealValue", 0] } },
@@ -340,12 +478,24 @@ export const getSalespersonAnalytics = async ({
   const leadStatsMap = new Map();
   let unassignedLeads = 0;
   for (const la of leadAgg) {
-    const rawId = la._id ? String(la._id) : "Unassigned";
-    if (rawId === "Unassigned" || rawId === "null" || rawId === "") {
+    const owner = ownerDir.resolveOwner(la._id);
+    if (!owner.id && owner.name === "Unassigned") {
       unassignedLeads += la.totalLeads;
     } else {
-      leadStatsMap.set(rawId, la);
-      leadStatsMap.set(rawId.toLowerCase(), la);
+      const existing = (owner.id && leadStatsMap.get(owner.id)) || {
+        totalLeads: 0,
+        newLeads: 0,
+        convertedLeads: 0,
+        lostLeads: 0,
+        dealValue: 0,
+      };
+      existing.totalLeads += la.totalLeads || 0;
+      existing.newLeads += la.newLeads || 0;
+      existing.convertedLeads += la.convertedLeads || 0;
+      existing.lostLeads += la.lostLeads || 0;
+      existing.dealValue += la.dealValue || 0;
+      if (owner.id) leadStatsMap.set(owner.id, existing);
+      if (owner.name) leadStatsMap.set(owner.name.toLowerCase(), existing);
     }
   }
 
@@ -373,12 +523,26 @@ export const getSalespersonAnalytics = async ({
       ]);
 
       for (const ca of callAgg) {
-        const key = ca._id ? String(ca._id).toLowerCase() : "";
-        if (key === "unassigned" || !ca._id) {
+        const owner = ownerDir.resolveOwner(ca._id || ca.salespersonName);
+        if (!owner.id && owner.name === "Unassigned") {
           unassignedMissedCalls += ca.missed || 0;
         } else {
-          callStatsMap.set(key, ca);
-          if (ca.salespersonName) callStatsMap.set(ca.salespersonName.toLowerCase(), ca);
+          const existing = (owner.id && callStatsMap.get(owner.id)) || {
+            totalCalls: 0,
+            incoming: 0,
+            outgoing: 0,
+            connected: 0,
+            missed: 0,
+            talkTime: 0,
+          };
+          existing.totalCalls += ca.totalCalls || 0;
+          existing.incoming += ca.incoming || 0;
+          existing.outgoing += ca.outgoing || 0;
+          existing.connected += ca.connected || 0;
+          existing.missed += ca.missed || 0;
+          existing.talkTime += ca.talkTime || 0;
+          if (owner.id) callStatsMap.set(owner.id, existing);
+          if (owner.name) callStatsMap.set(owner.name.toLowerCase(), existing);
         }
       }
     } catch (_) {}
@@ -404,12 +568,26 @@ export const getSalespersonAnalytics = async ({
         },
       ]);
       for (const ca of aAgg) {
-        const key = ca._id ? String(ca._id).toLowerCase() : "";
-        if (key === "unassigned" || !ca._id) {
+        const owner = ownerDir.resolveOwner(ca._id || ca.salespersonName);
+        if (!owner.id && owner.name === "Unassigned") {
           unassignedMissedCalls += ca.missed || 0;
         } else {
-          callStatsMap.set(key, ca);
-          if (ca.salespersonName) callStatsMap.set(ca.salespersonName.toLowerCase(), ca);
+          const existing = (owner.id && callStatsMap.get(owner.id)) || {
+            totalCalls: 0,
+            incoming: 0,
+            outgoing: 0,
+            connected: 0,
+            missed: 0,
+            talkTime: 0,
+          };
+          existing.totalCalls += ca.totalCalls || 0;
+          existing.incoming += ca.incoming || 0;
+          existing.outgoing += ca.outgoing || 0;
+          existing.connected += ca.connected || 0;
+          existing.missed += ca.missed || 0;
+          existing.talkTime += ca.talkTime || 0;
+          if (owner.id) callStatsMap.set(owner.id, existing);
+          if (owner.name) callStatsMap.set(owner.name.toLowerCase(), existing);
         }
       }
     } catch (_) {}
@@ -443,23 +621,32 @@ export const getSalespersonAnalytics = async ({
 
       for (const p of fFacet?.pendingByAuthor || []) {
         if (p._id) {
-          const k = String(p._id).toLowerCase();
+          const owner = ownerDir.resolveOwner(p._id);
+          const k = owner.id || (owner.name ? owner.name.toLowerCase() : String(p._id).toLowerCase());
           if (!followupStatsMap.has(k)) followupStatsMap.set(k, {});
-          followupStatsMap.get(k).pending = p.count;
+          const entry = followupStatsMap.get(k);
+          entry.pending = (entry.pending || 0) + p.count;
+          if (owner.name) followupStatsMap.set(owner.name.toLowerCase(), entry);
         }
       }
       for (const o of fFacet?.overdueByAuthor || []) {
         if (o._id) {
-          const k = String(o._id).toLowerCase();
+          const owner = ownerDir.resolveOwner(o._id);
+          const k = owner.id || (owner.name ? owner.name.toLowerCase() : String(o._id).toLowerCase());
           if (!followupStatsMap.has(k)) followupStatsMap.set(k, {});
-          followupStatsMap.get(k).overdue = o.count;
+          const entry = followupStatsMap.get(k);
+          entry.overdue = (entry.overdue || 0) + o.count;
+          if (owner.name) followupStatsMap.set(owner.name.toLowerCase(), entry);
         }
       }
       for (const c of fFacet?.completedByAuthor || []) {
         if (c._id) {
-          const k = String(c._id).toLowerCase();
+          const owner = ownerDir.resolveOwner(c._id);
+          const k = owner.id || (owner.name ? owner.name.toLowerCase() : String(c._id).toLowerCase());
           if (!followupStatsMap.has(k)) followupStatsMap.set(k, {});
-          followupStatsMap.get(k).completed = c.count;
+          const entry = followupStatsMap.get(k);
+          entry.completed = (entry.completed || 0) + c.count;
+          if (owner.name) followupStatsMap.set(owner.name.toLowerCase(), entry);
         }
       }
     } catch (_) {}
@@ -469,13 +656,13 @@ export const getSalespersonAnalytics = async ({
   const performanceList = [];
 
   for (const user of allUsers) {
-    const uid = user._id.toString();
+    const uid = user.id || (user._id ? user._id.toString() : "");
     const uname = user.name || user.email;
-    const unameLower = uname.toLowerCase();
+    const unameLower = uname ? uname.toLowerCase() : "";
 
     const lStat = leadStatsMap.get(uid) || leadStatsMap.get(unameLower) || {};
-    const cStat = callStatsMap.get(uid.toLowerCase()) || callStatsMap.get(unameLower) || {};
-    const fStat = followupStatsMap.get(unameLower) || followupStatsMap.get(uid.toLowerCase()) || {};
+    const cStat = callStatsMap.get(uid) || callStatsMap.get(unameLower) || {};
+    const fStat = followupStatsMap.get(uid) || followupStatsMap.get(unameLower) || {};
 
     const totLeads = lStat.totalLeads || 0;
     const convLeads = lStat.convertedLeads || 0;
@@ -484,7 +671,10 @@ export const getSalespersonAnalytics = async ({
 
     performanceList.push({
       repId: uid,
+      salespersonId: uid,
       name: uname,
+      salesperson: uname,
+      salespersonName: uname,
       role: user.role,
       status: user.status,
       // Lead metrics
@@ -528,7 +718,12 @@ export const getSalespersonAnalytics = async ({
       }
       return {
         success: true,
+        coverage: "complete",
+        dataCoverage: "complete",
         periodEvaluated: dateRange.label,
+        timezone: "Asia/Kolkata",
+        totalMatchingCount: 0,
+        returnedCount: 0,
         topPerformerByLeads: null,
         unassignedLeadsCount: unassignedLeads,
         unassignedMissedCallsCount: unassignedMissedCalls,
@@ -549,7 +744,15 @@ export const getSalespersonAnalytics = async ({
 
   return {
     success: true,
+    coverage: "complete",
+    dataCoverage: "complete",
     periodEvaluated: dateRange.label,
+    timezone: "Asia/Kolkata",
+    ownershipAttribution: {
+      leadAttribution: "Current Lead Assignment (Lead.assignedTo)",
+      callAttribution: "Historical Event Activity (CallRecord.salespersonId / CallRecord.salespersonName)",
+      followupAttribution: "Current Lead Assignment (Lead.assignedTo)",
+    },
     topPerformerByLeads: topPerformer
       ? {
           name: topPerformer.name,
@@ -575,5 +778,9 @@ export {
   getConversionAnalytics,
   getRecordingAnalytics,
   getWhatsAppAnalytics,
+  getWhatsAppConnectionStatus,
+  searchWhatsAppConversations,
+  getConversationMessages,
+  summarizeWhatsAppConversation,
 };
 

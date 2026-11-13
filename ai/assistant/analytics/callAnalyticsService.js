@@ -5,6 +5,7 @@ import { validateAnalyticsQuery, formatPaginatedResponse } from "./analyticsQuer
 import { formatDuration, getISTDateBoundaries, getISTDateString } from "../dateUtils.js";
 import { escapeRegex } from "../securityUtils.js";
 import { composeMongoQuery } from "./queryComposer.js";
+import { buildOwnerDirectory } from "./ownerResolver.js";
 
 const canQuery = (model) => {
   if (!model) return false;
@@ -104,6 +105,23 @@ export const searchCallRecords = async ({
   const CallRecordModel = tenantModels.CallRecord;
   const LeadModel = tenantModels.Lead;
 
+  if (!canQuery(CallRecordModel) && !canQuery(LeadModel)) {
+    return formatPaginatedResponse({
+      success: false,
+      coverage: "unavailable",
+      errorCode: "CALL_MODELS_UNAVAILABLE",
+      message: "Call query unavailable: neither CallRecord nor Lead model is available in tenant database.",
+      page,
+      limit,
+      totalCount: 0,
+      records: [],
+      filtersApplied: {
+        period: dateRange.label,
+        salesperson: salespersonNameOrId || "All Salespeople",
+      },
+    });
+  }
+
   // Build filter clauses safely
   const crClauses = [];
   const leadClauses = [];
@@ -177,6 +195,10 @@ export const searchCallRecords = async ({
       if (typeof q.sort === "function") q = q.sort({ calledAt: -1 });
       if (typeof q.limit === "function") q = q.limit(500); // bounded safe retrieval
       const records = typeof q.lean === "function" ? await q.lean() : await q;
+      if (Array.isArray(records) && records.length >= 500) {
+        isPartialCoverage = true;
+        coverageWarnings.push("CallRecord query reached retrieval cap of 500 records; additional historical records exist.");
+      }
       for (const rec of records || []) {
         if (!matchesSalesperson(repResolution, rec.salespersonId, rec.salespersonName)) continue;
         if (!matchesCustomerPhone(customerPhone, rec.customerPhone)) continue;
@@ -251,6 +273,21 @@ export const searchCallRecords = async ({
               break;
             }
           }
+          if (!alreadySeen && lead.phone) {
+            const lDigits = String(lead.phone).replace(/\D/g, "").slice(-10);
+            for (const existing of deduplicatedCalls.values()) {
+              const eDigits = String(existing.customerPhone || "").replace(/\D/g, "").slice(-10);
+              if (
+                lDigits &&
+                eDigits &&
+                lDigits === eDigits &&
+                Math.abs(new Date(existing.calledAt).getTime() - calledAtDate.getTime()) < 3000
+              ) {
+                alreadySeen = true;
+                break;
+              }
+            }
+          }
           if (alreadySeen) continue;
 
           seenCallEventIds.add(eventId);
@@ -307,13 +344,21 @@ export const searchCallRecords = async ({
     } catch (_) {}
   }
 
+  const ownerDir = await buildOwnerDirectory({ tenantModels });
+
   const formattedRecords = pagedCalls.map((rec) => {
     const lInfo = rec.leadId ? leadInfoMap.get(rec.leadId.toString()) : null;
+    const owner = ownerDir.resolveOwner(rec.salespersonName || rec.salespersonId || lInfo?.assignedTo, rec.salespersonId || rec.salespersonName);
+    const displayName = (rec.customerName && rec.customerName.trim()) || (lInfo?.name && lInfo?.name.trim()) || (lInfo?.company && lInfo?.company.trim()) || rec.customerPhone || "Caller";
     return {
       callEventId: rec.callEventId || undefined,
-      customerName: rec.customerName || lInfo?.name || "Unknown Customer",
+      leadId: rec.leadId ? rec.leadId.toString() : undefined,
+      displayName,
+      customerName: (rec.customerName && rec.customerName.trim()) || displayName,
       customerPhone: rec.customerPhone || lInfo?.phone || "Unknown",
-      salesperson: rec.salespersonName || (lInfo?.assignedTo ? String(lInfo.assignedTo) : "Unassigned"),
+      salesperson: owner.name,
+      salespersonName: owner.name,
+      salespersonId: owner.id || undefined,
       callDateIST: rec.calledAt
         ? new Date(rec.calledAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })
         : "Unknown Date",
@@ -344,8 +389,8 @@ export const searchCallRecords = async ({
     byType[t] = (byType[t] || 0) + 1;
     const s = c.callStatus || "unknown";
     byStatus[s] = (byStatus[s] || 0) + 1;
-    const rep = c.salespersonName || "Unassigned";
-    repCounts[rep] = (repCounts[rep] || 0) + 1;
+    const owner = ownerDir.resolveOwner(c.salespersonId || c.salespersonName);
+    repCounts[owner.name] = (repCounts[owner.name] || 0) + 1;
     totalDurationSec += c.duration || 0;
   }
 
@@ -359,13 +404,22 @@ export const searchCallRecords = async ({
     salespersonBreakdown: repCounts,
   };
 
+  const totalQueriedSucceeded = callRecordSuccess || leadQuerySuccess;
+  const finalCoverage = !totalQueriedSucceeded && coverageWarnings.length > 0
+    ? "unavailable"
+    : isPartialCoverage
+    ? "partial"
+    : "complete";
+
   return formatPaginatedResponse({
+    success: finalCoverage !== "unavailable",
     totalCount,
     page,
     limit,
     records: formattedRecords,
     summary,
-    coverage: isPartialCoverage ? "partial" : "complete",
+    coverage: finalCoverage,
+    errorCode: finalCoverage === "unavailable" ? "CALL_QUERY_FAILED" : null,
     message: coverageWarnings.length > 0 ? coverageWarnings.join("; ") : "",
     filtersApplied: {
       period: dateRange.label,
@@ -443,6 +497,23 @@ export const getMissedCallAnalytics = async ({
 
   const CallRecordModel = tenantModels.CallRecord;
   const LeadModel = tenantModels.Lead;
+
+  if (!canQuery(CallRecordModel) && !canQuery(LeadModel)) {
+    return formatPaginatedResponse({
+      success: false,
+      coverage: "unavailable",
+      errorCode: "CALL_MODELS_UNAVAILABLE",
+      message: "Call query unavailable: neither CallRecord nor Lead model is available in tenant database.",
+      page,
+      limit,
+      totalCount: 0,
+      records: [],
+      filtersApplied: {
+        period: dateRange.label,
+        salesperson: salespersonNameOrId || "All Salespeople",
+      },
+    });
+  }
   const FollowupModel = tenantModels.Followup;
 
   const boundaries = getISTDateBoundaries();
@@ -479,6 +550,10 @@ export const getMissedCallAnalytics = async ({
       if (typeof q.sort === "function") q = q.sort({ calledAt: -1 });
       if (typeof q.limit === "function") q = q.limit(1000); // bounded retrieval
       const crRecords = typeof q.lean === "function" ? await q.lean() : await q;
+      if (Array.isArray(crRecords) && crRecords.length >= 1000) {
+        isPartialCoverage = true;
+        coverageWarnings.push("CallRecord query reached maximum retrieval cap of 1000 records; additional historical records exist.");
+      }
       for (const rec of crRecords || []) {
         if (!matchesSalesperson(repResolution, rec.salespersonId, rec.salespersonName)) continue;
         if (!matchesCustomerPhone(customerPhone, rec.customerPhone)) continue;
@@ -560,6 +635,21 @@ export const getMissedCallAnalytics = async ({
               ) {
                 alreadySeen = true;
                 break;
+              }
+            }
+            if (!alreadySeen && ld.phone) {
+              const lDigits = String(ld.phone).replace(/\D/g, "").slice(-10);
+              for (const existing of deduplicatedCalls.values()) {
+                const eDigits = String(existing.customerPhone || "").replace(/\D/g, "").slice(-10);
+                if (
+                  lDigits &&
+                  eDigits &&
+                  lDigits === eDigits &&
+                  Math.abs(new Date(existing.calledAt).getTime() - cDate.getTime()) < 3000
+                ) {
+                  alreadySeen = true;
+                  break;
+                }
               }
             }
             if (alreadySeen) continue;
@@ -655,6 +745,7 @@ export const getMissedCallAnalytics = async ({
   }
 
   // Filter and enrich
+  const ownerDir = await buildOwnerDirectory({ tenantModels });
   const filteredCalls = [];
 
   for (const call of allMissedCalls) {
@@ -699,15 +790,19 @@ export const getMissedCallAnalytics = async ({
       }
     }
 
-    const repName = call.salespersonName || (leadDoc?.assignedTo ? String(leadDoc.assignedTo) : "Unassigned");
+    const owner = ownerDir.resolveOwner(call.salespersonName || call.salespersonId || leadDoc?.assignedTo, call.salespersonId || call.salespersonName);
     const phone = call.customerPhone || leadDoc?.phone || "Unknown";
+    const displayName = (call.customerName && call.customerName.trim()) || (leadDoc?.name && leadDoc?.name.trim()) || (leadDoc?.company && leadDoc?.company.trim()) || phone || "Caller";
 
     filteredCalls.push({
       callEventId: call.callEventId,
-      customerName: call.customerName || leadDoc?.name || "Caller",
+      leadId: call.leadId ? call.leadId.toString() : undefined,
+      displayName,
+      customerName: (call.customerName && call.customerName.trim()) || displayName,
       customerPhone: phone,
-      salesperson: repName,
-      salespersonId: call.salespersonId || leadDoc?.assignedTo || null,
+      salesperson: owner.name,
+      salespersonName: owner.name,
+      salespersonId: owner.id || undefined,
       callDateIST: new Date(call.calledAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }),
       callTimeIST: new Date(call.calledAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "Asia/Kolkata" }),
       callStatus: "missed",
@@ -782,13 +877,22 @@ export const getMissedCallAnalytics = async ({
     unfilteredTotalMissedCalls: allMissedCalls.length,
   };
 
+  const anyQuerySucceeded = callRecordQueried || leadQueried;
+  const finalCoverage = !anyQuerySucceeded && coverageWarnings.length > 0
+    ? "unavailable"
+    : isPartialCoverage
+    ? "partial"
+    : "complete";
+
   return formatPaginatedResponse({
+    success: finalCoverage !== "unavailable",
     totalCount: filteredCalls.length,
     page,
     limit,
     records: pagedRecords,
     summary,
-    coverage: isPartialCoverage ? "partial" : "complete",
+    coverage: finalCoverage,
+    errorCode: finalCoverage === "unavailable" ? "MISSED_CALL_QUERY_FAILED" : null,
     message: coverageWarnings.length > 0 ? coverageWarnings.join("; ") : "",
     filtersApplied: {
       period: dateRange.label,

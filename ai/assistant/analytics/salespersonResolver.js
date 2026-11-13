@@ -121,6 +121,7 @@ export const resolveSalesperson = async ({
       leadAssignedFilter: {
         $or: [
           { assignedTo: "Unassigned" },
+          { assignedTo: "unassigned" },
           { assignedTo: null },
           { assignedTo: "" },
           { assignedTo: { $exists: false } },

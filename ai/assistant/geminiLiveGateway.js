@@ -319,6 +319,56 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
       required: ["confirmed"],
     },
   },
+  {
+    name: "get_whatsapp_connection_status",
+    description: "Retrieves WhatsApp session connection status across sales team members (connected, connecting, qr, disconnected), phone numbers, and last sync times.",
+    parameters: {
+      type: "OBJECT",
+      properties: {},
+    },
+  },
+  {
+    name: "search_whatsapp_conversations",
+    description: "Searches customer WhatsApp conversations by customer name, phone number, lead, assigned salesperson, unread status, content snippet, and date range.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        customerName: { type: "STRING", description: "Customer name" },
+        customerPhone: { type: "STRING", description: "Customer phone number" },
+        salespersonNameOrId: { type: "STRING", description: "Filter by assigned salesperson name or ID" },
+        unreadOnly: { type: "BOOLEAN", description: "Set true to only return unread conversations" },
+        period: { type: "STRING", description: "Time period e.g. 'all_time', 'today', 'this_week', 'this_month'" },
+        startDate: { type: "STRING", description: "Start date in YYYY-MM-DD format" },
+        endDate: { type: "STRING", description: "End date in YYYY-MM-DD format" },
+        page: { type: "INTEGER", description: "Pagination page number" },
+        limit: { type: "INTEGER", description: "Number of conversations to return" },
+      },
+    },
+  },
+  {
+    name: "get_conversation_messages",
+    description: "Retrieves chronological message history for a customer WhatsApp conversation by phone number or lead ID.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        phone: { type: "STRING", description: "Customer phone number" },
+        leadId: { type: "STRING", description: "Associated lead ID" },
+        page: { type: "INTEGER", description: "Pagination page number" },
+        limit: { type: "INTEGER", description: "Number of messages to return" },
+      },
+    },
+  },
+  {
+    name: "summarize_whatsapp_conversation",
+    description: "Summarizes a customer WhatsApp conversation: extracts key discussion points, customer intent, unresolved questions, sentiment, and recommended next steps.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        phone: { type: "STRING", description: "Customer phone number to summarize chat for" },
+        leadId: { type: "STRING", description: "Associated lead ID" },
+      },
+    },
+  },
 ];
 
 /**
@@ -452,6 +502,10 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    - Phone numbers: CALL 'lookup_phone_number'
    - Overdue tasks and follow-ups: CALL 'get_followup_status'
    - WhatsApp unread chats: CALL 'get_whatsapp_analytics'
+   - Team WhatsApp connection statuses: CALL 'get_whatsapp_connection_status'
+   - Searching WhatsApp conversations: CALL 'search_whatsapp_conversations'
+   - Reading message transcripts: CALL 'get_conversation_messages'
+   - Summarizing customer WhatsApp chat: CALL 'summarize_whatsapp_conversation'
    - Integrations and configurations: CALL 'get_org_integrations_and_config'
    - Composing sales report emails: CALL 'compose_salesperson_report_email'
    - Confirming or cancelling email report send: CALL 'confirm_send_email_report'
@@ -463,7 +517,12 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
      * Step 3: Wait for user verbal confirmation:
        - If they say "yes", "send it", "confirm", "send", "go ahead": Call 'confirm_send_email_report' with confirmed: true.
        - If they say "no", "cancel", "don't send", "discard": Call 'confirm_send_email_report' with confirmed: false.
-       - Then announce the result conversationally.`;;
+       - Then announce the result conversationally.
+5. NEVER EXPOSE RAW DATABASE IDS:
+   - Never speak or show MongoDB ObjectIds (24-character hex strings) to the user.
+   - Always use salesperson and customer names.
+   - If a name is unavailable, say 'unknown team member' or use the customer's phone number.
+   - IDs are strictly for internal tool calls only.`;
 
     const liveModel =
       process.env.AI_ASSISTANT_LIVE_MODEL ||
@@ -660,6 +719,10 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
       ask_clarification: "Preparing clarification options",
       compose_salesperson_report_email: "Composing performance report email draft",
       confirm_send_email_report: "Processing report email dispatch",
+      get_whatsapp_connection_status: "Checking team WhatsApp connection status",
+      search_whatsapp_conversations: "Searching WhatsApp conversations",
+      get_conversation_messages: "Retrieving WhatsApp conversation messages",
+      summarize_whatsapp_conversation: "Summarizing WhatsApp conversation",
     };
     return labels[toolName] || `Querying CRM tool (${toolName})`;
   }
@@ -814,11 +877,12 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
           }
           // Real-time text subtitle
           if (part.text) {
-            this.currentTurnAssistantText += part.text;
-            console.log(`[LiveVoice TextPart] "${part.text.slice(0, 80)}"`);
+            const cleanText = part.text.replace(/\b[a-f0-9]{24}\b/gi, "team member");
+            this.currentTurnAssistantText += cleanText;
+            console.log(`[LiveVoice TextPart] "${cleanText.slice(0, 80)}"`);
             this.socket.emit("bi_voice_transcript", {
               role: "assistant",
-              text: part.text,
+              text: cleanText,
             });
           }
         }
@@ -862,11 +926,12 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
         if (this.currentTurnId) {
           this.telemetry.recordFirstProviderResponse(this.currentTurnId);
         }
-        this.currentTurnAssistantText += (this.currentTurnAssistantText ? " " : "") + content.outputTranscription.text;
-        console.log(`[LiveVoice Transcription] Assistant subtitle: "${content.outputTranscription.text}"`);
+        const cleanSub = content.outputTranscription.text.replace(/\b[a-f0-9]{24}\b/gi, "team member");
+        this.currentTurnAssistantText += (this.currentTurnAssistantText ? " " : "") + cleanSub;
+        console.log(`[LiveVoice Transcription] Assistant subtitle: "${cleanSub}"`);
         this.socket.emit("bi_voice_transcript", {
           role: "assistant",
-          text: content.outputTranscription.text,
+          text: cleanSub,
         });
       }
 

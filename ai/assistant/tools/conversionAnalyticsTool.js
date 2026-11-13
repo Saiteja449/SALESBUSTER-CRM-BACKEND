@@ -26,7 +26,7 @@ export const createConversionAnalyticsTool = ({ tenantModels }) => {
     {
       name: "get_conversion_analytics",
       description:
-        "Analyzes conversion rates, won deals, salesperson-wise conversion rankings, lead source conversion efficiency, service-wise conversions, lost-lead reasons, and comparative performance. Answers: 'Which rep has the best conversion rate?', 'What is our conversion rate by source?', or 'Which rep has highest missed calls but lowest conversions?'.",
+        "Analyzes conversion rates, won deals, salesperson-wise conversion rankings, lead source conversion efficiency, service-wise conversions, lost-lead reasons, and comparative performance. Answers: 'Which rep has the best conversion rate?', 'What is our conversion rate by source?', or 'Which rep has highest missed calls but lowest conversions?'. Internal IDs are for tooling only; never expose MongoDB ObjectIds to the user. Always use resolved human names.",
       schema: z.object({
         period: z.string().default("all_time").describe("Period identifier: 'all_time', 'this_month', 'last_month', 'this_week', 'today', 'custom'"),
         startDate: z.string().optional().describe("Start date in YYYY-MM-DD format"),

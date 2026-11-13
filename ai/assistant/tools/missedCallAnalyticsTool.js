@@ -42,7 +42,7 @@ export const createMissedCallAnalyticsTool = ({ tenantModels }) => {
     {
       name: "get_missed_call_analytics",
       description:
-        "Analyzes missed calls across the CRM with comprehensive filters: overall missed calls, salesperson-wise, date-wise, customer phone or name, missed calls without follow-up, with overdue follow-ups, successfully followed up, missed calls by lead status, or calls from unknown/unassigned salespeople. Returns both calculated summary statistics and paginated record details.",
+        "Analyzes missed calls across the CRM with comprehensive filters: overall missed calls, salesperson-wise, date-wise, customer phone or name, missed calls without follow-up, with overdue follow-ups, successfully followed up, missed calls by lead status, or calls from unknown/unassigned salespeople. Returns both calculated summary statistics and paginated record details. Internal IDs are for tooling only; never expose MongoDB ObjectIds to the user. Always use resolved human names.",
       schema: z.object({
         salespersonNameOrId: z.string().optional().describe("Salesperson name or ID to filter by. Supports exact, partial, or alias names."),
         period: z.string().optional().describe("Period identifier: 'all_time', 'this_month', 'last_month', 'today', 'yesterday', 'this_week', 'last_7_days', 'custom'"),
