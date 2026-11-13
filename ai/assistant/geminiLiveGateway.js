@@ -13,6 +13,21 @@ import { VoiceTelemetry } from "./voiceTelemetry.js";
  */
 export const CRM_LIVE_FUNCTION_DECLARATIONS = [
   {
+    name: "get_crm_overview",
+    description: "Returns a complete 360-degree overview of the CRM: total leads, new/active/converted/lost leads, total calls, incoming/outgoing/connected/missed calls, pending and overdue follow-ups, WhatsApp activity, and call recordings. Use when asked for overall metrics, summaries, or dashboard health.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        period: {
+          type: "STRING",
+          description: "Time period: 'all_time', 'this_month', 'last_month', 'this_week', 'last_week', 'today', 'yesterday', 'this_morning', 'last_7_days', 'last_30_days', 'custom'",
+        },
+        startDate: { type: "STRING", description: "Optional custom start date in YYYY-MM-DD format" },
+        endDate: { type: "STRING", description: "Optional custom end date in YYYY-MM-DD format" },
+      },
+    },
+  },
+  {
     name: "get_dashboard_kpis",
     description: "Calculates total leads, converted count, conversion rate percentage, status breakdown, and source distribution for any time period.",
     parameters: {
@@ -29,6 +44,22 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
     },
   },
   {
+    name: "get_salesperson_analytics",
+    description: "Analyzes sales team performance, individual rep performance, team leaderboard, calls logged, incoming/outgoing/connected/missed calls, talk time, lead generation, conversions, conversion rates, and follow-ups.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        period: {
+          type: "STRING",
+          description: "Time window: 'all_time', 'this_month', 'last_month', 'this_week', 'last_week', 'today', 'yesterday', 'custom'",
+        },
+        salespersonNameOrId: { type: "STRING", description: "Optional name or ID to filter down to a specific sales representative" },
+        startDate: { type: "STRING", description: "Optional custom start date in YYYY-MM-DD format" },
+        endDate: { type: "STRING", description: "Optional custom end date in YYYY-MM-DD format" },
+      },
+    },
+  },
+  {
     name: "get_salesperson_performance",
     description: "Generates performance metrics and leaderboard for sales reps: leads handled, won deals, conversion rate, and revenue.",
     parameters: {
@@ -41,6 +72,30 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
         salespersonId: { type: "STRING", description: "Specific sales rep user ID or name filter" },
         customStart: { type: "STRING", description: "YYYY-MM-DD start date" },
         customEnd: { type: "STRING", description: "YYYY-MM-DD end date" },
+      },
+    },
+  },
+  {
+    name: "search_leads_advanced",
+    description: "Searches and filters CRM leads with rich multi-filter criteria: assigned salesperson, creation date range, status, source, service, priority, call history status, follow-up status, inactive days, or unassigned leads.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        searchTerm: { type: "STRING", description: "Free-text search across name, company, notes, phone, city" },
+        salespersonNameOrId: { type: "STRING", description: "Filter by assigned salesperson name or ID" },
+        status: { type: "STRING", description: "Lead status filter (e.g. 'New', 'Converted', 'Missed Call', 'Follow Up', 'Not Interested')" },
+        source: { type: "STRING", description: "Lead acquisition source (e.g. 'Call', 'WhatsApp', 'Meta Ads', 'Website Form')" },
+        service: { type: "STRING", description: "Service inquiry filter" },
+        priority: { type: "STRING", description: "Priority level: 'High', 'Medium', 'Low', or 'all'" },
+        period: { type: "STRING", description: "Creation time period: 'all_time', 'this_month', 'last_month', 'today', 'yesterday', 'this_week', 'custom'" },
+        startDate: { type: "STRING", description: "Creation start date in YYYY-MM-DD format" },
+        endDate: { type: "STRING", description: "Creation end date in YYYY-MM-DD format" },
+        callStatusFilter: { type: "STRING", description: "Filter by call history: 'has_calls', 'has_missed_calls', 'never_called', 'all'" },
+        followupStatusFilter: { type: "STRING", description: "Filter by follow-up status: 'overdue', 'pending_today', 'has_pending', 'no_followup', 'all'" },
+        inactiveDays: { type: "INTEGER", description: "Find leads with no activity or call for at least this many days" },
+        unassignedOnly: { type: "BOOLEAN", description: "Set true to find leads with no assigned salesperson" },
+        page: { type: "INTEGER", description: "Pagination page number (1-indexed)" },
+        limit: { type: "INTEGER", description: "Number of leads per page (max 25)" },
       },
     },
   },
@@ -139,6 +194,111 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
         },
       },
       required: ["period"],
+    },
+  },
+  {
+    name: "search_call_records",
+    description: "Searches individual call records and event logs by salesperson, customer phone/name, call type, call status, date range, recording availability, and source.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        salespersonNameOrId: { type: "STRING", description: "Salesperson name or ID to filter calls by" },
+        customerName: { type: "STRING", description: "Customer or caller name" },
+        customerPhone: { type: "STRING", description: "Customer phone number or last 10 digits" },
+        callType: { type: "STRING", description: "Type of call: 'incoming', 'outgoing', 'missed', 'all'" },
+        callStatus: { type: "STRING", description: "Outcome/status: 'connected', 'missed', 'rejected', 'not-connected', 'all'" },
+        period: { type: "STRING", description: "Period e.g. 'all_time', 'this_month', 'today', 'yesterday', 'last_month', 'custom'" },
+        startDate: { type: "STRING", description: "Start date in YYYY-MM-DD format" },
+        endDate: { type: "STRING", description: "End date in YYYY-MM-DD format" },
+        leadId: { type: "STRING", description: "Specific Lead ObjectId" },
+        recordingAvailable: { type: "BOOLEAN", description: "Whether call recording file is attached" },
+        source: { type: "STRING", description: "Call origin source e.g. Call, Dialer" },
+        page: { type: "INTEGER", description: "Pagination page number (1-indexed)" },
+        limit: { type: "INTEGER", description: "Number of records per page (1-25)" },
+      },
+    },
+  },
+  {
+    name: "get_missed_call_analytics",
+    description: "Analyzes missed calls across the CRM by salesperson, date, customer phone, follow-up progress, lead status, or unassigned calls.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        salespersonNameOrId: { type: "STRING", description: "Salesperson name or ID to filter by" },
+        period: { type: "STRING", description: "Period: 'all_time', 'this_month', 'last_month', 'today', 'yesterday', 'this_week', 'last_7_days', 'custom'" },
+        startDate: { type: "STRING", description: "Custom start date in YYYY-MM-DD format" },
+        endDate: { type: "STRING", description: "Custom end date in YYYY-MM-DD format" },
+        customerPhone: { type: "STRING", description: "Filter by specific customer phone number" },
+        followupStatus: { type: "STRING", description: "Filter by follow-up progress: 'pending', 'overdue', 'completed', 'none', 'all'" },
+        leadStatus: { type: "STRING", description: "Filter by lead status e.g. Converted, Follow Up, New, Lost" },
+        unknownSalespersonOnly: { type: "BOOLEAN", description: "Inspect missed calls without rep assignment" },
+        page: { type: "INTEGER", description: "Page number for paginated individual records" },
+        limit: { type: "INTEGER", description: "Record count per page (max 25)" },
+      },
+    },
+  },
+  {
+    name: "get_followup_analytics",
+    description: "Analyzes scheduled and pending follow-ups and CRM tasks: total pending, overdue, pending today, upcoming, completed, priority breakdown, salesperson distribution, and missed-call follow-ups.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        status: { type: "STRING", description: "Status category: 'all_pending', 'overdue', 'pending_today', 'upcoming', 'completed', 'missed_call_followups'" },
+        filter: { type: "STRING", description: "Legacy filter alias for status" },
+        salespersonNameOrId: { type: "STRING", description: "Filter follow-ups assigned to a specific representative" },
+        priority: { type: "STRING", description: "Priority level: 'High', 'Medium', 'Low', 'all'" },
+        period: { type: "STRING", description: "Period e.g. 'today', 'this_week', 'this_month', 'all_time'" },
+        startDate: { type: "STRING", description: "Start date in YYYY-MM-DD format" },
+        endDate: { type: "STRING", description: "End date in YYYY-MM-DD format" },
+        page: { type: "INTEGER", description: "Pagination page number" },
+        limit: { type: "INTEGER", description: "Record count per page (max 25)" },
+      },
+    },
+  },
+  {
+    name: "get_conversion_analytics",
+    description: "Analyzes conversion rates, won deals, salesperson-wise conversion rankings, lead source conversion efficiency, service-wise conversions, and lost-lead reasons.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        period: { type: "STRING", description: "Period: 'all_time', 'this_month', 'last_month', 'this_week', 'today', 'custom'" },
+        startDate: { type: "STRING", description: "Start date in YYYY-MM-DD format" },
+        endDate: { type: "STRING", description: "End date in YYYY-MM-DD format" },
+        salespersonNameOrId: { type: "STRING", description: "Filter down to a specific salesperson" },
+      },
+    },
+  },
+  {
+    name: "get_recording_analytics",
+    description: "Analyzes call audio recordings: available recordings, missing recordings for connected calls, AI analysis/transcription status, and recordings by salesperson.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        salespersonNameOrId: { type: "STRING", description: "Filter recordings by salesperson" },
+        period: { type: "STRING", description: "Period: 'all_time', 'this_month', 'today', 'custom'" },
+        startDate: { type: "STRING", description: "Start date in YYYY-MM-DD format" },
+        endDate: { type: "STRING", description: "End date in YYYY-MM-DD format" },
+        analysisStatus: { type: "STRING", description: "Filter by AI analysis status: 'completed', 'pending', 'failed', 'all'" },
+        missingRecordingsOnly: { type: "BOOLEAN", description: "Only return calls that should have a recording but don't" },
+        page: { type: "INTEGER", description: "Pagination page number" },
+        limit: { type: "INTEGER", description: "Number of recordings per page" },
+      },
+    },
+  },
+  {
+    name: "ask_clarification",
+    description: "Call this tool whenever the user's question is ambiguous, underspecified, or lacks crucial scope or time period.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        question: { type: "STRING", description: "The clarifying question explaining what detail is needed" },
+        options: {
+          type: "ARRAY",
+          items: { type: "STRING" },
+          description: "2 to 5 concrete option strings to choose from",
+        },
+      },
+      required: ["question", "options"],
     },
   },
   {
@@ -481,14 +641,23 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    */
   getFriendlyToolLabel(toolName) {
     const labels = {
+      get_crm_overview: "Analyzing full CRM overview",
       get_dashboard_kpis: "Calculating CRM dashboard KPIs",
+      get_salesperson_analytics: "Analyzing sales rep performance",
       get_salesperson_performance: "Analyzing sales rep leaderboard",
+      search_leads_advanced: "Searching CRM leads",
       search_leads: "Searching CRM leads",
-      lookup_phone_number: "Looking up contact in CRM",
+      search_call_records: "Searching call records",
+      get_missed_call_analytics: "Analyzing missed calls",
+      get_followup_analytics: "Analyzing follow-up tasks",
       get_followup_status: "Checking pending follow-ups",
+      get_conversion_analytics: "Analyzing conversion metrics",
+      get_recording_analytics: "Inspecting call recordings",
       get_whatsapp_analytics: "Inspecting WhatsApp chat status",
+      lookup_phone_number: "Looking up contact in CRM",
       get_org_integrations_and_config: "Verifying system configuration",
       search_crm_documentation_and_features: "Searching documentation",
+      ask_clarification: "Preparing clarification options",
       compose_salesperson_report_email: "Composing performance report email draft",
       confirm_send_email_report: "Processing report email dispatch",
     };
