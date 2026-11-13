@@ -3,6 +3,7 @@ import { z } from "zod";
 import crypto from "crypto";
 import { resolveDateRange, formatDuration } from "../dateUtils.js";
 import { sendEmail } from "../../../helpers/emailHelper.js";
+import { buildOwnerDirectory } from "../analytics/ownerResolver.js";
 
 // Session-level or global pending draft cache with 15-minute TTL
 export const pendingEmailDrafts = new Map();
@@ -260,9 +261,13 @@ export const createEmailReportTools = ({ tenantModels, organization, user, socke
         }
 
         // 4. Build Rep Metric Cards
+        const ownerDir = await buildOwnerDirectory({ tenantModels });
         const compiledDrafts = targetReps.map((rep) => {
-          const uid = rep._id.toString();
-          const uname = rep.name || rep.email;
+          const owner = ownerDir.resolveOwner(rep._id || rep.id);
+          const uid = owner.id || (rep._id ? rep._id.toString() : "");
+          const uname = (owner.name && owner.name !== "Former/Unknown team member")
+            ? owner.name
+            : (rep.name || rep.email || "Sales Representative");
           const unameLower = uname.toLowerCase();
 
           const lStat = leadStats.find((l) => {
@@ -305,7 +310,10 @@ export const createEmailReportTools = ({ tenantModels, organization, user, socke
 
           return {
             repId: uid,
+            salespersonId: uid,
             name: uname,
+            salesperson: uname,
+            salespersonName: uname,
             email: rep.email,
             stats: statsObj,
             subject,

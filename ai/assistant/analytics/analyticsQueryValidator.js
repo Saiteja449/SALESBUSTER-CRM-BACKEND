@@ -28,9 +28,10 @@ export const validateAnalyticsQuery = ({
 };
 
 /**
- * Formats standard paginated response envelope
+ * Formats standard paginated response envelope conforming to BI Analyst tool result contracts
  */
 export const formatPaginatedResponse = ({
+  success = true,
   totalCount = 0,
   page = 1,
   limit = 10,
@@ -38,17 +39,30 @@ export const formatPaginatedResponse = ({
   summary = null,
   filtersApplied = {},
   coverage = "complete",
+  errorCode = null,
   message = "",
+  timezone = "Asia/Kolkata",
+  coverageWarnings = [],
 }) => {
   const returnedCount = Array.isArray(records) ? records.length : 0;
   const totalPages = Math.ceil(totalCount / limit) || (totalCount > 0 ? 1 : 0);
   const hasMore = page < totalPages;
+  const periodEvaluated = filtersApplied?.period || summary?.periodEvaluated || "All Time";
+  const warningsList = Array.isArray(coverageWarnings)
+    ? [...coverageWarnings]
+    : coverageWarnings
+    ? [String(coverageWarnings)]
+    : [];
 
   return {
-    success: true,
+    success: Boolean(success),
+    coverage,
     dataCoverage: coverage,
-    totalCount,
+    errorCode,
+    periodEvaluated,
+    timezone,
     totalMatchingCount: totalCount,
+    totalCount,
     returnedCount,
     showingCount: returnedCount,
     page,
@@ -62,6 +76,8 @@ export const formatPaginatedResponse = ({
     ...(summary ? { summary } : {}),
     records,
     leads: records,
+    coverageWarnings: warningsList,
+    warnings: warningsList,
     ...(message ? { message } : {}),
   };
 };

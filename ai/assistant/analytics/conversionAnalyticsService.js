@@ -3,6 +3,7 @@ import { resolveSalesperson, listAllSalespeople } from "./salespersonResolver.js
 import { resolveAnalyticsDateRange } from "./dateRangeResolver.js";
 import { validateAnalyticsQuery, formatPaginatedResponse } from "./analyticsQueryValidator.js";
 import { composeMongoQuery } from "./queryComposer.js";
+import { buildOwnerDirectory } from "./ownerResolver.js";
 
 const canQuery = (model) => {
   if (!model) return false;
@@ -32,7 +33,20 @@ export const getConversionAnalytics = async ({
   const LeadModel = tenantModels.Lead;
 
   if (!canQuery(LeadModel)) {
-    return { success: false, error: "Lead model not available" };
+    return formatPaginatedResponse({
+      success: false,
+      coverage: "unavailable",
+      errorCode: "LEAD_MODEL_UNAVAILABLE",
+      message: "Lead model is not available in tenant database.",
+      page,
+      limit,
+      totalCount: 0,
+      records: [],
+      filtersApplied: {
+        period: dateRange.label,
+        salesperson: salespersonNameOrId,
+      },
+    });
   }
 
   const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate });
@@ -77,7 +91,16 @@ export const getConversionAnalytics = async ({
 
   const baseClauses = [];
   if (!dateRange.isAllTime) {
-    baseClauses.push({ createdAt: { $gte: dateRange.start, $lte: dateRange.end } });
+    if (filters.dateBasis === "conversion_date") {
+      baseClauses.push({
+        $or: [
+          { updatedAt: { $gte: dateRange.start, $lte: dateRange.end } },
+          { createdAt: { $gte: dateRange.start, $lte: dateRange.end } },
+        ],
+      });
+    } else {
+      baseClauses.push({ createdAt: { $gte: dateRange.start, $lte: dateRange.end } });
+    }
   }
   if (repResolution?.leadAssignedFilter) {
     baseClauses.push(repResolution.leadAssignedFilter);
@@ -98,8 +121,20 @@ export const getConversionAnalytics = async ({
               lostLeads: {
                 $sum: {
                   $cond: [
-                    { $in: ["$status", ["Not Interested", "Price Issue", "Not Attended"]] },
+                    { $in: ["$status", ["Not Interested", "Price Issue", "Not Attended", "Lost", "lost"]] },
                     1,
+                    0,
+                  ],
+                },
+              },
+              convertedRevenue: {
+                $sum: { $cond: [{ $eq: ["$status", "Converted"] }, { $ifNull: ["$dealValue", 0] }, 0] },
+              },
+              activePipelineValue: {
+                $sum: {
+                  $cond: [
+                    { $in: ["$status", ["New", "Follow Up", "Missed Call"]] },
+                    { $ifNull: ["$dealValue", 0] },
                     0,
                   ],
                 },
@@ -117,8 +152,20 @@ export const getConversionAnalytics = async ({
               lostLeads: {
                 $sum: {
                   $cond: [
-                    { $in: ["$status", ["Not Interested", "Price Issue", "Not Attended"]] },
+                    { $in: ["$status", ["Not Interested", "Price Issue", "Not Attended", "Lost", "lost"]] },
                     1,
+                    0,
+                  ],
+                },
+              },
+              convertedRevenue: {
+                $sum: { $cond: [{ $eq: ["$status", "Converted"] }, { $ifNull: ["$dealValue", 0] }, 0] },
+              },
+              activePipelineValue: {
+                $sum: {
+                  $cond: [
+                    { $in: ["$status", ["New", "Follow Up", "Missed Call"]] },
+                    { $ifNull: ["$dealValue", 0] },
                     0,
                   ],
                 },
@@ -144,33 +191,50 @@ export const getConversionAnalytics = async ({
   const totalDealValue = totals.totalDealValue;
   const conversionRate = totalLeads > 0 ? ((convertedLeads / totalLeads) * 100).toFixed(1) : "0.0";
 
-  // Match Rep names to UserModel
-  const users = await listAllSalespeople({ tenantModels });
-  const userMap = new Map();
-  for (const u of users) {
-    userMap.set(u._id ? u._id.toString() : u.id, u.name);
-  }
-
+  // Match Rep names via universal OwnerDirectory (covers sales reps, managers, admins, and deleted users)
+  const ownerDir = await buildOwnerDirectory({ tenantModels });
   let unassignedCount = 0;
-  const repList = (facetResults?.bySalesperson || []).map((rep) => {
-    let repName = "Unassigned";
-    if (rep._id) {
-      const idStr = rep._id.toString();
-      repName = userMap.get(idStr) || rep._id;
-    } else {
+  const repMapMerged = new Map();
+
+  for (const rep of facetResults?.bySalesperson || []) {
+    const owner = ownerDir.resolveOwner(rep._id);
+    const repName = owner.name;
+    if (repName === "Unassigned") {
       unassignedCount += rep.totalLeads;
+      continue;
     }
 
-    const repRate = rep.totalLeads > 0 ? ((rep.convertedLeads / rep.totalLeads) * 100).toFixed(1) : "0.0";
+    if (repMapMerged.has(repName)) {
+      const existing = repMapMerged.get(repName);
+      existing.totalLeads += rep.totalLeads;
+      existing.convertedLeads += rep.convertedLeads;
+      existing.lostLeads += rep.lostLeads;
+      existing.rawDealValue += (rep.dealValue || 0);
+    } else {
+      repMapMerged.set(repName, {
+        salesperson: repName,
+        salespersonId: owner.id || undefined,
+        role: owner.role,
+        totalLeads: rep.totalLeads,
+        convertedLeads: rep.convertedLeads,
+        lostLeads: rep.lostLeads,
+        rawDealValue: rep.dealValue || 0,
+      });
+    }
+  }
 
+  const repList = Array.from(repMapMerged.values()).map((rep) => {
+    const repRate = rep.totalLeads > 0 ? ((rep.convertedLeads / rep.totalLeads) * 100).toFixed(1) : "0.0";
     return {
-      salesperson: repName,
+      salesperson: rep.salesperson,
+      salespersonId: rep.salespersonId,
+      role: rep.role,
       totalLeads: rep.totalLeads,
       convertedLeads: rep.convertedLeads,
       lostLeads: rep.lostLeads,
       conversionRate: `${repRate}%`,
-      revenueINR: `₹${(rep.dealValue || 0).toLocaleString("en-IN")}`,
-      rawDealValue: rep.dealValue || 0,
+      revenueINR: `₹${(rep.rawDealValue || 0).toLocaleString("en-IN")}`,
+      rawDealValue: rep.rawDealValue || 0,
     };
   });
 
@@ -184,7 +248,10 @@ export const getConversionAnalytics = async ({
     totalLeads,
     convertedLeads,
     conversionRatePercent: `${conversionRate}%`,
-    pipelineValueINR: `₹${totalDealValue.toLocaleString("en-IN")}`,
+    convertedRevenueINR: `₹${(totals.convertedRevenue !== undefined ? totals.convertedRevenue : totalDealValue).toLocaleString("en-IN")}`,
+    activePipelineValueINR: `₹${(totals.activePipelineValue || 0).toLocaleString("en-IN")}`,
+    pipelineValueINR: `₹${(totals.activePipelineValue !== undefined ? totals.activePipelineValue : totalDealValue).toLocaleString("en-IN")}`,
+    totalDealValueINR: `₹${totalDealValue.toLocaleString("en-IN")}`,
     lostLeads,
     unassignedLeads: unassignedCount,
     salespersonPerformance: paginatedReps,

@@ -27,10 +27,11 @@ export const createClarificationTool = () => {
           ),
         options: z
           .array(z.string())
-          .min(2)
-          .max(5)
+          .min(1)
+          .max(10)
+          .optional()
           .describe(
-            "A list of 2 to 5 concrete, actionable option strings that the user can click to answer (e.g. ['Today', 'This Month', 'All-Time'] or ['By Won Leads', 'By Conversion Rate', 'By Talk Time'])."
+            "A list of 1 to 10 concrete, actionable option strings that the user can choose from."
           ),
       }),
     }

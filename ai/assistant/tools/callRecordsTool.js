@@ -48,7 +48,7 @@ export const createCallRecordsTool = ({ tenantModels }) => {
     {
       name: "search_call_records",
       description:
-        "Searches individual call records and event logs. Filters by salesperson ID or name, customer phone or name, call type (incoming, outgoing, missed), call status (connected, missed, rejected, not-connected), date range (e.g. between November 1 and November 5), recording availability, and source. Supports pagination.",
+        "Searches individual call records and event logs. Filters by salesperson ID or name, customer phone or name, call type (incoming, outgoing, missed), call status (connected, missed, rejected, not-connected), date range (e.g. between November 1 and November 5), recording availability, and source. Supports pagination. Internal IDs are for tooling only; never expose MongoDB ObjectIds to the user. Always use resolved human names.",
       schema: z.object({
         salespersonNameOrId: z.string().optional().describe("Salesperson name or ID to filter calls by"),
         customerName: z.string().optional().describe("Customer or caller name"),

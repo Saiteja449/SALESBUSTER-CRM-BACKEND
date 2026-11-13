@@ -4,6 +4,7 @@ import { resolveAnalyticsDateRange } from "./dateRangeResolver.js";
 import { validateAnalyticsQuery, formatPaginatedResponse } from "./analyticsQueryValidator.js";
 import { formatDuration } from "../dateUtils.js";
 import { composeMongoQuery } from "./queryComposer.js";
+import { buildOwnerDirectory } from "./ownerResolver.js";
 
 const canQuery = (model) => {
   if (!model) return false;
@@ -36,7 +37,20 @@ export const getRecordingAnalytics = async ({
   const CallRecordModel = tenantModels.CallRecord;
 
   if (!canQuery(LeadModel)) {
-    return { success: false, error: "Lead model not available" };
+    return formatPaginatedResponse({
+      success: false,
+      coverage: "unavailable",
+      errorCode: "LEAD_MODEL_UNAVAILABLE",
+      message: "Lead model is not available in tenant database.",
+      page,
+      limit,
+      totalCount: 0,
+      records: [],
+      filtersApplied: {
+        period: dateRange.label,
+        salesperson: salespersonNameOrId,
+      },
+    });
   }
 
   const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate });
@@ -88,28 +102,35 @@ export const getRecordingAnalytics = async ({
   const leadMatch = composeMongoQuery(...leadClauses);
 
   const leadsWithRecordings = await LeadModel.find(leadMatch)
-    .select("name phone status assignedTo recordings")
+    .select("name company phone status assignedTo recordings")
     .lean();
+
+  const ownerDir = await buildOwnerDirectory({ tenantModels });
 
   for (const lead of leadsWithRecordings || []) {
     for (const rec of lead.recordings || []) {
-      const upDate = rec.uploadedAt ? new Date(rec.uploadedAt) : new Date();
+      const upDate = rec.uploadedAt ? new Date(rec.uploadedAt) : (lead.createdAt ? new Date(lead.createdAt) : new Date(0));
       if (!dateRange.isAllTime && (upDate < dateRange.start || upDate > dateRange.end)) {
         continue;
       }
 
-      const repName = rec.salespersonName || (lead.assignedTo ? String(lead.assignedTo) : "Unassigned");
+      const owner = ownerDir.resolveOwner(rec.salespersonId || rec.salespersonName || lead.assignedTo);
       const aStatus = rec.analysisStatus || "pending";
 
       if (analysisStatus && analysisStatus !== "all" && aStatus !== analysisStatus) {
         continue;
       }
 
+      const displayName = (lead.name && lead.name.trim()) || (lead.company && lead.company.trim()) || lead.phone || "Customer";
+
       allRecordings.push({
         leadId: lead._id ? lead._id.toString() : "",
-        customerName: lead.name,
+        displayName,
+        customerName: (lead.name && lead.name.trim()) || displayName,
         customerPhone: lead.phone,
-        salesperson: repName,
+        salesperson: owner.name,
+        salespersonName: owner.name,
+        salespersonId: owner.id || undefined,
         recordingName: rec.name || "Call Recording",
         recordingUrl: rec.url,
         duration: formatDuration(rec.duration || 0),
@@ -120,6 +141,55 @@ export const getRecordingAnalytics = async ({
         dealIntentScore: rec.aiAnalysis?.sentimentScore || rec.aiAnalysis?.interestLevel || "N/A",
       });
     }
+  }
+
+  // Extract recordings from CallRecord collection where recordingUrl exists
+  if (!missingRecordingsOnly && canQuery(CallRecordModel)) {
+    const crClauses = [
+      { recordingUrl: { $exists: true, $ne: null } },
+    ];
+    if (!dateRange.isAllTime) {
+      crClauses.push({ calledAt: { $gte: dateRange.start, $lte: dateRange.end } });
+    }
+    if (repResolution?.callSalespersonFilter) {
+      crClauses.push(repResolution.callSalespersonFilter);
+    }
+    const crMatch = composeMongoQuery(...crClauses);
+    try {
+      const crWithRecordings = await CallRecordModel.find(crMatch)
+        .sort({ calledAt: -1 })
+        .limit(300)
+        .lean();
+
+      for (const cr of crWithRecordings || []) {
+        const recUrl = cr.recordingUrl;
+        if (recUrl && allRecordings.some((r) => r.recordingUrl === recUrl)) {
+          continue;
+        }
+
+        const calledDate = cr.calledAt ? new Date(cr.calledAt) : new Date(0);
+        const owner = ownerDir.resolveOwner(cr.salespersonId || cr.salespersonName);
+        const displayName = (cr.customerName && cr.customerName.trim()) || cr.customerPhone || "Customer";
+
+        allRecordings.push({
+          leadId: cr.leadId ? cr.leadId.toString() : "",
+          displayName,
+          customerName: (cr.customerName && cr.customerName.trim()) || displayName,
+          customerPhone: cr.customerPhone || "Unknown",
+          salesperson: owner.name,
+          salespersonName: owner.name,
+          salespersonId: owner.id || undefined,
+          recordingName: cr.callEventId ? `Call Recording (${cr.callEventId})` : "Call Recording",
+          recordingUrl: recUrl,
+          duration: formatDuration(cr.duration || 0),
+          rawDuration: cr.duration || 0,
+          uploadedDateIST: calledDate.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }),
+          analysisStatus: "completed",
+          summarySnippet: "Connected call audio recording.",
+          dealIntentScore: "N/A",
+        });
+      }
+    } catch (_) {}
   }
 
   // Missing recordings on connected calls (if requested)
@@ -143,20 +213,27 @@ export const getRecordingAnalytics = async ({
       .limit(100)
       .lean();
 
-    const missingItems = (callsWithoutRecording || []).map((c) => ({
-      leadId: c.leadId ? c.leadId.toString() : "",
-      customerName: c.customerName || "Customer",
-      customerPhone: c.customerPhone,
-      salesperson: c.salespersonName || "Unassigned",
-      recordingName: "MISSING_RECORDING",
-      recordingUrl: undefined,
-      duration: formatDuration(c.duration || 0),
-      rawDuration: c.duration || 0,
-      uploadedDateIST: new Date(c.calledAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }),
-      analysisStatus: "unrecorded",
-      summarySnippet: "Connected call exceeding 15 seconds without an attached recording.",
-      dealIntentScore: "N/A",
-    }));
+    const missingItems = (callsWithoutRecording || []).map((c) => {
+      const owner = ownerDir.resolveOwner(c.salespersonId || c.salespersonName);
+      const displayName = (c.customerName && c.customerName.trim()) || c.customerPhone || "Customer";
+      return {
+        leadId: c.leadId ? c.leadId.toString() : "",
+        displayName,
+        customerName: (c.customerName && c.customerName.trim()) || displayName,
+        customerPhone: c.customerPhone,
+        salesperson: owner.name,
+        salespersonName: owner.name,
+        salespersonId: owner.id || undefined,
+        recordingName: "MISSING_RECORDING",
+        recordingUrl: undefined,
+        duration: formatDuration(c.duration || 0),
+        rawDuration: c.duration || 0,
+        uploadedDateIST: new Date(c.calledAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }),
+        analysisStatus: "unrecorded",
+        summarySnippet: "Connected call exceeding 15 seconds without an attached recording.",
+        dealIntentScore: "N/A",
+      };
+    });
 
     allRecordings.push(...missingItems);
   }

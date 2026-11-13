@@ -32,7 +32,7 @@ export const createSalesPerformanceTool = ({ tenantModels, toolName = "get_sales
     {
       name: toolName,
       description:
-        "Analyzes sales team performance, individual rep performance, team leaderboard, calls logged, incoming/outgoing/connected/missed calls, talk time, lead generation, conversions, conversion rates, and follow-ups. Supports periods: 'all_time' (complete/overall history), 'this_month', 'last_month', 'this_week', 'last_week', 'today', 'yesterday', or custom dates. Answers: 'get complete my team reports', 'How many missed calls did Shanmukh receive?', 'Compare Shanmukh and Jhansi', and 'Which salesperson has highest missed calls?'.",
+        "Analyzes sales team performance, individual rep performance, team leaderboard, calls logged, incoming/outgoing/connected/missed calls, talk time, lead generation, conversions, conversion rates, and follow-ups. Supports periods: 'all_time' (complete/overall history), 'this_month', 'last_month', 'this_week', 'last_week', 'today', 'yesterday', or custom dates. Answers: 'get complete my team reports', 'How many missed calls did Shanmukh receive?', 'Compare Shanmukh and Jhansi', and 'Which salesperson has highest missed calls?'. Internal IDs are for tooling only; never expose MongoDB ObjectIds to the user. Always use resolved human names.",
       schema: z.object({
         period: z
           .string()

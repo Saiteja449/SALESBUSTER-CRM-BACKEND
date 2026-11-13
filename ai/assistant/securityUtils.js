@@ -51,7 +51,7 @@ export const truncatePayload = (payload, maxChars = 12000) => {
   try {
     const obj = JSON.parse(payload);
     if (obj && typeof obj === "object") {
-      const arrayKey = ["records", "leads", "calls", "items", "data", "followups"].find(
+      const arrayKey = ["records", "leads", "calls", "items", "data", "followups", "messages", "conversations"].find(
         (k) => Array.isArray(obj[k]) && obj[k].length > 1
       );
       if (arrayKey && obj[arrayKey].length > 1) {
@@ -60,9 +60,28 @@ export const truncatePayload = (payload, maxChars = 12000) => {
         }
         obj.isTruncated = true;
         obj.hasMore = true;
+        obj.coverage = "partial";
+        obj.dataCoverage = "partial";
+        if (typeof obj.totalCount === "number" && obj.totalCount > 0) {
+          obj.totalMatchingCount = obj.totalCount;
+        }
+        obj.returnedCount = obj[arrayKey].length;
+        obj.showingCount = obj[arrayKey].length;
         obj.truncationNotice = `[TRUNCATED ${excess} CHARS: Showing first ${obj[arrayKey].length} records to protect context window. Request next page to view remaining records.]`;
         return JSON.stringify(obj);
       }
+
+      // If no array or array length 1, truncate string fields within the JSON object to preserve valid JSON
+      for (const key of Object.keys(obj)) {
+        if (typeof obj[key] === "string" && obj[key].length > 200) {
+          obj[key] = obj[key].slice(0, 200) + "... [truncated]";
+        }
+      }
+      obj.isTruncated = true;
+      obj.coverage = "partial";
+      obj.dataCoverage = "partial";
+      obj.truncationNotice = `[TRUNCATED ${excess} CHARS: Content truncated to protect context window.]`;
+      return JSON.stringify(obj);
     }
   } catch (_) {}
 
