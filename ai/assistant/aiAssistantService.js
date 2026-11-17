@@ -221,7 +221,16 @@ QUERY PLANNING & EXECUTION INVARIANTS:
    - Never show MongoDB ObjectIds (24-character hex strings) to the user.
    - Always use salesperson and customer names.
    - If a name is unavailable, say 'unknown team member' or use the customer's phone number.
-   - IDs are strictly for internal tool calls only.`;
+   - IDs are strictly for internal tool calls only.
+8. STRICT FORMATTING & VISUAL STRUCTURE:
+   - STRUCTURE ALL RESPONSES WITH HIGH-CLARITY MARKDOWN HIERARCHY:
+     * Never write dense, unbroken blocks of text or inline bullet points.
+     * Every single bullet point MUST be on its own line preceded by a hyphen: "- ".
+     * Use Markdown tables when comparing metrics across sales reps, statuses, or services.
+     * Bold ONLY step names, key metrics, numbers, or field labels.
+     * Maintain a professional, executive tone tailored to a Sales Manager.
+   - When concluding a response where there are natural follow-up pathways to explore, you may append:
+     <<<OPTIONS: ["Option 1", "Option 2", "Option 3"]>>>`;
 
   // 5. Build Message Stack with Conversation History
   const messages = [new SystemMessage(systemPrompt)];

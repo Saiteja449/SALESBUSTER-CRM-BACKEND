@@ -4,15 +4,13 @@ const authUserSchema = new mongoose.Schema(
   {
     email: {
       type: String,
-      required: [true, "Email is required"],
-      unique: true,
+      required: false,
       trim: true,
       lowercase: true,
-      index: true,
     },
     password: {
       type: String,
-      required: [true, "Password is required"],
+      required: false,
     },
     name: {
       type: String,
@@ -23,6 +21,26 @@ const authUserSchema = new mongoose.Schema(
       type: String,
       enum: ["super_admin", "sales manager", "sales person"],
       default: "sales person",
+      index: true,
+    },
+    customRole: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    companyName: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    city: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    isProfileComplete: {
+      type: Boolean,
+      default: false,
       index: true,
     },
     organizationId: {
@@ -67,6 +85,16 @@ authUserSchema.set("toJSON", {
     delete ret._id;
   },
 });
+
+authUserSchema.index(
+  { email: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      email: { $exists: true, $type: "string", $gt: "" },
+    },
+  }
+);
 
 authUserSchema.index(
   { phone: 1 },

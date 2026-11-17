@@ -8,19 +8,37 @@ const userSchema = mongoose.Schema(
     },
     email: {
       type: String,
-      required: true,
-      unique: true,
+      required: false,
       trim: true,
       lowercase: true,
     },
     password: {
       type: String,
-      required: true,
+      required: false,
     },
     role: {
       type: String,
       enum: ["sales manager", "sales person", "super_admin"],
       default: "sales person",
+    },
+    customRole: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    companyName: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    city: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    isProfileComplete: {
+      type: Boolean,
+      default: false,
     },
     organizationId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -47,6 +65,16 @@ const userSchema = mongoose.Schema(
   {
     timestamps: true,
   },
+);
+
+userSchema.index(
+  { email: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      email: { $exists: true, $type: "string", $gt: "" },
+    },
+  }
 );
 
 userSchema.index(
