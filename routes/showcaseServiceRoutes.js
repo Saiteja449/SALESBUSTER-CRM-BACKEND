@@ -35,29 +35,46 @@ const serviceStorage = multer.diskStorage({
 
 const serviceUpload = multer({
   storage: serviceStorage,
-  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB for image and video support
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) {
+    if (file.mimetype.startsWith("image/") || file.mimetype.startsWith("video/")) {
       cb(null, true);
     } else {
-      cb(new Error("Only image files (JPG, PNG, WEBP, GIF, SVG) are allowed!"), false);
+      cb(new Error("Only image and video files (JPG, PNG, WEBP, GIF, MP4, WEBM, MOV) are allowed!"), false);
     }
   },
 });
 
-const handleImageUpload = (req, res, next) => {
-  serviceUpload.single("image")(req, res, (err) => {
+const uploadFieldsMiddleware = serviceUpload.fields([
+  { name: "image", maxCount: 1 },
+  { name: "media", maxCount: 1 },
+  { name: "video", maxCount: 1 },
+  { name: "file", maxCount: 1 },
+]);
+
+const handleMediaUpload = (req, res, next) => {
+  uploadFieldsMiddleware(req, res, (err) => {
     if (err) {
       if (err instanceof multer.MulterError) {
         return res.status(400).json({
           success: false,
-          message: `Image upload error: ${err.message}`,
+          message: `Upload error: ${err.message}`,
         });
       }
       return res.status(400).json({
         success: false,
-        message: err.message || "Failed to upload image.",
+        message: err.message || "Failed to upload media file.",
       });
+    }
+
+    // Normalize uploaded file reference onto req.file
+    if (req.files) {
+      req.file =
+        req.files?.media?.[0] ||
+        req.files?.image?.[0] ||
+        req.files?.video?.[0] ||
+        req.files?.file?.[0] ||
+        null;
     }
     next();
   });
@@ -69,14 +86,15 @@ router.get("/", getPublicShowcaseServices);
 // 2. Super Admin: List all showcase services (active + inactive)
 router.get("/admin/all", verifySuperAdmin, getAdminShowcaseServices);
 
-// 3. Super Admin: Standalone image upload helper
-router.post("/upload-image", verifySuperAdmin, handleImageUpload, uploadShowcaseImage);
+// 3. Super Admin: Standalone media upload helper (supports images & videos)
+router.post("/upload-image", verifySuperAdmin, handleMediaUpload, uploadShowcaseImage);
+router.post("/upload-media", verifySuperAdmin, handleMediaUpload, uploadShowcaseImage);
 
 // 4. Super Admin: Create new showcase service
-router.post("/", verifySuperAdmin, handleImageUpload, createShowcaseService);
+router.post("/", verifySuperAdmin, handleMediaUpload, createShowcaseService);
 
 // 5. Super Admin: Update showcase service
-router.put("/:id", verifySuperAdmin, handleImageUpload, updateShowcaseService);
+router.put("/:id", verifySuperAdmin, handleMediaUpload, updateShowcaseService);
 
 // 6. Super Admin: Delete showcase service
 router.delete("/:id", verifySuperAdmin, deleteShowcaseService);
