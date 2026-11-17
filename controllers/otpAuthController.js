@@ -185,10 +185,12 @@ export const verifyOtp = async (req, res) => {
     } else {
       // New user: provision provisional guest account
       const cleanName = `Guest_${cleanPhone.slice(-4)}`;
+      const placeholderEmail = `${cleanPhone}@guest.salesbuster.ai`;
       tenantDbName = generateTenantDbName(`guest_${cleanPhone}`);
 
       organization = await Organization.create({
         name: `${cleanName}'s Workspace`,
+        email: placeholderEmail,
         mobile: cleanPhone,
         accountType: "guest",
         seats: 1,
@@ -202,6 +204,7 @@ export const verifyOtp = async (req, res) => {
 
       user = await AuthUser.create({
         phone: cleanPhone,
+        email: placeholderEmail,
         name: "",
         role: "sales manager",
         organizationId: organization._id,
@@ -265,7 +268,7 @@ export const verifyOtp = async (req, res) => {
       id: user._id,
       name: user.name || "",
       phone: user.phone,
-      email: user.email || "",
+      email: user.email?.includes("@guest.salesbuster.ai") ? "" : user.email || "",
       companyName: user.companyName || organization?.name || "",
       role: user.customRole || user.role || "Sales Manager",
       city: user.city || "",
@@ -426,7 +429,7 @@ export const completeProfile = async (req, res) => {
       id: user._id,
       name: user.name,
       phone: user.phone,
-      email: user.email || "",
+      email: user.email?.includes("@guest.salesbuster.ai") ? "" : user.email || "",
       companyName: user.companyName || organization?.name || "",
       role: user.customRole || user.role || "Sales Manager",
       city: user.city || "",
