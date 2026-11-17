@@ -24,6 +24,16 @@ export const showcaseServiceSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    mediaUrl: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    mediaType: {
+      type: String,
+      enum: ["image", "video"],
+      default: "image",
+    },
     fallbackBg: {
       type: String,
       default: "#1A1838",

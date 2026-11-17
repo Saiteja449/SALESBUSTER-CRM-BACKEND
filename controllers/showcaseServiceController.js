@@ -129,20 +129,29 @@ export const getPublicShowcaseServices = async (req, res) => {
       .sort({ order: 1, createdAt: 1 })
       .lean();
 
-    // Map to mobile app friendly format (id, title, tag, imageUrl, fallbackBg, description, features)
-    const formatted = services.map((s) => ({
-      _id: s._id,
-      id: s.serviceKey,
-      serviceKey: s.serviceKey,
-      title: s.title,
-      tag: s.tag,
-      imageUrl: s.imageUrl,
-      fallbackBg: s.fallbackBg || "#1A1838",
-      description: s.description,
-      features: s.features || [],
-      order: s.order || 0,
-      isActive: s.isActive,
-    }));
+    // Map to mobile app friendly format (id, title, tag, imageUrl, mediaUrl, mediaType, fallbackBg, description, features)
+    const formatted = services.map((s) => {
+      const resolvedMediaUrl = s.mediaUrl || s.imageUrl || "";
+      const isVideo =
+        s.mediaType === "video" ||
+        /\.(mp4|webm|mov|mkv|avi|m3u8)(\?.*)?$/i.test(resolvedMediaUrl);
+
+      return {
+        _id: s._id,
+        id: s.serviceKey,
+        serviceKey: s.serviceKey,
+        title: s.title,
+        tag: s.tag,
+        imageUrl: s.imageUrl || resolvedMediaUrl,
+        mediaUrl: resolvedMediaUrl,
+        mediaType: isVideo ? "video" : "image",
+        fallbackBg: s.fallbackBg || "#1A1838",
+        description: s.description,
+        features: s.features || [],
+        order: s.order || 0,
+        isActive: s.isActive,
+      };
+    });
 
     return res.status(200).json({
       success: true,
@@ -152,7 +161,12 @@ export const getPublicShowcaseServices = async (req, res) => {
     console.error("[ShowcaseService] getPublicShowcaseServices error:", error);
     return res.status(200).json({
       success: true,
-      data: DEFAULT_SHOWCASE_SERVICES.map((s) => ({ ...s, id: s.serviceKey })),
+      data: DEFAULT_SHOWCASE_SERVICES.map((s) => ({
+        ...s,
+        id: s.serviceKey,
+        mediaUrl: s.imageUrl,
+        mediaType: "image",
+      })),
       fallback: true,
     });
   }
@@ -171,9 +185,23 @@ export const getAdminShowcaseServices = async (req, res) => {
       .sort({ order: 1, createdAt: 1 })
       .lean();
 
+    const formatted = services.map((s) => {
+      const resolvedMediaUrl = s.mediaUrl || s.imageUrl || "";
+      const isVideo =
+        s.mediaType === "video" ||
+        /\.(mp4|webm|mov|mkv|avi|m3u8)(\?.*)?$/i.test(resolvedMediaUrl);
+
+      return {
+        ...s,
+        mediaUrl: resolvedMediaUrl,
+        imageUrl: s.imageUrl || resolvedMediaUrl,
+        mediaType: isVideo ? "video" : "image",
+      };
+    });
+
     return res.status(200).json({
       success: true,
-      data: services,
+      data: formatted,
     });
   } catch (error) {
     console.error("[ShowcaseService] getAdminShowcaseServices error:", error);
@@ -201,6 +229,8 @@ export const createShowcaseService = async (req, res) => {
       order = 0,
       isActive = true,
       imageUrl: directImageUrl = "",
+      mediaUrl: directMediaUrl = "",
+      mediaType: requestedMediaType = "",
     } = req.body;
 
     if (!title || !title.trim()) {
@@ -224,10 +254,18 @@ export const createShowcaseService = async (req, res) => {
       });
     }
 
-    // Handle uploaded file or direct image URL
-    let finalImageUrl = directImageUrl ? directImageUrl.trim() : "";
+    // Handle uploaded file or direct media/image URL
+    let finalMediaUrl = (directMediaUrl || directImageUrl || "").trim();
+    let finalMediaType = requestedMediaType || "image";
+
     if (req.file) {
-      finalImageUrl = `/uploads/services/${req.file.filename}`;
+      finalMediaUrl = `/uploads/services/${req.file.filename}`;
+      finalMediaType = req.file.mimetype?.startsWith("video/") ? "video" : "image";
+    } else if (finalMediaUrl) {
+      const isVideo =
+        requestedMediaType === "video" ||
+        /\.(mp4|webm|mov|mkv|avi|m3u8)(\?.*)?$/i.test(finalMediaUrl);
+      finalMediaType = isVideo ? "video" : "image";
     }
 
     // Parse features if passed as string (e.g. from FormData)
@@ -251,7 +289,9 @@ export const createShowcaseService = async (req, res) => {
       serviceKey: key,
       title: title.trim(),
       tag: (tag || "General").trim(),
-      imageUrl: finalImageUrl,
+      imageUrl: finalMediaUrl,
+      mediaUrl: finalMediaUrl,
+      mediaType: finalMediaType,
       fallbackBg: fallbackBg || "#1A1838",
       description: description ? description.trim() : "",
       features: parsedFeatures,
@@ -302,6 +342,8 @@ export const updateShowcaseService = async (req, res) => {
       order,
       isActive,
       imageUrl: directImageUrl,
+      mediaUrl: directMediaUrl,
+      mediaType: requestedMediaType,
     } = req.body;
 
     if (title !== undefined) service.title = title.trim();
@@ -325,20 +367,33 @@ export const updateShowcaseService = async (req, res) => {
       }
     }
 
-    // Handle image update
+    // Handle media update (file or URL)
     if (req.file) {
       // Optional: Delete previous uploaded local file if replaced
-      if (service.imageUrl && service.imageUrl.startsWith("/uploads/services/")) {
-        const oldPath = path.resolve(process.cwd(), "." + service.imageUrl);
+      const oldMedia = service.mediaUrl || service.imageUrl;
+      if (oldMedia && oldMedia.startsWith("/uploads/services/")) {
+        const oldPath = path.resolve(process.cwd(), "." + oldMedia);
         if (fs.existsSync(oldPath)) {
           try {
             fs.unlinkSync(oldPath);
           } catch (e) {}
         }
       }
-      service.imageUrl = `/uploads/services/${req.file.filename}`;
-    } else if (directImageUrl !== undefined) {
-      service.imageUrl = directImageUrl.trim();
+      const newRelative = `/uploads/services/${req.file.filename}`;
+      const isVideo = req.file.mimetype?.startsWith("video/");
+      service.mediaUrl = newRelative;
+      service.imageUrl = newRelative;
+      service.mediaType = isVideo ? "video" : (requestedMediaType || "image");
+    } else if (directMediaUrl !== undefined || directImageUrl !== undefined) {
+      const newUrl = (directMediaUrl !== undefined ? directMediaUrl : directImageUrl).trim();
+      const isVideo =
+        requestedMediaType === "video" ||
+        /\.(mp4|webm|mov|mkv|avi|m3u8)(\?.*)?$/i.test(newUrl);
+      service.mediaUrl = newUrl;
+      service.imageUrl = newUrl;
+      service.mediaType = isVideo ? "video" : (requestedMediaType || "image");
+    } else if (requestedMediaType !== undefined) {
+      service.mediaType = requestedMediaType === "video" ? "video" : "image";
     }
 
     // Parse features
@@ -392,9 +447,10 @@ export const deleteShowcaseService = async (req, res) => {
       });
     }
 
-    // Delete image from disk if local upload
-    if (service.imageUrl && service.imageUrl.startsWith("/uploads/services/")) {
-      const oldPath = path.resolve(process.cwd(), "." + service.imageUrl);
+    // Delete media from disk if local upload
+    const mediaToDelete = service.mediaUrl || service.imageUrl;
+    if (mediaToDelete && mediaToDelete.startsWith("/uploads/services/")) {
+      const oldPath = path.resolve(process.cwd(), "." + mediaToDelete);
       if (fs.existsSync(oldPath)) {
         try {
           fs.unlinkSync(oldPath);
@@ -418,24 +474,29 @@ export const deleteShowcaseService = async (req, res) => {
 };
 
 /**
- * Super Admin: Standalone image upload helper
+ * Super Admin: Standalone media upload helper (supports images & videos)
  * POST /api/showcase-services/upload-image
+ * POST /api/showcase-services/upload-media
  */
 export const uploadShowcaseImage = async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: "No image file provided.",
+        message: "No image or video file provided.",
       });
     }
 
+    const isVideo = req.file.mimetype?.startsWith("video/");
     const relativeUrl = `/uploads/services/${req.file.filename}`;
     const fullUrl = `${req.protocol}://${req.get("host")}${relativeUrl}`;
 
     return res.status(200).json({
       success: true,
       url: relativeUrl,
+      mediaUrl: relativeUrl,
+      imageUrl: relativeUrl,
+      mediaType: isVideo ? "video" : "image",
       fullUrl,
       fileName: req.file.filename,
     });
@@ -443,7 +504,7 @@ export const uploadShowcaseImage = async (req, res) => {
     console.error("[ShowcaseService] uploadShowcaseImage error:", error);
     return res.status(500).json({
       success: false,
-      message: error.message || "Failed to upload image.",
+      message: error.message || "Failed to upload media.",
     });
   }
 };
