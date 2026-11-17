@@ -10,6 +10,51 @@ const generateToken = (payload) => {
   });
 };
 
+const findUserByPhone = async (AuthUser, cleanPhone) => {
+  if (!AuthUser) return null;
+  const phoneCandidates = [
+    cleanPhone,
+    `+91${cleanPhone}`,
+    `+91 ${cleanPhone}`,
+    `91${cleanPhone}`,
+    `0${cleanPhone}`,
+  ];
+  let user = await AuthUser.findOne({ phone: { $in: phoneCandidates } });
+  if (!user) {
+    try {
+      user = await AuthUser.findOne({ phone: new RegExp(cleanPhone + "$") });
+    } catch (_) {}
+  }
+  if (!user && (await import("mongoose")).default.connection?.readyState === 1) {
+    try {
+      const User = (await import("../models/User.js")).default;
+      user = await User.findOne({ phone: { $in: phoneCandidates } });
+      if (!user) {
+        user = await User.findOne({ phone: new RegExp(cleanPhone + "$") });
+      }
+    } catch (_) {}
+  }
+  return user;
+};
+
+const findOrgByPhone = async (Organization, cleanPhone) => {
+  if (!Organization) return null;
+  const phoneCandidates = [
+    cleanPhone,
+    `+91${cleanPhone}`,
+    `+91 ${cleanPhone}`,
+    `91${cleanPhone}`,
+    `0${cleanPhone}`,
+  ];
+  let org = await Organization.findOne({ mobile: { $in: phoneCandidates } });
+  if (!org) {
+    try {
+      org = await Organization.findOne({ mobile: new RegExp(cleanPhone + "$") });
+    } catch (_) {}
+  }
+  return org;
+};
+
 /**
  * Send 4-digit OTP via Fast2SMS DLT route
  * @route POST /api/auth/send-otp
@@ -35,22 +80,18 @@ export const sendOtp = async (req, res) => {
 
     // Strict Gate: Check if phone belongs to an existing CRM / non-guest account
     const { AuthUser, Organization } = getMasterModels();
-    const phoneCandidates = [
-      cleanPhone,
-      `+91${cleanPhone}`,
-      `91${cleanPhone}`,
-      `0${cleanPhone}`,
-    ];
-    let existingUser = await AuthUser.findOne({ phone: { $in: phoneCandidates } });
-    if (!existingUser && (await import("mongoose")).default.connection?.readyState === 1) {
-      try {
-        const User = (await import("../models/User.js")).default;
-        existingUser = await User.findOne({ phone: { $in: phoneCandidates } });
-      } catch (_) {}
+    const existingUser = await findUserByPhone(AuthUser, cleanPhone);
+    const existingOrg = await findOrgByPhone(Organization, cleanPhone);
+
+    let isNonGuest = false;
+
+    // Check Organization level first
+    if (existingOrg && existingOrg.accountType && existingOrg.accountType !== "guest") {
+      isNonGuest = true;
     }
 
+    // Check User level
     if (existingUser) {
-      let isNonGuest = false;
       if (
         existingUser.role === "super_admin" ||
         (existingUser.accountType && existingUser.accountType !== "guest")
@@ -58,19 +99,19 @@ export const sendOtp = async (req, res) => {
         isNonGuest = true;
       } else if (existingUser.organizationId) {
         const org = await Organization.findById(existingUser.organizationId);
-        if (org && org.accountType !== "guest") {
+        if (org && org.accountType && org.accountType !== "guest") {
           isNonGuest = true;
         }
       }
+    }
 
-      if (isNonGuest) {
-        return res.status(403).json({
-          success: false,
-          code: "CRM_ACCOUNT_BLOCKED",
-          message:
-            "This mobile application is strictly for Guest accounts. CRM accounts are not permitted to log in here.",
-        });
-      }
+    if (isNonGuest) {
+      return res.status(403).json({
+        success: false,
+        code: "CRM_ACCOUNT_BLOCKED",
+        message:
+          "This mobile application is strictly for Guest accounts. CRM accounts are not permitted to log in here.",
+      });
     }
 
     // Rate-limiting check: Prevent spamming within 30 seconds (bypassed in test)
@@ -203,53 +244,62 @@ export const verifyOtp = async (req, res) => {
 
     const { AuthUser, Organization } = getMasterModels();
 
-    // Check if user already exists across phone number variations
-    const phoneCandidates = [
-      cleanPhone,
-      `+91${cleanPhone}`,
-      `91${cleanPhone}`,
-      `0${cleanPhone}`,
-    ];
-    let user = await AuthUser.findOne({ phone: { $in: phoneCandidates } });
-    if (!user && (await import("mongoose")).default.connection?.readyState === 1) {
-      try {
-        const User = (await import("../models/User.js")).default;
-        user = await User.findOne({ phone: { $in: phoneCandidates } });
-      } catch (_) {}
+    let user = await findUserByPhone(AuthUser, cleanPhone);
+    let organization = await findOrgByPhone(Organization, cleanPhone);
+
+    // Strict Guest-only gate: reject CRM accounts
+    let isNonGuest = false;
+
+    if (organization && organization.accountType && organization.accountType !== "guest") {
+      isNonGuest = true;
     }
 
-    let isProfileComplete = false;
-    let organization = null;
-    let tenantDbName = null;
-
     if (user) {
-      // Strict Guest-only gate: reject CRM accounts
-      let isNonGuest = false;
       if (
         user.role === "super_admin" ||
         (user.accountType && user.accountType !== "guest")
       ) {
         isNonGuest = true;
       } else if (user.organizationId) {
-        organization = await Organization.findById(user.organizationId);
-        if (organization && organization.accountType !== "guest") {
+        const userOrg = await Organization.findById(user.organizationId);
+        if (userOrg && userOrg.accountType && userOrg.accountType !== "guest") {
           isNonGuest = true;
         }
+        if (!organization) organization = userOrg;
       }
+    }
 
-      if (isNonGuest) {
-        return res.status(403).json({
-          success: false,
-          code: "CRM_ACCOUNT_BLOCKED",
-          message:
-            "This mobile application is strictly for Guest accounts. CRM accounts are not permitted to log in here.",
-        });
+    if (isNonGuest) {
+      return res.status(403).json({
+        success: false,
+        code: "CRM_ACCOUNT_BLOCKED",
+        message:
+          "This mobile application is strictly for Guest accounts. CRM accounts are not permitted to log in here.",
+      });
+    }
+
+    // If user wasn't directly found by phone, but guest organization exists, link through ownerId
+    if (!user && organization && organization.ownerId) {
+      user = await AuthUser.findById(organization.ownerId);
+      if (user && !user.phone) {
+        user.phone = cleanPhone;
+        await user.save().catch(() => {});
       }
+    }
 
+    let isProfileComplete = false;
+    let tenantDbName = null;
+
+    if (user) {
       // Existing guest user: check if they have completed registration details
       isProfileComplete = Boolean(
         user.isProfileComplete ||
-        (user.name && user.name.trim().length > 0 && !user.name.startsWith("Guest_"))
+        (user.name &&
+          user.name.trim().length > 0 &&
+          !user.name.startsWith("Guest_") &&
+          user.companyName &&
+          !user.companyName.includes("'s Workspace") &&
+          user.city)
       );
 
       // Ensure isProfileComplete is persisted
@@ -322,8 +372,8 @@ export const verifyOtp = async (req, res) => {
       ? {
           id: organization._id,
           _id: organization._id,
-          name: organization.name,
-          email: organization.email || "",
+          name: isProfileComplete ? organization.name : "",
+          email: organization.email?.includes("@guest.salesbuster.ai") ? "" : organization.email || "",
           mobile: organization.mobile || cleanPhone,
           accountType: organization.accountType || "guest",
           status: organization.status,
@@ -346,12 +396,12 @@ export const verifyOtp = async (req, res) => {
       token,
       _id: user._id,
       id: user._id,
-      name: user.name || "",
-      phone: user.phone,
+      name: isProfileComplete ? (user.name || "") : "",
+      phone: user.phone || cleanPhone,
       email: user.email?.includes("@guest.salesbuster.ai") ? "" : user.email || "",
-      companyName: user.companyName || organization?.name || "",
-      role: user.customRole || user.role || "Sales Manager",
-      city: user.city || "",
+      companyName: isProfileComplete ? (user.companyName || "") : "",
+      role: isProfileComplete ? (user.customRole || user.role || "") : "",
+      city: isProfileComplete ? (user.city || "") : "",
       accountType: "guest",
       isOrgOwner: true,
       isProfileComplete,
