@@ -33,6 +33,46 @@ export const sendOtp = async (req, res) => {
       });
     }
 
+    // Strict Gate: Check if phone belongs to an existing CRM / non-guest account
+    const { AuthUser, Organization } = getMasterModels();
+    const phoneCandidates = [
+      cleanPhone,
+      `+91${cleanPhone}`,
+      `91${cleanPhone}`,
+      `0${cleanPhone}`,
+    ];
+    let existingUser = await AuthUser.findOne({ phone: { $in: phoneCandidates } });
+    if (!existingUser && (await import("mongoose")).default.connection?.readyState === 1) {
+      try {
+        const User = (await import("../models/User.js")).default;
+        existingUser = await User.findOne({ phone: { $in: phoneCandidates } });
+      } catch (_) {}
+    }
+
+    if (existingUser) {
+      let isNonGuest = false;
+      if (
+        existingUser.role === "super_admin" ||
+        (existingUser.accountType && existingUser.accountType !== "guest")
+      ) {
+        isNonGuest = true;
+      } else if (existingUser.organizationId) {
+        const org = await Organization.findById(existingUser.organizationId);
+        if (org && org.accountType !== "guest") {
+          isNonGuest = true;
+        }
+      }
+
+      if (isNonGuest) {
+        return res.status(403).json({
+          success: false,
+          code: "CRM_ACCOUNT_BLOCKED",
+          message:
+            "This mobile application is strictly for Guest accounts. CRM accounts are not permitted to log in here.",
+        });
+      }
+    }
+
     // Rate-limiting check: Prevent spamming within 30 seconds (bypassed in test)
     if (process.env.NODE_ENV !== "test") {
       const existingRecentOtp = await Otp.findOne({
@@ -163,23 +203,63 @@ export const verifyOtp = async (req, res) => {
 
     const { AuthUser, Organization } = getMasterModels();
 
-    // Check if user already exists
-    let user = await AuthUser.findOne({ phone: cleanPhone });
+    // Check if user already exists across phone number variations
+    const phoneCandidates = [
+      cleanPhone,
+      `+91${cleanPhone}`,
+      `91${cleanPhone}`,
+      `0${cleanPhone}`,
+    ];
+    let user = await AuthUser.findOne({ phone: { $in: phoneCandidates } });
+    if (!user && (await import("mongoose")).default.connection?.readyState === 1) {
+      try {
+        const User = (await import("../models/User.js")).default;
+        user = await User.findOne({ phone: { $in: phoneCandidates } });
+      } catch (_) {}
+    }
+
     let isProfileComplete = false;
     let organization = null;
     let tenantDbName = null;
 
     if (user) {
-      // Existing user: check if they have completed the required profile data
+      // Strict Guest-only gate: reject CRM accounts
+      let isNonGuest = false;
+      if (
+        user.role === "super_admin" ||
+        (user.accountType && user.accountType !== "guest")
+      ) {
+        isNonGuest = true;
+      } else if (user.organizationId) {
+        organization = await Organization.findById(user.organizationId);
+        if (organization && organization.accountType !== "guest") {
+          isNonGuest = true;
+        }
+      }
+
+      if (isNonGuest) {
+        return res.status(403).json({
+          success: false,
+          code: "CRM_ACCOUNT_BLOCKED",
+          message:
+            "This mobile application is strictly for Guest accounts. CRM accounts are not permitted to log in here.",
+        });
+      }
+
+      // Existing guest user: check if they have completed registration details
       isProfileComplete = Boolean(
-        user.isProfileComplete &&
-        user.name &&
-        user.name.trim().length > 0 &&
-        user.organizationId
+        user.isProfileComplete ||
+        (user.name && user.name.trim().length > 0 && !user.name.startsWith("Guest_"))
       );
 
+      // Ensure isProfileComplete is persisted
+      if (isProfileComplete && !user.isProfileComplete) {
+        user.isProfileComplete = true;
+        await user.save().catch(() => {});
+      }
+
       tenantDbName = user.tenantDbName || null;
-      if (user.organizationId) {
+      if (!organization && user.organizationId) {
         organization = await Organization.findById(user.organizationId);
       }
     } else {
