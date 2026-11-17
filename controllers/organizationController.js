@@ -2047,9 +2047,11 @@ export const upgradeGuestOrganization = async (req, res) => {
       paymentMethod = "Manual",
       addons = {},
       notes,
+      ownerEmail,
+      ownerPassword,
     } = req.body || {};
 
-    const { Organization } = getMasterModels();
+    const { Organization, AuthUser } = getMasterModels();
     const org = await Organization.findById(id);
 
     if (!org) {
@@ -2108,7 +2110,7 @@ export const upgradeGuestOrganization = async (req, res) => {
       : new Date();
     const endDate = calculateSubscriptionEndDate(startDate, durationMonths);
 
-    // In-place upgrade: preserve existing tenantDbName, ownerId, email, events, contacts!
+    // In-place upgrade: preserve existing tenantDbName, ownerId, events, contacts!
     org.accountType = "crm";
     org.seats = seatCount;
     org.amountPaid = paidAmount;
@@ -2120,6 +2122,14 @@ export const upgradeGuestOrganization = async (req, res) => {
     org.subscriptionPlan = normalizedPlan;
     org.subscriptionStartDate = startDate;
     org.subscriptionEndDate = endDate;
+
+    // Optional Owner Email Update
+    const cleanedOwnerEmail =
+      typeof ownerEmail === "string" ? ownerEmail.trim().toLowerCase() : "";
+    if (cleanedOwnerEmail && !cleanedOwnerEmail.includes("@guest.salesbuster.ai")) {
+      org.email = cleanedOwnerEmail;
+    }
+
     if (notes) {
       org.notes = (org.notes ? org.notes + "\n" : "") + notes;
     }
@@ -2133,10 +2143,75 @@ export const upgradeGuestOrganization = async (req, res) => {
 
     await org.save();
 
+    // Password & Credentials Setup for the Upgraded Owner
+    const finalPassword =
+      typeof ownerPassword === "string" && ownerPassword.trim().length >= 6
+        ? ownerPassword.trim()
+        : generateSecurePassword(org.name);
+
+    let hashedPassword = null;
+    try {
+      const salt = await bcrypt.genSalt(10);
+      hashedPassword = await bcrypt.hash(finalPassword, salt);
+    } catch (hashErr) {
+      console.warn("[upgradeGuestOrganization] bcrypt hash warning:", hashErr.message);
+    }
+
+    // Update Master AuthUser (Password & Email)
+    if (AuthUser && org.ownerId && hashedPassword) {
+      try {
+        const authUserUpdate = { password: hashedPassword };
+        if (cleanedOwnerEmail && !cleanedOwnerEmail.includes("@guest.salesbuster.ai")) {
+          authUserUpdate.email = cleanedOwnerEmail;
+        }
+        await AuthUser.updateOne({ _id: org.ownerId }, authUserUpdate);
+      } catch (authErr) {
+        console.warn("[upgradeGuestOrganization] AuthUser update warning:", authErr.message);
+      }
+    }
+
+    // Update Tenant DB User (Password & Email)
+    if (org.ownerId && org.tenantDbName && hashedPassword) {
+      try {
+        const tenantModels = getTenantModels(org.tenantDbName);
+        if (tenantModels?.User) {
+          const tenantUserUpdate = { password: hashedPassword };
+          if (cleanedOwnerEmail && !cleanedOwnerEmail.includes("@guest.salesbuster.ai")) {
+            tenantUserUpdate.email = cleanedOwnerEmail;
+          }
+          await tenantModels.User.updateOne({ _id: org.ownerId }, tenantUserUpdate);
+        }
+      } catch (tenantErr) {
+        console.warn("[upgradeGuestOrganization] Tenant User update warning:", tenantErr.message);
+      }
+    }
+
+    // Dispatch Tenant Welcome Email with credentials if real business email exists
+    let welcomeEmailSent = false;
+    const recipientEmail = cleanedOwnerEmail || org.email;
+    if (recipientEmail && !recipientEmail.includes("@guest.salesbuster.ai")) {
+      try {
+        welcomeEmailSent = await sendTenantWelcomeEmail({
+          organization: org,
+          ownerEmail: recipientEmail,
+          temporaryPassword: finalPassword,
+          loginUrl: process.env.FRONTEND_URL || "https://crm.salesbuster.ai/login",
+        });
+      } catch (mailErr) {
+        console.warn("[upgradeGuestOrganization] sendTenantWelcomeEmail error:", mailErr.message);
+      }
+    }
+
     return res.status(200).json({
       success: true,
       message: "Guest organization successfully upgraded to CRM.",
       data: org,
+      credentials: {
+        email: recipientEmail,
+        temporaryPassword: finalPassword,
+        welcomeEmailSent: Boolean(welcomeEmailSent),
+        loginUrl: process.env.FRONTEND_URL || "https://crm.salesbuster.ai/login",
+      },
     });
   } catch (error) {
     console.error("[upgradeGuestOrganization] Error upgrading organization:", error);

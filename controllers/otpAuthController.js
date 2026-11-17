@@ -110,7 +110,7 @@ export const sendOtp = async (req, res) => {
         success: false,
         code: "CRM_ACCOUNT_BLOCKED",
         message:
-          "This mobile application is strictly for Guest accounts. CRM accounts are not permitted to log in here.",
+          "This mobile application is strictly for Guest accounts. This account has been upgraded to SalesBuster CRM. Please log in at https://crm.salesbuster.ai or use the SalesBuster CRM app.",
       });
     }
 
@@ -274,7 +274,7 @@ export const verifyOtp = async (req, res) => {
         success: false,
         code: "CRM_ACCOUNT_BLOCKED",
         message:
-          "This mobile application is strictly for Guest accounts. CRM accounts are not permitted to log in here.",
+          "This mobile application is strictly for Guest accounts. This account has been upgraded to SalesBuster CRM. Please log in at https://crm.salesbuster.ai or use the SalesBuster CRM app.",
       });
     }
 
