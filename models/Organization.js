@@ -113,7 +113,9 @@ const organizationSchema = new mongoose.Schema(
     },
     email: {
       type: String,
-      required: [true, "Billing/Admin email is required"],
+      required: function () {
+        return this.accountType !== "guest";
+      },
       trim: true,
       lowercase: true,
       index: true,
