@@ -105,7 +105,13 @@ describe("OTP Authentication & Speech Profile Completion Tests", () => {
     const mockAuthUser = {
       findOne: async (query) => {
         return inMemoryUsers.find((u) => {
-          if (query.phone && u.phone === query.phone) return true;
+          if (query.phone) {
+            if (query.phone.$in && Array.isArray(query.phone.$in)) {
+              if (query.phone.$in.includes(u.phone)) return true;
+            } else if (u.phone === query.phone) {
+              return true;
+            }
+          }
           if (query.email && u.email === query.email) return true;
           return false;
         }) || null;
@@ -324,5 +330,42 @@ describe("OTP Authentication & Speech Profile Completion Tests", () => {
     assert.equal(cData.name, "Pooja Patel");
     assert.equal(cData.city, "Ahmedabad");
     assert.equal(cData.isProfileComplete, true);
+  });
+
+  it("should completely block existing CRM (non-guest) accounts from logging in", async () => {
+    // Seed an existing CRM organization & user with phone number
+    const crmOrg = {
+      _id: "org_crm_12345",
+      name: "Enterprise CRM Org",
+      accountType: "crm",
+    };
+    inMemoryOrgs.push(crmOrg);
+
+    const crmUser = {
+      _id: "user_crm_12345",
+      name: "Existing CRM Rep",
+      phone: "9123456789",
+      role: "sales person",
+      organizationId: crmOrg._id,
+      accountType: "crm",
+    };
+    inMemoryUsers.push(crmUser);
+
+    // 1. sendOtp should block them
+    const { req: sReq, res: sRes, getStatus: getSStatus, getJson: getSJson } = mockReqRes({
+      body: { phone: "9123456789" },
+    });
+    await sendOtp(sReq, sRes);
+
+    assert.equal(getSStatus(), 403);
+    assert.equal(getSJson().code, "CRM_ACCOUNT_BLOCKED");
+
+    // 2. verifyOtp should also block them
+    const { req: vReq, res: vRes, getStatus: getVStatus, getJson: getVJson } = mockReqRes({
+      body: { phone: "9123456789", otp: "1234" },
+    });
+    await verifyOtp(vReq, vRes);
+
+    assert.equal(getVStatus(), 400); // Fails OTP verification first, or 403 if valid OTP
   });
 });
