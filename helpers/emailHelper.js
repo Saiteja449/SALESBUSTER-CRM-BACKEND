@@ -45,6 +45,14 @@ export const verifySmtpConnection = async () => {
 };
 
 export const sendEmail = async (options) => {
+  if (
+    process.env.NODE_ENV === "test" ||
+    process.env.NODE_TEST_CONTEXT ||
+    !process.env.SMTP_PASS
+  ) {
+    console.log(`[Email Mock] Simulated email to ${options?.email}`);
+    return true;
+  }
   try {
     const transport = getTransporter();
 

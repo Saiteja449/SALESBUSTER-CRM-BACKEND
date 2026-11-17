@@ -55,6 +55,7 @@ const mockReqRes = (reqOverrides = {}) => {
 };
 
 describe("Guest Account & Conversational Capture Architecture Tests", () => {
+  process.env.NODE_ENV = "test";
   process.env.JWT_SECRET = process.env.JWT_SECRET || "test-super-secret-jwt-key";
 
   afterEach(() => {
@@ -366,9 +367,27 @@ describe("Guest Account & Conversational Capture Architecture Tests", () => {
         },
       };
 
+      let updatedAuthUser = null;
+      let updatedTenantUser = null;
+
       setMasterModelsMock(() => ({
         Organization: {
           findById: async (id) => (id === "org_guest_to_upgrade" ? mockOrg : null),
+        },
+        AuthUser: {
+          updateOne: async (query, update) => {
+            updatedAuthUser = { query, update };
+            return { acknowledged: true, modifiedCount: 1 };
+          },
+        },
+      }));
+
+      setTenantModelsMock(() => ({
+        User: {
+          updateOne: async (query, update) => {
+            updatedTenantUser = { query, update };
+            return { acknowledged: true, modifiedCount: 1 };
+          },
         },
       }));
 
@@ -385,6 +404,8 @@ describe("Guest Account & Conversational Capture Architecture Tests", () => {
             targetIntelligence: true,
           },
           notes: "Upgraded from guest to Annual Enterprise plan",
+          ownerEmail: "owner.real@company.com",
+          ownerPassword: "CustomPassword123!",
         },
       });
 
@@ -400,7 +421,24 @@ describe("Guest Account & Conversational Capture Architecture Tests", () => {
       assert.equal(savedOrg.addons.whatsappCampaigns, true);
       assert.equal(savedOrg.tenantDbName, "sb_tenant_guest_malhotra_999", "Tenant DB must be preserved");
       assert.equal(savedOrg.ownerId, "owner_user_999", "Owner ID must be preserved");
+      assert.equal(savedOrg.email, "owner.real@company.com", "Organization email must be updated to real email");
       assert.ok(savedOrg.subscriptionEndDate > new Date(), "SubscriptionEndDate must be set in future");
+
+      // Verify AuthUser and Tenant User credential updates
+      assert.ok(updatedAuthUser, "AuthUser must be updated with credentials");
+      assert.equal(updatedAuthUser.query._id, "owner_user_999");
+      assert.equal(updatedAuthUser.update.email, "owner.real@company.com");
+      assert.ok(updatedAuthUser.update.password, "AuthUser password must be hashed");
+
+      assert.ok(updatedTenantUser, "Tenant User must be updated with credentials");
+      assert.equal(updatedTenantUser.query._id, "owner_user_999");
+      assert.equal(updatedTenantUser.update.email, "owner.real@company.com");
+      assert.ok(updatedTenantUser.update.password, "Tenant User password must be hashed");
+
+      // Verify response credentials
+      assert.ok(data.credentials, "Response must include credentials object for Super Admin");
+      assert.equal(data.credentials.email, "owner.real@company.com");
+      assert.equal(data.credentials.temporaryPassword, "CustomPassword123!");
     });
 
     it("is idempotent when upgrade is called on an organization that is already CRM", async () => {
