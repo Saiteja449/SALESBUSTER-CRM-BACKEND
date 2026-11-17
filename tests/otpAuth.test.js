@@ -108,6 +108,8 @@ describe("OTP Authentication & Speech Profile Completion Tests", () => {
           if (query.phone) {
             if (query.phone.$in && Array.isArray(query.phone.$in)) {
               if (query.phone.$in.includes(u.phone)) return true;
+            } else if (query.phone instanceof RegExp) {
+              if (query.phone.test(u.phone)) return true;
             } else if (u.phone === query.phone) {
               return true;
             }
@@ -146,6 +148,18 @@ describe("OTP Authentication & Speech Profile Completion Tests", () => {
       findOne: async (query) => {
         if (query.tenantDbName) {
           return inMemoryOrgs.find((o) => o.tenantDbName === query.tenantDbName) || null;
+        }
+        if (query.mobile) {
+          return inMemoryOrgs.find((o) => {
+            if (query.mobile.$in && Array.isArray(query.mobile.$in)) {
+              if (query.mobile.$in.includes(o.mobile)) return true;
+            } else if (query.mobile instanceof RegExp) {
+              if (query.mobile.test(o.mobile)) return true;
+            } else if (o.mobile === query.mobile) {
+              return true;
+            }
+            return false;
+          }) || null;
         }
         return null;
       },
@@ -367,5 +381,51 @@ describe("OTP Authentication & Speech Profile Completion Tests", () => {
     await verifyOtp(vReq, vRes);
 
     assert.equal(getVStatus(), 400); // Fails OTP verification first, or 403 if valid OTP
+  });
+
+  it("should block CRM account when phone is registered only on Organization.mobile", async () => {
+    // Seed CRM org with mobile, but AuthUser has no phone
+    const crmOrg = {
+      _id: "org_crm_mobile_only",
+      name: "CRM Org Mobile Only",
+      mobile: "+91 9888877777",
+      accountType: "crm",
+    };
+    inMemoryOrgs.push(crmOrg);
+
+    const { req: sReq, res: sRes, getStatus: getSStatus, getJson: getSJson } = mockReqRes({
+      body: { phone: "9888877777" },
+    });
+    await sendOtp(sReq, sRes);
+
+    assert.equal(getSStatus(), 403);
+    assert.equal(getSJson().code, "CRM_ACCOUNT_BLOCKED");
+  });
+
+  it("should return empty strings for name, companyName, role, city on new user verification", async () => {
+    const rawOtp = "4444";
+    const salt = await bcrypt.genSalt(10);
+    const otpHash = await bcrypt.hash(rawOtp, salt);
+
+    await Otp.create({
+      phone: "9876500000",
+      otpHash,
+      expiresAt: new Date(Date.now() + 60000),
+    });
+
+    const { req, res, getStatus, getJson } = mockReqRes({
+      body: { phone: "9876500000", otp: rawOtp },
+    });
+
+    await verifyOtp(req, res);
+
+    assert.equal(getStatus(), 200);
+    const data = getJson();
+    assert.equal(data.success, true);
+    assert.equal(data.isProfileComplete, false);
+    assert.equal(data.name, "");
+    assert.equal(data.companyName, "");
+    assert.equal(data.role, "");
+    assert.equal(data.city, "");
   });
 });
