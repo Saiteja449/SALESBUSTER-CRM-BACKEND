@@ -10,6 +10,11 @@ const generateToken = (payload) => {
   });
 };
 
+// Default OTP overrides for testing/demo accounts (no SMS is dispatched)
+const DEFAULT_OTP_CONFIGS = {
+  "8179550538": "1234",
+};
+
 const findUserByPhone = async (AuthUser, cleanPhone) => {
   if (!AuthUser) return null;
   const phoneCandidates = [
@@ -110,12 +115,15 @@ export const sendOtp = async (req, res) => {
         success: false,
         code: "CRM_ACCOUNT_BLOCKED",
         message:
-          "This mobile application is strictly for Guest accounts. This account has been upgraded to SalesBuster CRM. Please log in at https://crm.salesbuster.ai or use the SalesBuster CRM app.",
+          "This mobile application is strictly for Guest accounts. This account has been upgraded to SalesBuster CRM. Please log in at https://app.salesbuster.ai or use the SalesBuster CRM app.",
       });
     }
 
-    // Rate-limiting check: Prevent spamming within 30 seconds (bypassed in test)
-    if (process.env.NODE_ENV !== "test") {
+    const defaultOtp = DEFAULT_OTP_CONFIGS[cleanPhone];
+    const isDefaultPhone = Boolean(defaultOtp);
+
+    // Rate-limiting check: Prevent spamming within 30 seconds (bypassed in test or for default test accounts)
+    if (process.env.NODE_ENV !== "test" && !isDefaultPhone) {
       const existingRecentOtp = await Otp.findOne({
         phone: cleanPhone,
         createdAt: { $gt: new Date(Date.now() - 30 * 1000) },
@@ -129,8 +137,8 @@ export const sendOtp = async (req, res) => {
       }
     }
 
-    // Generate 4-digit numeric OTP (1000 to 9999)
-    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    // Generate numeric OTP (use default OTP for test accounts, otherwise random 4-digit 1000 to 9999)
+    const otp = defaultOtp || Math.floor(1000 + Math.random() * 9000).toString();
 
     // Hash OTP with bcrypt
     const salt = await bcrypt.genSalt(10);
@@ -147,19 +155,27 @@ export const sendOtp = async (req, res) => {
     });
 
     // Console logging in dev / test mode for effortless testing
-    console.log(`[OTP] Generated 4-digit OTP for ${cleanPhone}: ${otp}`);
+    if (isDefaultPhone) {
+      console.log(`[OTP] Default OTP set for ${cleanPhone}: ${otp}. SMS dispatch suppressed.`);
+    } else {
+      console.log(`[OTP] Generated 4-digit OTP for ${cleanPhone}: ${otp}`);
+    }
 
-    // Dispatch via Fast2SMS DLT route
-    const smsResult = await sendDltOtp(cleanPhone, otp);
+    // Dispatch via Fast2SMS DLT route (skip SMS for default test accounts)
+    if (!isDefaultPhone) {
+      const smsResult = await sendDltOtp(cleanPhone, otp);
 
-    if (!smsResult.success && !smsResult.simulated) {
-      console.warn(`[OTP] Fast2SMS dispatch warning:`, smsResult.message);
+      if (!smsResult.success && !smsResult.simulated) {
+        console.warn(`[OTP] Fast2SMS dispatch warning:`, smsResult.message);
+      }
     }
 
     return res.status(200).json({
       success: true,
-      message: "4-digit verification code sent successfully.",
-      ...(process.env.NODE_ENV !== "production" ? { debugOtp: otp } : {}),
+      message: isDefaultPhone
+        ? "Verification code sent successfully."
+        : "4-digit verification code sent successfully.",
+      ...(process.env.NODE_ENV !== "production" || isDefaultPhone ? { debugOtp: otp } : {}),
     });
   } catch (error) {
     console.error("Error in sendOtp:", error);
@@ -181,7 +197,7 @@ export const verifyOtp = async (req, res) => {
     if (!phone || !otp) {
       return res.status(400).json({
         success: false,
-        message: "Phone number and 4-digit OTP are required.",
+        message: "Phone number and OTP code are required.",
       });
     }
 
@@ -195,10 +211,20 @@ export const verifyOtp = async (req, res) => {
       });
     }
 
-    if (cleanOtp.length !== 4) {
+    const defaultOtp = DEFAULT_OTP_CONFIGS[cleanPhone];
+    const isDefaultPhone = Boolean(defaultOtp);
+
+    // Validate OTP length (standard: 4 digits; default test account: defaultOtp length or 4 digits)
+    const isValidLength =
+      cleanOtp.length === 4 ||
+      (isDefaultPhone && cleanOtp.length === defaultOtp.length);
+
+    if (!isValidLength) {
       return res.status(400).json({
         success: false,
-        message: "OTP must be a 4-digit code.",
+        message: isDefaultPhone
+          ? `OTP must be a 4-digit or ${defaultOtp.length}-digit code.`
+          : "OTP must be a 4-digit code.",
       });
     }
 
@@ -209,9 +235,20 @@ export const verifyOtp = async (req, res) => {
       verified: false,
     };
     const otpQuery = Otp.findOne(query);
-    const otpRecord = typeof otpQuery.sort === "function"
+    let otpRecord = typeof otpQuery.sort === "function"
       ? await otpQuery.sort({ createdAt: -1 })
       : await otpQuery;
+
+    // For default test phone, if no active OTP record exists, auto-provision one
+    if (!otpRecord && isDefaultPhone && (cleanOtp === defaultOtp || cleanOtp === defaultOtp.slice(0, 4))) {
+      const salt = await bcrypt.genSalt(10);
+      const otpHash = await bcrypt.hash(defaultOtp, salt);
+      otpRecord = await Otp.create({
+        phone: cleanPhone,
+        otpHash,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      });
+    }
 
     if (!otpRecord) {
       return res.status(400).json({
@@ -228,7 +265,13 @@ export const verifyOtp = async (req, res) => {
       });
     }
 
-    const isMatch = await bcrypt.compare(cleanOtp, otpRecord.otpHash);
+    let isMatch = false;
+    if (isDefaultPhone && (cleanOtp === defaultOtp || cleanOtp === defaultOtp.slice(0, 4))) {
+      isMatch = true;
+    } else {
+      isMatch = await bcrypt.compare(cleanOtp, otpRecord.otpHash);
+    }
+
     if (!isMatch) {
       otpRecord.attempts += 1;
       await otpRecord.save();
@@ -485,10 +528,10 @@ export const completeProfile = async (req, res) => {
 
     // Update Master AuthUser
     user.name = cleanName;
-    if (cleanCompany) user.companyName = cleanCompany;
-    if (cleanRole) user.customRole = cleanRole;
-    if (cleanCity) user.city = cleanCity;
-    if (cleanEmail) user.email = cleanEmail;
+    if (companyName !== undefined) user.companyName = cleanCompany;
+    if (role !== undefined) user.customRole = cleanRole;
+    if (city !== undefined) user.city = cleanCity;
+    if (email !== undefined) user.email = cleanEmail || "";
     user.isProfileComplete = true;
     await user.save();
 
@@ -502,8 +545,8 @@ export const completeProfile = async (req, res) => {
         } else if (cleanName) {
           organization.name = `${cleanName}'s Workspace`;
         }
-        if (cleanEmail) {
-          organization.email = cleanEmail;
+        if (email !== undefined) {
+          organization.email = cleanEmail || "";
         }
         await organization.save();
       }
@@ -515,10 +558,10 @@ export const completeProfile = async (req, res) => {
         const tenantModels = getTenantModels(user.tenantDbName);
         await tenantModels.User.findByIdAndUpdate(user._id, {
           name: cleanName,
-          companyName: cleanCompany,
-          customRole: cleanRole,
-          city: cleanCity,
-          ...(cleanEmail ? { email: cleanEmail } : {}),
+          ...(companyName !== undefined ? { companyName: cleanCompany } : {}),
+          ...(role !== undefined ? { customRole: cleanRole } : {}),
+          ...(city !== undefined ? { city: cleanCity } : {}),
+          ...(email !== undefined ? { email: cleanEmail || "" } : {}),
           isProfileComplete: true,
         });
       } catch (tErr) {

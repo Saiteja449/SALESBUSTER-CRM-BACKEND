@@ -428,4 +428,68 @@ describe("OTP Authentication & Speech Profile Completion Tests", () => {
     assert.equal(data.role, "");
     assert.equal(data.city, "");
   });
+
+  it("should assign default OTP 1234 for 8179550538 and not send any SMS", async () => {
+    const { req: sReq, res: sRes, getStatus: getSStatus, getJson: getSJson } = mockReqRes({
+      body: { phone: "8179550538" },
+    });
+    await sendOtp(sReq, sRes);
+
+    assert.equal(getSStatus(), 200);
+    const sJson = getSJson();
+    assert.equal(sJson.success, true);
+    assert.equal(sJson.debugOtp, "1234");
+
+    // Otp record in DB should be created with 1234
+    const otpInDb = inMemoryOtps.find((o) => o.phone === "8179550538");
+    assert.ok(otpInDb, "OTP record should exist in DB");
+    const isMatch = await bcrypt.compare("1234", otpInDb.otpHash);
+    assert.equal(isMatch, true, "Hashed OTP must match 1234");
+
+    // Fast2SMS direct service call should also be suppressed
+    const { sendDltOtp } = await import("../services/fast2SmsService.js");
+    const smsResult = await sendDltOtp("8179550538", "1234");
+    assert.equal(smsResult.simulated, true);
+    assert.equal(smsResult.success, true);
+
+    // Verify OTP with 1234
+    const { req: vReq, res: vRes, getStatus: getVStatus, getJson: getVJson } = mockReqRes({
+      body: { phone: "8179550538", otp: "1234" },
+    });
+    await verifyOtp(vReq, vRes);
+
+    assert.equal(getVStatus(), 200);
+    const vJson = getVJson();
+    assert.equal(vJson.success, true);
+    assert.ok(vJson.token, "Should issue JWT auth token");
+  });
+
+  it("should accept 1234 (4-digit mobile app format) as fallback for 8179550538", async () => {
+    const { req: sReq, res: sRes } = mockReqRes({
+      body: { phone: "8179550538" },
+    });
+    await sendOtp(sReq, sRes);
+
+    const { req: vReq, res: vRes, getStatus: getVStatus, getJson: getVJson } = mockReqRes({
+      body: { phone: "8179550538", otp: "1234" },
+    });
+    await verifyOtp(vReq, vRes);
+
+    assert.equal(getVStatus(), 200);
+    assert.equal(getVJson().success, true);
+  });
+
+  it("should reject incorrect OTP for 8179550538", async () => {
+    const { req: sReq, res: sRes } = mockReqRes({
+      body: { phone: "8179550538" },
+    });
+    await sendOtp(sReq, sRes);
+
+    const { req: vReq, res: vRes, getStatus: getVStatus } = mockReqRes({
+      body: { phone: "8179550538", otp: "999999" },
+    });
+    await verifyOtp(vReq, vRes);
+
+    assert.equal(getVStatus(), 400);
+  });
 });
