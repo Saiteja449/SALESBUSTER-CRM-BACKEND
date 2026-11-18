@@ -15,6 +15,17 @@ export const sendDltOtp = async (phoneNumber, otp) => {
     throw new Error(`Invalid mobile number: ${phoneNumber}. Must be 10 digits.`);
   }
 
+  // Suppress SMS for default test numbers
+  if (cleanPhone === "8179550538") {
+    console.log(`[Fast2SMS] Phone ${cleanPhone} is configured as default test number. Suppressing SMS dispatch.`);
+    return {
+      success: true,
+      simulated: true,
+      message: "Fast2SMS dispatch skipped for default test number",
+      otp,
+    };
+  }
+
   if (!apiKey) {
     console.warn(
       `[Fast2SMS] F2S_KEY is not defined in environment. Skipping network call in dev mode. OTP is: ${otp}`

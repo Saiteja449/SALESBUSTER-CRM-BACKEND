@@ -37,6 +37,7 @@ import WAContact, { waContactSchema } from "../models/WhatsAppContact.js";
 import WAMessage, { waMessageSchema } from "../models/WhatsAppMessage.js";
 import WAWebhookEvent, { waWebhookEventSchema } from "../models/WhatsAppWebhookEvent.js";
 import ShowcaseService, { showcaseServiceSchema } from "../models/ShowcaseService.js";
+import ShortUrl, { shortUrlSchema } from "../models/ShortUrl.js";
 
 let _masterModelsOverride = null;
 let _tenantModelsOverride = null;
@@ -76,6 +77,9 @@ export const getMasterModels = () => {
   const MasterShowcaseService =
     masterDb.models.ShowcaseService ||
     masterDb.model("ShowcaseService", showcaseServiceSchema);
+  const MasterShortUrl =
+    masterDb.models.ShortUrl ||
+    masterDb.model("ShortUrl", shortUrlSchema);
 
   return {
     Organization: MasterOrg,
@@ -84,6 +88,7 @@ export const getMasterModels = () => {
     WAAccount: MasterWAAccount,
     WAWebhookEvent: MasterWAWebhookEvent,
     ShowcaseService: MasterShowcaseService,
+    ShortUrl: MasterShortUrl,
     masterDb,
   };
 };
