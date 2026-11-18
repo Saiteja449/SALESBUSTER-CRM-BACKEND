@@ -46,9 +46,11 @@ const serviceUpload = multer({
 });
 
 const uploadFieldsMiddleware = serviceUpload.fields([
+  { name: "bannerImage", maxCount: 1 },
+  { name: "banner", maxCount: 1 },
   { name: "image", maxCount: 1 },
-  { name: "media", maxCount: 1 },
   { name: "video", maxCount: 1 },
+  { name: "media", maxCount: 1 },
   { name: "file", maxCount: 1 },
 ]);
 
@@ -67,12 +69,25 @@ const handleMediaUpload = (req, res, next) => {
       });
     }
 
-    // Normalize uploaded file reference onto req.file
+    // Keep individual uploaded file references available on req.files
+    // and normalize fallback reference onto req.file for backwards compatibility
     if (req.files) {
+      req.bannerFile =
+        req.files?.bannerImage?.[0] ||
+        req.files?.banner?.[0] ||
+        req.files?.image?.[0] ||
+        null;
+
+      req.videoFile =
+        req.files?.video?.[0] ||
+        (req.files?.media?.[0]?.mimetype?.startsWith("video/") ? req.files?.media?.[0] : null) ||
+        null;
+
       req.file =
         req.files?.media?.[0] ||
         req.files?.image?.[0] ||
         req.files?.video?.[0] ||
+        req.files?.bannerImage?.[0] ||
         req.files?.file?.[0] ||
         null;
     }

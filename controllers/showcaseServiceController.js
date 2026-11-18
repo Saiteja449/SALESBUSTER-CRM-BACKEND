@@ -7,7 +7,8 @@ export const DEFAULT_SHOWCASE_SERVICES = [
     serviceKey: "bi_analyst",
     title: "BI Analyst",
     tag: "Analytics",
-    imageUrl: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=400&q=80",
+    bannerImageUrl: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=400&q=80",
+    videoUrl: "",
     fallbackBg: "#1A1838",
     description:
       "A dedicated BI Analyst that turns your raw numbers into clear, actionable insight — dashboards, KPIs and reports your whole team can trust.",
@@ -23,7 +24,8 @@ export const DEFAULT_SHOWCASE_SERVICES = [
     serviceKey: "target_audience",
     title: "Target Audience",
     tag: "Growth",
-    imageUrl: "https://images.unsplash.com/photo-1533750349088-cd871a92f312?w=400&q=80",
+    bannerImageUrl: "https://images.unsplash.com/photo-1533750349088-cd871a92f312?w=400&q=80",
+    videoUrl: "",
     fallbackBg: "#2A1828",
     description:
       "Identify, segment and engage your high-value audience segments with precision-engineered data analytics and customer persona intelligence.",
@@ -39,7 +41,8 @@ export const DEFAULT_SHOWCASE_SERVICES = [
     serviceKey: "whatsapp_chat_automation",
     title: "WhatsApp Chat Automation",
     tag: "Cloud API",
-    imageUrl: "https://images.unsplash.com/photo-1611746872915-64382b5c76da?w=400&q=80",
+    bannerImageUrl: "https://images.unsplash.com/photo-1611746872915-64382b5c76da?w=400&q=80",
+    videoUrl: "",
     fallbackBg: "#132822",
     description:
       "Supercharge customer communication with intelligent WhatsApp chatbots that qualify leads, answer FAQs, and book meetings 24/7.",
@@ -55,7 +58,8 @@ export const DEFAULT_SHOWCASE_SERVICES = [
     serviceKey: "whatsapp_campaigns",
     title: "WhatsApp Campaigns",
     tag: "Marketing",
-    imageUrl: "https://images.unsplash.com/photo-1563986768609-322da13575f3?w=400&q=80",
+    bannerImageUrl: "https://images.unsplash.com/photo-1563986768609-322da13575f3?w=400&q=80",
+    videoUrl: "",
     fallbackBg: "#162338",
     description:
       "Launch high-conversion broadcast campaigns, promotional announcements, and event reminders with enterprise-grade deliverability.",
@@ -71,7 +75,8 @@ export const DEFAULT_SHOWCASE_SERVICES = [
     serviceKey: "followup_automation",
     title: "24/7 Follow-up Automation",
     tag: "Automation",
-    imageUrl: "https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&q=80",
+    bannerImageUrl: "https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&q=80",
+    videoUrl: "",
     fallbackBg: "#181C38",
     description:
       "Never drop another hot lead. Instantly follow up across WhatsApp, SMS, and email the moment a prospect shows interest.",
@@ -87,7 +92,8 @@ export const DEFAULT_SHOWCASE_SERVICES = [
     serviceKey: "call_recording",
     title: "Call Recording & Call Log",
     tag: "Sales OPS",
-    imageUrl: "https://images.unsplash.com/photo-1512428559087-560fa5ceab42?w=400&q=80",
+    bannerImageUrl: "https://images.unsplash.com/photo-1512428559087-560fa5ceab42?w=400&q=80",
+    videoUrl: "",
     fallbackBg: "#1F1A30",
     description:
       "Automatically record and transcribe client calls, analyze sales performance, and keep your CRM updated with zero manual work.",
@@ -129,12 +135,11 @@ export const getPublicShowcaseServices = async (req, res) => {
       .sort({ order: 1, createdAt: 1 })
       .lean();
 
-    // Map to mobile app friendly format (id, title, tag, imageUrl, mediaUrl, mediaType, fallbackBg, description, features)
+    // Map to mobile app friendly format
     const formatted = services.map((s) => {
-      const resolvedMediaUrl = s.mediaUrl || s.imageUrl || "";
-      const isVideo =
-        s.mediaType === "video" ||
-        /\.(mp4|webm|mov|mkv|avi|m3u8)(\?.*)?$/i.test(resolvedMediaUrl);
+      const bannerImageUrl = s.bannerImageUrl || s.imageUrl || "";
+      const videoUrl = s.videoUrl || "";
+      const hasVideo = Boolean(videoUrl);
 
       return {
         _id: s._id,
@@ -142,9 +147,9 @@ export const getPublicShowcaseServices = async (req, res) => {
         serviceKey: s.serviceKey,
         title: s.title,
         tag: s.tag,
-        imageUrl: s.imageUrl || resolvedMediaUrl,
-        mediaUrl: resolvedMediaUrl,
-        mediaType: isVideo ? "video" : "image",
+        bannerImageUrl,
+        videoUrl,
+        hasVideo,
         fallbackBg: s.fallbackBg || "#1A1838",
         description: s.description,
         features: s.features || [],
@@ -164,8 +169,7 @@ export const getPublicShowcaseServices = async (req, res) => {
       data: DEFAULT_SHOWCASE_SERVICES.map((s) => ({
         ...s,
         id: s.serviceKey,
-        mediaUrl: s.imageUrl,
-        mediaType: "image",
+        hasVideo: Boolean(s.videoUrl),
       })),
       fallback: true,
     });
@@ -186,16 +190,15 @@ export const getAdminShowcaseServices = async (req, res) => {
       .lean();
 
     const formatted = services.map((s) => {
-      const resolvedMediaUrl = s.mediaUrl || s.imageUrl || "";
-      const isVideo =
-        s.mediaType === "video" ||
-        /\.(mp4|webm|mov|mkv|avi|m3u8)(\?.*)?$/i.test(resolvedMediaUrl);
+      const bannerImageUrl = s.bannerImageUrl || s.imageUrl || "";
+      const videoUrl = s.videoUrl || "";
+      const hasVideo = Boolean(videoUrl);
 
       return {
         ...s,
-        mediaUrl: resolvedMediaUrl,
-        imageUrl: s.imageUrl || resolvedMediaUrl,
-        mediaType: isVideo ? "video" : "image",
+        bannerImageUrl,
+        videoUrl,
+        hasVideo,
       };
     });
 
@@ -228,7 +231,9 @@ export const createShowcaseService = async (req, res) => {
       features = [],
       order = 0,
       isActive = true,
+      bannerImageUrl: directBannerUrl = "",
       imageUrl: directImageUrl = "",
+      videoUrl: directVideoUrl = "",
       mediaUrl: directMediaUrl = "",
       mediaType: requestedMediaType = "",
     } = req.body;
@@ -254,18 +259,35 @@ export const createShowcaseService = async (req, res) => {
       });
     }
 
-    // Handle uploaded file or direct media/image URL
-    let finalMediaUrl = (directMediaUrl || directImageUrl || "").trim();
-    let finalMediaType = requestedMediaType || "image";
+    // 1. Resolve Banner Image (from uploaded file or URL)
+    const bannerFile =
+      req.bannerFile ||
+      req.files?.bannerImage?.[0] ||
+      req.files?.banner?.[0] ||
+      (req.file?.mimetype?.startsWith("image/") ? req.file : null);
 
-    if (req.file) {
-      finalMediaUrl = `/uploads/services/${req.file.filename}`;
-      finalMediaType = req.file.mimetype?.startsWith("video/") ? "video" : "image";
-    } else if (finalMediaUrl) {
+    let finalBannerUrl = (directBannerUrl || directImageUrl || "").trim();
+    if (bannerFile) {
+      finalBannerUrl = `/uploads/services/${bannerFile.filename}`;
+    }
+
+    // 2. Resolve Video (from uploaded file or URL)
+    const videoFile =
+      req.videoFile ||
+      req.files?.video?.[0] ||
+      (req.files?.media?.[0]?.mimetype?.startsWith("video/") ? req.files?.media?.[0] : null) ||
+      (req.file?.mimetype?.startsWith("video/") ? req.file : null);
+
+    let finalVideoUrl = (directVideoUrl || "").trim();
+    if (videoFile) {
+      finalVideoUrl = `/uploads/services/${videoFile.filename}`;
+    } else if (!finalVideoUrl && directMediaUrl) {
       const isVideo =
         requestedMediaType === "video" ||
-        /\.(mp4|webm|mov|mkv|avi|m3u8)(\?.*)?$/i.test(finalMediaUrl);
-      finalMediaType = isVideo ? "video" : "image";
+        /\.(mp4|webm|mov|mkv|avi|m3u8)(\?.*)?$/i.test(directMediaUrl);
+      if (isVideo) {
+        finalVideoUrl = directMediaUrl.trim();
+      }
     }
 
     // Parse features if passed as string (e.g. from FormData)
@@ -289,9 +311,8 @@ export const createShowcaseService = async (req, res) => {
       serviceKey: key,
       title: title.trim(),
       tag: (tag || "General").trim(),
-      imageUrl: finalMediaUrl,
-      mediaUrl: finalMediaUrl,
-      mediaType: finalMediaType,
+      bannerImageUrl: finalBannerUrl,
+      videoUrl: finalVideoUrl,
       fallbackBg: fallbackBg || "#1A1838",
       description: description ? description.trim() : "",
       features: parsedFeatures,
@@ -341,7 +362,9 @@ export const updateShowcaseService = async (req, res) => {
       features,
       order,
       isActive,
+      bannerImageUrl: directBannerUrl,
       imageUrl: directImageUrl,
+      videoUrl: directVideoUrl,
       mediaUrl: directMediaUrl,
       mediaType: requestedMediaType,
     } = req.body;
@@ -367,33 +390,55 @@ export const updateShowcaseService = async (req, res) => {
       }
     }
 
-    // Handle media update (file or URL)
-    if (req.file) {
-      // Optional: Delete previous uploaded local file if replaced
-      const oldMedia = service.mediaUrl || service.imageUrl;
-      if (oldMedia && oldMedia.startsWith("/uploads/services/")) {
-        const oldPath = path.resolve(process.cwd(), "." + oldMedia);
+    // 1. Resolve Banner Image Update
+    const bannerFile =
+      req.bannerFile ||
+      req.files?.bannerImage?.[0] ||
+      req.files?.banner?.[0] ||
+      (req.file?.mimetype?.startsWith("image/") ? req.file : null);
+
+    if (bannerFile) {
+      if (service.bannerImageUrl && service.bannerImageUrl.startsWith("/uploads/services/")) {
+        const oldPath = path.resolve(process.cwd(), "." + service.bannerImageUrl);
         if (fs.existsSync(oldPath)) {
           try {
             fs.unlinkSync(oldPath);
           } catch (e) {}
         }
       }
-      const newRelative = `/uploads/services/${req.file.filename}`;
-      const isVideo = req.file.mimetype?.startsWith("video/");
-      service.mediaUrl = newRelative;
-      service.imageUrl = newRelative;
-      service.mediaType = isVideo ? "video" : (requestedMediaType || "image");
-    } else if (directMediaUrl !== undefined || directImageUrl !== undefined) {
-      const newUrl = (directMediaUrl !== undefined ? directMediaUrl : directImageUrl).trim();
+      service.bannerImageUrl = `/uploads/services/${bannerFile.filename}`;
+    } else if (directBannerUrl !== undefined || directImageUrl !== undefined) {
+      service.bannerImageUrl = (directBannerUrl !== undefined ? directBannerUrl : directImageUrl).trim();
+    }
+
+    // 2. Resolve Video Update
+    const videoFile =
+      req.videoFile ||
+      req.files?.video?.[0] ||
+      (req.files?.media?.[0]?.mimetype?.startsWith("video/") ? req.files?.media?.[0] : null) ||
+      (req.file?.mimetype?.startsWith("video/") ? req.file : null);
+
+    if (videoFile) {
+      if (service.videoUrl && service.videoUrl.startsWith("/uploads/services/")) {
+        const oldPath = path.resolve(process.cwd(), "." + service.videoUrl);
+        if (fs.existsSync(oldPath)) {
+          try {
+            fs.unlinkSync(oldPath);
+          } catch (e) {}
+        }
+      }
+      service.videoUrl = `/uploads/services/${videoFile.filename}`;
+    } else if (directVideoUrl !== undefined) {
+      service.videoUrl = directVideoUrl.trim();
+    } else if (directMediaUrl !== undefined && directVideoUrl === undefined && directBannerUrl === undefined) {
       const isVideo =
         requestedMediaType === "video" ||
-        /\.(mp4|webm|mov|mkv|avi|m3u8)(\?.*)?$/i.test(newUrl);
-      service.mediaUrl = newUrl;
-      service.imageUrl = newUrl;
-      service.mediaType = isVideo ? "video" : (requestedMediaType || "image");
-    } else if (requestedMediaType !== undefined) {
-      service.mediaType = requestedMediaType === "video" ? "video" : "image";
+        /\.(mp4|webm|mov|mkv|avi|m3u8)(\?.*)?$/i.test(directMediaUrl);
+      if (isVideo) {
+        service.videoUrl = directMediaUrl.trim();
+      } else {
+        service.bannerImageUrl = directMediaUrl.trim();
+      }
     }
 
     // Parse features
@@ -448,9 +493,14 @@ export const deleteShowcaseService = async (req, res) => {
     }
 
     // Delete media from disk if local upload
-    const mediaToDelete = service.mediaUrl || service.imageUrl;
-    if (mediaToDelete && mediaToDelete.startsWith("/uploads/services/")) {
-      const oldPath = path.resolve(process.cwd(), "." + mediaToDelete);
+    const filesToDelete = [
+      service.bannerImageUrl,
+      service.videoUrl,
+    ].filter((p) => p && p.startsWith("/uploads/services/"));
+
+    const uniqueFiles = [...new Set(filesToDelete)];
+    for (const fileRel of uniqueFiles) {
+      const oldPath = path.resolve(process.cwd(), "." + fileRel);
       if (fs.existsSync(oldPath)) {
         try {
           fs.unlinkSync(oldPath);
