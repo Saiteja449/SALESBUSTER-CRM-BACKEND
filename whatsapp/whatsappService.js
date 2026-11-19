@@ -736,6 +736,7 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
     }
 
     const phone = normalizePhone(phoneJid);
+    const cleanPhone = String(phone || "").replace(/\D/g, "");
     const isLid = phoneJid && phoneJid.endsWith("@lid");
 
     // Skip messages sent to own number
@@ -956,12 +957,13 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
 
     if (!lead) {
       // Check if this phone number belongs to an existing non-lead prospect conversation
+      const searchConditions = [{ phone: phone }];
+      if (cleanPhone) {
+        searchConditions.push({ phone: cleanPhone });
+        searchConditions.push({ phone: new RegExp((cleanPhone.slice(-10) || phone) + "$") });
+      }
       const nonLeadConv = await ConversationModel.findOne({
-        $or: [
-          { phone: phone },
-          { phone: cleanPhone },
-          { phone: new RegExp((cleanPhone.slice(-10) || phone) + "$") },
-        ],
+        $or: searchConditions,
         isLead: false,
       });
 
