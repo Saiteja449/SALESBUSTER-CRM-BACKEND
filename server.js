@@ -37,25 +37,23 @@ import appGuideVideoRoutes from "./routes/appGuideVideoRoutes.js";
 
 // Socket & WhatsApp Cloud Imports
 import { initSocket } from "./socket/socket.js";
+import {
+  initAllOrganizationWhatsAppConnections,
+  startWhatsAppWatchdog,
+} from "./whatsapp/whatsappService.js";
 import { resumeInterruptedCampaigns } from "./services/whatsappCampaignWorker.js";
 import { startCampaignScheduler } from "./services/whatsappCampaignScheduler.js";
 import { startWebhookRetryWorker } from "./services/whatsappWebhookRetryWorker.js";
-
-dotenv.config();
-
-// Connect to database
-connectDB();
-
-// WhatsApp Cloud API Webhook Security Diagnostics
 import {
   getWebhookSecurityDiagnostics,
   logStartupDiagnostics,
 } from "./utils/securityDiagnostics.js";
 export { getWebhookSecurityDiagnostics, logStartupDiagnostics };
 
+dotenv.config();
+
+// WhatsApp Cloud API Webhook Security Diagnostics
 logStartupDiagnostics();
-
-
 console.log("Node version:", process.version);
 dns.lookup("smtp.gmail.com", { all: true }, (err, addresses) => {
   console.log("DNS Lookup smtp.gmail.com:", err || addresses);
@@ -144,12 +142,30 @@ app.get("/health", (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+const startServer = async () => {
+  await connectDB();
 
-  // Resume any interrupted WhatsApp Cloud campaigns
-  resumeInterruptedCampaigns();
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 
-  // Start background scheduler for scheduled & recurring campaigns
-  startCampaignScheduler();
+    // Auto-connect WhatsApp on server start for all active tenant organizations
+    initAllOrganizationWhatsAppConnections();
+
+    // Start background watchdog to auto-heal disconnected WhatsApp sessions
+    startWhatsAppWatchdog();
+
+    // Resume any interrupted WhatsApp Cloud campaigns
+    resumeInterruptedCampaigns();
+
+    // Start background scheduler for scheduled & recurring campaigns
+    startCampaignScheduler();
+
+    // Start background retry worker for pending webhook events
+    startWebhookRetryWorker();
+  });
+};
+
+startServer().catch((error) => {
+  console.error("Server startup failed:", error);
+  process.exit(1);
 });
