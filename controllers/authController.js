@@ -141,11 +141,12 @@ export const login = async (req, res) => {
     }
 
     // 4. Generate JWT with tenant database & organization metadata
+    const effectiveTenantDb = user.tenantDbName || org?.tenantDbName || null;
     const token = generateToken({
       id: user._id,
       email: user.email,
       role: user.role,
-      tenantDbName: user.tenantDbName || null,
+      tenantDbName: effectiveTenantDb,
       organizationId: user.organizationId || null,
       isOrgOwner: !!user.isOrgOwner,
       accountType: organizationData?.accountType || "crm",
@@ -180,7 +181,7 @@ export const login = async (req, res) => {
       role: user.role,
       accountType: organizationData?.accountType || "crm",
       token,
-      tenantDbName: user.tenantDbName || null,
+      tenantDbName: effectiveTenantDb,
       organization: organizationData,
     });
   } catch (error) {

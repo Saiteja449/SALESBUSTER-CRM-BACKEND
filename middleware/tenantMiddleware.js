@@ -25,6 +25,22 @@ export const tenantMiddleware = async (req, res, next) => {
           organizationId = decoded.organizationId;
         }
         req.userTokenData = decoded;
+
+        // If tenantDbName is missing in the token but organizationId is present, resolve it immediately from Master DB
+        if (!tenantDbName && organizationId) {
+          try {
+            const { Organization: MasterOrg } = getMasterModels();
+            const org = await MasterOrg.findById(organizationId);
+            if (org) {
+              req.organization = org;
+              if (org.tenantDbName) {
+                tenantDbName = org.tenantDbName;
+              }
+            }
+          } catch (resErr) {
+            console.error("Error resolving tenantDbName from organizationId in tenantMiddleware:", resErr);
+          }
+        }
       } catch (err) {
         // Token might be invalid or expired; let authMiddleware handle 401 if route is protected
       }
