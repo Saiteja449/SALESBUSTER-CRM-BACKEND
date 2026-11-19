@@ -46,9 +46,6 @@ import { startCampaignScheduler } from "./services/whatsappCampaignScheduler.js"
 
 dotenv.config();
 
-// Connect to database
-connectDB();
-
 console.log("Node version:", process.version);
 dns.lookup("smtp.gmail.com", { all: true }, (err, addresses) => {
   console.log("DNS Lookup smtp.gmail.com:", err || addresses);
@@ -137,18 +134,27 @@ app.get("/health", (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+const startServer = async () => {
+  await connectDB();
 
-  // Auto-connect WhatsApp on server start for all active tenant organizations
-  initAllOrganizationWhatsAppConnections();
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 
-  // Start background watchdog to auto-heal disconnected WhatsApp sessions
-  startWhatsAppWatchdog();
+    // Auto-connect WhatsApp on server start for all active tenant organizations
+    initAllOrganizationWhatsAppConnections();
 
-  // Resume any interrupted WhatsApp Cloud campaigns
-  resumeInterruptedCampaigns();
+    // Start background watchdog to auto-heal disconnected WhatsApp sessions
+    startWhatsAppWatchdog();
 
-  // Start background scheduler for scheduled & recurring campaigns
-  startCampaignScheduler();
+    // Resume any interrupted WhatsApp Cloud campaigns
+    resumeInterruptedCampaigns();
+
+    // Start background scheduler for scheduled & recurring campaigns
+    startCampaignScheduler();
+  });
+};
+
+startServer().catch((error) => {
+  console.error("Server startup failed:", error);
+  process.exit(1);
 });

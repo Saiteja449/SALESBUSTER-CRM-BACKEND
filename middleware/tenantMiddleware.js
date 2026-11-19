@@ -94,22 +94,15 @@ export const tenantMiddleware = async (req, res, next) => {
       }
     }
 
-    // 4. Only allow explicit headers or query params if NO authenticated user token or secret was matched
-    // (Genuinely unauthenticated public endpoints like website lead capture or static chat can use this)
-    if (!req.headers.authorization && !tenantDbName) {
-      tenantDbName =
-        req.headers["x-tenant-db"] ||
-        req.headers["x-tenant-id"] ||
-        req.query?.tenantDb ||
-        req.body?.tenantDb ||
-        null;
-    }
+    // Tenant database names must come only from a verified token, a validated
+    // organization record, or a verified organization webhook key. Never let
+    // callers create arbitrary cached Mongoose databases through request input.
 
-    // 5. Attach tenant models
+    // 4. Attach tenant models
     req.tenantDbName = tenantDbName;
     req.tenantModels = getTenantModels(tenantDbName);
 
-    // 6. If organizationId exists and req.organization not yet set, fetch and attach organization details
+    // 5. If organizationId exists and req.organization not yet set, fetch and attach organization details
     if (organizationId && !req.organization) {
       try {
         const org = await Organization.findById(organizationId);

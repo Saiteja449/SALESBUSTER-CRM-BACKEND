@@ -97,7 +97,6 @@ export const receiveMobileAppLead = async (req, res) => {
     const orgId =
       req.user?.organizationId ||
       req.organization?._id ||
-      req.body?.organizationId ||
       null;
 
     // Send automated WhatsApp welcome enquiry message asynchronously
