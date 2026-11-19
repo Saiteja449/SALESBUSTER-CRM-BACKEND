@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import {
   getLeads,
+  getLeadById,
   getPaginatedLeads,
   createLead,
   updateLead,
@@ -117,6 +118,7 @@ router.post("/inbound-call", protect, requireCrmAccount, handleInboundCall);
 // 6. Individual lead management & recording operations (Protected)
 router
   .route("/:id")
+  .get(protect, requireCrmAccount, getLeadById)
   .put(protect, requireCrmAccount, handleRecordingUpload, updateLead)
   .delete(protect, requireCrmAccount, deleteLead);
 

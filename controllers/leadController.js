@@ -907,6 +907,49 @@ export const createLead = async (req, res) => {
   }
 };
 
+// @desc    Get single lead by ID
+// @route   GET /api/leads/:id
+// @access  Protected
+export const getLeadById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid lead ID format" });
+    }
+
+    const { LeadModel } = getModels(req);
+    const lead = await LeadModel.findById(id).lean();
+
+    if (!lead) {
+      return res.status(404).json({ success: false, message: "Lead not found" });
+    }
+
+    // Role-based visibility check for Sales Representatives
+    const isRepUser =
+      req.user?.role === "Sales Representative" ||
+      req.user?.role === "sales person" ||
+      req.user?.role === "sales_person";
+
+    if (isRepUser && !isLeadAssignedToRep(lead, req.user)) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to view this lead.",
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        ...lead,
+        id: String(lead._id),
+      },
+    });
+  } catch (error) {
+    console.error("[getLeadById] Error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const updateLead = async (req, res) => {
   const { id } = req.params;
   console.log("\n==================== [updateLead] START ====================");
