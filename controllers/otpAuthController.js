@@ -531,7 +531,11 @@ export const completeProfile = async (req, res) => {
     if (companyName !== undefined) user.companyName = cleanCompany;
     if (role !== undefined) user.customRole = cleanRole;
     if (city !== undefined) user.city = cleanCity;
-    if (email !== undefined) user.email = cleanEmail || "";
+    if (cleanEmail) {
+      user.email = cleanEmail;
+    } else if (user.email === "") {
+      user.email = undefined;
+    }
     user.isProfileComplete = true;
     await user.save();
 
@@ -545,8 +549,8 @@ export const completeProfile = async (req, res) => {
         } else if (cleanName) {
           organization.name = `${cleanName}'s Workspace`;
         }
-        if (email !== undefined) {
-          organization.email = cleanEmail || "";
+        if (cleanEmail) {
+          organization.email = cleanEmail;
         }
         await organization.save();
       }
@@ -561,7 +565,7 @@ export const completeProfile = async (req, res) => {
           ...(companyName !== undefined ? { companyName: cleanCompany } : {}),
           ...(role !== undefined ? { customRole: cleanRole } : {}),
           ...(city !== undefined ? { city: cleanCity } : {}),
-          ...(email !== undefined ? { email: cleanEmail || "" } : {}),
+          ...(cleanEmail ? { email: cleanEmail } : {}),
           isProfileComplete: true,
         });
       } catch (tErr) {
