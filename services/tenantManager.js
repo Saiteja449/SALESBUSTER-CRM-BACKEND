@@ -38,6 +38,7 @@ import WAMessage, { waMessageSchema } from "../models/WhatsAppMessage.js";
 import WAWebhookEvent, { waWebhookEventSchema } from "../models/WhatsAppWebhookEvent.js";
 import ShowcaseService, { showcaseServiceSchema } from "../models/ShowcaseService.js";
 import ShortUrl, { shortUrlSchema } from "../models/ShortUrl.js";
+import AppGuideVideo, { appGuideVideoSchema } from "../models/AppGuideVideo.js";
 
 let _masterModelsOverride = null;
 let _tenantModelsOverride = null;
@@ -80,6 +81,9 @@ export const getMasterModels = () => {
   const MasterShortUrl =
     masterDb.models.ShortUrl ||
     masterDb.model("ShortUrl", shortUrlSchema);
+  const MasterAppGuideVideo =
+    masterDb.models.AppGuideVideo ||
+    masterDb.model("AppGuideVideo", appGuideVideoSchema);
 
   return {
     Organization: MasterOrg,
@@ -89,6 +93,7 @@ export const getMasterModels = () => {
     WAWebhookEvent: MasterWAWebhookEvent,
     ShowcaseService: MasterShowcaseService,
     ShortUrl: MasterShortUrl,
+    AppGuideVideo: MasterAppGuideVideo,
     masterDb,
   };
 };
