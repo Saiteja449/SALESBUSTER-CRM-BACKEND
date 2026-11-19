@@ -34,6 +34,7 @@ import AuthUser, { authUserSchema } from "../models/AuthUser.js";
 import AppRelease, { appReleaseSchema } from "../models/AppRelease.js";
 import ShowcaseService, { showcaseServiceSchema } from "../models/ShowcaseService.js";
 import ShortUrl, { shortUrlSchema } from "../models/ShortUrl.js";
+import AppGuideVideo, { appGuideVideoSchema } from "../models/AppGuideVideo.js";
 
 let _masterModelsOverride = null;
 let _tenantModelsOverride = null;
@@ -70,6 +71,9 @@ export const getMasterModels = () => {
   const MasterShortUrl =
     masterDb.models.ShortUrl ||
     masterDb.model("ShortUrl", shortUrlSchema);
+  const MasterAppGuideVideo =
+    masterDb.models.AppGuideVideo ||
+    masterDb.model("AppGuideVideo", appGuideVideoSchema);
 
   return {
     Organization: MasterOrg,
@@ -77,6 +81,7 @@ export const getMasterModels = () => {
     AppRelease: MasterAppRelease,
     ShowcaseService: MasterShowcaseService,
     ShortUrl: MasterShortUrl,
+    AppGuideVideo: MasterAppGuideVideo,
     masterDb,
   };
 };
