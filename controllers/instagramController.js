@@ -230,13 +230,24 @@ export const onboardInstagramAccount = async (req, res) => {
 
     // 2. Subscribe Page and Instagram Account to Webhooks
     try {
-      const subUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed,messages,messaging_postbacks`;
-      const subRes = await fetch(subUrl, {
+      let pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed,messages,messaging_postbacks`;
+      let pageRes = await fetch(pageSubUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${pageToken}` },
       });
-      const subData = await subRes.json();
-      console.log("[InstagramOnboard] Page subscribed_apps response:", subData);
+      let pageSubData = await pageRes.json();
+
+      // Graceful fallback: If pages_messaging permission is not yet approved on Page, subscribe with feed only
+      if (pageSubData?.error?.code === 200 && pageSubData?.error?.message?.includes("pages_messaging")) {
+        console.warn("[InstagramOnboard] pages_messaging missing on Page; falling back to feed subscription.");
+        pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed`;
+        pageRes = await fetch(pageSubUrl, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${pageToken}` },
+        });
+        pageSubData = await pageRes.json();
+      }
+      console.log("[InstagramOnboard] Page subscribed_apps response:", pageSubData);
 
       if (igId) {
         const igSubUrl = `${getGraphApiBaseUrl()}/${igId}/subscribed_apps?subscribed_fields=comments,messages,messaging_postbacks`;
@@ -354,12 +365,21 @@ export const resubscribeInstagramWebhooks = async (req, res) => {
     let igSubData = null;
 
     if (pageId) {
-      const pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed,messages,messaging_postbacks`;
-      const pageRes = await fetch(pageSubUrl, {
+      let pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed,messages,messaging_postbacks`;
+      let pageRes = await fetch(pageSubUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${pageToken}` },
       });
       pageSubData = await pageRes.json();
+
+      if (pageSubData?.error?.code === 200 && pageSubData?.error?.message?.includes("pages_messaging")) {
+        pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed`;
+        pageRes = await fetch(pageSubUrl, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${pageToken}` },
+        });
+        pageSubData = await pageRes.json();
+      }
     }
 
     if (igId) {
