@@ -360,6 +360,13 @@ export const resubscribeInstagramWebhooks = async (req, res) => {
     }
 
     const pageToken = decryptApiKey(account.pageAccessTokenEncrypted);
+    if (!pageToken) {
+      return res.status(400).json({
+        success: false,
+        message: "Page access token could not be decrypted or is missing. Please disconnect and reconnect your Instagram account.",
+      });
+    }
+
     const pageId = account.facebookPageId;
     const igId = account.instagramBusinessId;
 
@@ -392,6 +399,11 @@ export const resubscribeInstagramWebhooks = async (req, res) => {
       });
       igSubData = await igRes.json();
     }
+
+    console.log("[InstagramSubscribe] Meta response:", { pageSubData, igSubData });
+
+    account.lastActivityAt = new Date();
+    await account.save();
 
     return res.status(200).json({
       success: true,
