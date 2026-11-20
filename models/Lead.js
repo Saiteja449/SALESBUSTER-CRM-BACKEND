@@ -37,7 +37,12 @@ const leadSchema = new mongoose.Schema(
       enum: [
         "Email",
         "WhatsApp",
+        "Instagram",
         "Meta Ads",
+        "Google Ads",
+        "YouTube",
+        "Justdial",
+        "LinkedIn Ads",
         "Website Form",
         "Website Chat",
         "Call",
@@ -47,6 +52,27 @@ const leadSchema = new mongoose.Schema(
         // "Target Intelligence",
       ],
       default: "Manual Entry",
+    },
+    campaignName: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    utmSource: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    utmMedium: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    utmCampaign: {
+      type: String,
+      trim: true,
+      default: "",
     },
     service: {
       type: String,

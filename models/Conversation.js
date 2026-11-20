@@ -27,6 +27,26 @@ const conversationSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    channel: {
+      type: String,
+      enum: ["whatsapp", "instagram"],
+      default: "whatsapp",
+      index: true,
+    },
+    instagramIgsid: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    instagramUsername: {
+      type: String,
+      default: null,
+    },
+    instagramContactId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "InstagramContact",
+      default: null,
+    },
     isLead: {
       type: Boolean,
       default: true,

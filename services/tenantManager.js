@@ -39,6 +39,13 @@ import WAWebhookEvent, { waWebhookEventSchema } from "../models/WhatsAppWebhookE
 import ShowcaseService, { showcaseServiceSchema } from "../models/ShowcaseService.js";
 import ShortUrl, { shortUrlSchema } from "../models/ShortUrl.js";
 import AppGuideVideo, { appGuideVideoSchema } from "../models/AppGuideVideo.js";
+import InstagramAccount, { instagramAccountSchema } from "../models/InstagramAccount.js";
+import InstagramContact, { instagramContactSchema } from "../models/InstagramContact.js";
+import InstagramAutomationRule, { instagramAutomationRuleSchema } from "../models/InstagramAutomationRule.js";
+import InstagramMessage, { instagramMessageSchema } from "../models/InstagramMessage.js";
+import MarketingCampaign, { marketingCampaignSchema } from "../models/MarketingCampaign.js";
+import CashfreeOrder, { cashfreeOrderSchema } from "../models/CashfreeOrder.js";
+import CashfreeWebhookEvent, { cashfreeWebhookEventSchema } from "../models/CashfreeWebhookEvent.js";
 
 let _masterModelsOverride = null;
 let _tenantModelsOverride = null;
@@ -84,6 +91,9 @@ export const getMasterModels = () => {
   const MasterAppGuideVideo =
     masterDb.models.AppGuideVideo ||
     masterDb.model("AppGuideVideo", appGuideVideoSchema);
+  const MasterInstagramAccount =
+    masterDb.models.InstagramAccount ||
+    masterDb.model("InstagramAccount", instagramAccountSchema);
 
   return {
     Organization: MasterOrg,
@@ -94,6 +104,16 @@ export const getMasterModels = () => {
     ShowcaseService: MasterShowcaseService,
     ShortUrl: MasterShortUrl,
     AppGuideVideo: MasterAppGuideVideo,
+    InstagramAccount: MasterInstagramAccount,
+    MarketingCampaign:
+      masterDb.models.MarketingCampaign ||
+      masterDb.model("MarketingCampaign", marketingCampaignSchema),
+    CashfreeOrder:
+      masterDb.models.CashfreeOrder ||
+      masterDb.model("CashfreeOrder", cashfreeOrderSchema),
+    CashfreeWebhookEvent:
+      masterDb.models.CashfreeWebhookEvent ||
+      masterDb.model("CashfreeWebhookEvent", cashfreeWebhookEventSchema),
     masterDb,
   };
 };
@@ -166,6 +186,18 @@ export const getTenantModels = (tenantDbName) => {
       db.models.WAMessage || db.model("WAMessage", waMessageSchema),
     WAWebhookEvent:
       db.models.WAWebhookEvent || db.model("WAWebhookEvent", waWebhookEventSchema),
+    InstagramAccount:
+      db.models.InstagramAccount ||
+      db.model("InstagramAccount", instagramAccountSchema),
+    InstagramContact:
+      db.models.InstagramContact ||
+      db.model("InstagramContact", instagramContactSchema),
+    InstagramAutomationRule:
+      db.models.InstagramAutomationRule ||
+      db.model("InstagramAutomationRule", instagramAutomationRuleSchema),
+    InstagramMessage:
+      db.models.InstagramMessage ||
+      db.model("InstagramMessage", instagramMessageSchema),
     Event:
       db.models.Event || db.model("Event", Event.schema),
     EventContact:
@@ -192,6 +224,15 @@ export const getTenantModels = (tenantDbName) => {
     CallRecord:
       db.models.CallRecord ||
       db.model("CallRecord", CallRecord.schema),
+    MarketingCampaign:
+      db.models.MarketingCampaign ||
+      db.model("MarketingCampaign", marketingCampaignSchema),
+    CashfreeOrder:
+      db.models.CashfreeOrder ||
+      db.model("CashfreeOrder", cashfreeOrderSchema),
+    CashfreeWebhookEvent:
+      db.models.CashfreeWebhookEvent ||
+      db.model("CashfreeWebhookEvent", cashfreeWebhookEventSchema),
     db,
   };
 };

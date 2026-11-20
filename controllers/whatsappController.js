@@ -236,6 +236,10 @@ export const getConversations = async (req, res) => {
 
     const conversationQuery = {};
 
+    if (req.query.channel && req.query.channel !== "all") {
+      conversationQuery.channel = req.query.channel;
+    }
+
     if (unreadOnly) {
       conversationQuery.unreadCount = { $gt: 0 };
     }

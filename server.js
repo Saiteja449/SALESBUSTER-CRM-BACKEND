@@ -34,6 +34,9 @@ import targetIntelligenceRoutes from "./routes/targetIntelligenceRoutes.js";
 import showcaseServiceRoutes from "./routes/showcaseServiceRoutes.js";
 import shortUrlRoutes, { redirectShortUrl } from "./routes/shortUrlRoutes.js";
 import appGuideVideoRoutes from "./routes/appGuideVideoRoutes.js";
+import instagramRoutes from "./routes/instagramRoutes.js";
+import marketingRoiRoutes from "./routes/marketingRoiRoutes.js";
+import cashfreeRoutes from "./routes/cashfreeRoutes.js";
 
 // Socket & WhatsApp Cloud Imports
 import { initSocket } from "./socket/socket.js";
@@ -122,6 +125,9 @@ app.use("/api/events", eventRoutes);
 app.use("/api/conversations", conversationRoutes);
 app.use("/api/target-intelligence", targetIntelligenceRoutes);
 app.use("/api/showcase-services", showcaseServiceRoutes);
+app.use("/api/instagram", instagramRoutes);
+app.use("/api/marketing-roi", marketingRoiRoutes);
+app.use("/api/payment/cashfree", cashfreeRoutes);
 app.use("/api/s", shortUrlRoutes);
 app.use("/api/app-guide-video", appGuideVideoRoutes);
 
