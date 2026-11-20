@@ -175,14 +175,21 @@ export const handleIncomingInstagramComment = async ({
       continue;
     }
 
-    const matches = rule.keywords.some((kw) => {
+    // Direct title match or keyword match
+    const titleMatches =
+      rule.title &&
+      (normalizedComment === rule.title.toLowerCase().trim() ||
+        normalizedComment.includes(rule.title.toLowerCase().trim()));
+
+    const keywordMatches = (rule.keywords || []).some((kw) => {
       const cleanKw = kw.toLowerCase().trim();
+      if (!cleanKw) return false;
       return rule.matchType === "exact"
         ? normalizedComment === cleanKw
-        : normalizedComment.includes(cleanKw);
+        : normalizedComment.includes(cleanKw) || cleanKw.includes(normalizedComment);
     });
 
-    if (matches) {
+    if (titleMatches || keywordMatches) {
       matchedRule = rule;
       break;
     }

@@ -4,6 +4,7 @@ import { decryptApiKey } from "../utils/encryption.js";
 import { sendTextMessage } from "../services/whatsappCloudService.js";
 import { generateAIResponse } from "../ai/aiService.js";
 import { getIO } from "../socket/socket.js";
+import { handleInstagramWebhook } from "./instagramController.js";
 
 /**
  * Validates Meta X-Hub-Signature-256 HMAC-SHA256 signature using raw request buffer.
@@ -317,6 +318,12 @@ export const receiveWhatsAppWebhook = async (req, res) => {
   }
 
   const body = req.body;
+
+  // Bridge: If this is an Instagram or Page event routed to the unified Meta webhook endpoint
+  if (body?.object === "instagram" || body?.object === "page") {
+    console.log("[WebhookBridge] Forwarding Instagram/Page webhook event to handleInstagramWebhook");
+    return handleInstagramWebhook(req, res);
+  }
 
   // 2. Quick structural sanity check
   if (!body || (body.object !== "whatsapp_business_account" && !body.entry)) {
