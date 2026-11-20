@@ -40,6 +40,8 @@ export const handleInstagramWebhook = async (req, res) => {
   res.status(200).send("EVENT_RECEIVED");
 
   const body = req.body;
+  console.log("[InstagramWebhook] Incoming event:", JSON.stringify(body));
+
   if (body?.object !== "instagram" && body?.object !== "page") {
     return;
   }
