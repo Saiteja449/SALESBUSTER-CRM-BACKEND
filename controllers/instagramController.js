@@ -122,7 +122,13 @@ export const handleInstagramWebhook = async (req, res) => {
       // 2. Changes (e.g. comments on Posts or Reels)
       if (Array.isArray(entry.changes)) {
         for (const change of entry.changes) {
-          if (change.field === "comments" && change.value) {
+          console.log(`[InstagramWebhook] Change received (field: '${change.field}'):`, JSON.stringify(change.value));
+          const isComment =
+            change.field === "comments" ||
+            change.field === "comment" ||
+            (change.field === "feed" && (change.value?.item === "comment" || change.value?.comment_id));
+
+          if (isComment && change.value) {
             await handleIncomingInstagramComment({
               commentEvent: change.value,
               organizationId: orgId,
@@ -602,10 +608,16 @@ export const getInstagramConversations = async (req, res) => {
         .sort({ timestamp: -1 })
         .lean();
 
+      const isComment =
+        lastMsg?.triggerSource === "comment_to_dm" ||
+        (lastMsg?.text && lastMsg.text.startsWith("[Comment"));
+
       formatted.push({
         _id: c._id,
         id: c._id.toString(),
-        channel: "instagram",
+        channel: isComment ? "instagram_comment" : "instagram",
+        subChannel: isComment ? "comment" : "dm",
+        triggerSource: lastMsg?.triggerSource || "direct_message",
         customerName: c.name || c.username || "Instagram User",
         username: c.username,
         phone: c.phone || "",
@@ -634,10 +646,32 @@ export const getInstagramMessages = async (req, res) => {
   const tenantModels = req.tenantModels || getTenantModels(req.organization?.tenantDbName);
 
   try {
-    const messages = await tenantModels.InstagramMessage.find({
-      organizationId,
-      $or: [{ contactId }, { igsid: contactId }],
-    }).sort({ timestamp: 1 });
+    let resolvedContactId = contactId;
+    let resolvedIgsid = contactId;
+
+    if (tenantModels.Conversation) {
+      const convo = await tenantModels.Conversation.findById(contactId).lean().catch(() => null);
+      if (convo?.instagramContactId) {
+        resolvedContactId = convo.instagramContactId;
+      }
+      if (convo?.instagramIgsid) {
+        resolvedIgsid = convo.instagramIgsid;
+      }
+    }
+
+    const queryFilter = {
+      $or: [
+        { contactId },
+        { contactId: resolvedContactId },
+        { igsid: contactId },
+        { igsid: resolvedIgsid },
+      ],
+    };
+    if (organizationId) {
+      queryFilter.organizationId = organizationId;
+    }
+
+    const messages = await tenantModels.InstagramMessage.find(queryFilter).sort({ timestamp: 1 });
 
     const formatted = messages.map((m) => ({
       _id: m._id,
@@ -687,7 +721,16 @@ export const sendInstagramAgentMessage = async (req, res) => {
     let contact = null;
 
     if (contactId) {
-      contact = await tenantModels.InstagramContact.findById(contactId);
+      contact = await tenantModels.InstagramContact.findById(contactId).catch(() => null);
+      if (!contact && tenantModels.Conversation) {
+        const convo = await tenantModels.Conversation.findById(contactId).catch(() => null);
+        if (convo?.instagramContactId) {
+          contact = await tenantModels.InstagramContact.findById(convo.instagramContactId).catch(() => null);
+        }
+        if (!targetIgsid && convo?.instagramIgsid) {
+          targetIgsid = convo.instagramIgsid;
+        }
+      }
       if (contact) targetIgsid = contact.igsid;
     } else if (igsid) {
       contact = await tenantModels.InstagramContact.findOne({ accountId: account._id, igsid });

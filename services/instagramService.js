@@ -24,7 +24,16 @@ export const sendInstagramMessage = async ({
   const url = `${getGraphApiBaseUrl()}/me/messages`;
 
   let messagePayload;
-  if (callToAction && callToAction.buttonTitle && callToAction.buttonUrl) {
+  if (commentId) {
+    // Meta Graph API Private Reply to comment REQUIREMENT:
+    // Private replies to comments only support plain text messages.
+    // Template buttons and attachments are strictly rejected with (#100) by Meta.
+    const fullText =
+      callToAction && callToAction.buttonUrl
+        ? `${text || ""}\n\n👉 ${callToAction.buttonTitle || "View Details"}: ${callToAction.buttonUrl}`
+        : text;
+    messagePayload = { text: fullText };
+  } else if (callToAction && callToAction.buttonTitle && callToAction.buttonUrl) {
     messagePayload = {
       attachment: {
         type: "template",
@@ -144,23 +153,126 @@ export const handleIncomingInstagramComment = async ({
   tenantModels,
   io,
 }) => {
-  const { id: commentId, text, from, media } = commentEvent;
-  if (!text || !from?.id) return;
+  const { id: commentId, text: rawText, message: rawMsg, from, user, media } = commentEvent;
+  const text = rawText || rawMsg || "";
+  const igsid = from?.id || user?.id;
+  const username = from?.username || user?.username || "";
+  const postId = media?.id || commentEvent.post_id || "";
 
-  const igsid = from.id;
-  const username = from.username || "";
-  const postId = media?.id || "";
+  if (!text || !igsid) {
+    console.warn("[InstagramComment] Missing text or commenter ID:", commentEvent);
+    return;
+  }
 
-  const { InstagramAccount, InstagramContact, InstagramAutomationRule, InstagramMessage } =
+  const { InstagramAccount, InstagramContact, InstagramAutomationRule, InstagramMessage, Conversation, Message } =
     tenantModels;
 
   const account = await InstagramAccount.findOne({
     organizationId,
     status: "connected",
   });
-  if (!account) return;
+  if (!account) {
+    console.warn(`[InstagramComment] No connected Instagram account found for org ${organizationId}`);
+    return;
+  }
 
-  // Find matching comment_to_dm rules
+  // Prevent bot reply loops if the comment is made by the business account itself
+  if (account.instagramBusinessId && String(account.instagramBusinessId) === String(igsid)) {
+    console.log("[InstagramComment] Skipping comment made by business account itself.");
+    return;
+  }
+
+  console.log(`[InstagramComment] Processing incoming comment from @${username} (${igsid}) on post ${postId}: "${text}"`);
+
+  // 1. ALWAYS Upsert Contact
+  let contact = await InstagramContact.findOne({
+    accountId: account._id,
+    igsid,
+  });
+
+  if (!contact) {
+    contact = await InstagramContact.create({
+      organizationId,
+      accountId: account._id,
+      igsid,
+      username: username || "instagram_user",
+      name: username || "Instagram User",
+      lastInteractedAt: new Date(),
+    });
+  } else {
+    contact.lastInteractedAt = new Date();
+    if (username && (!contact.username || contact.username === "instagram_user")) {
+      contact.username = username;
+      contact.name = contact.name || username;
+    }
+    await contact.save();
+  }
+
+  // 2. ALWAYS Save Incoming Comment Event to InstagramMessage
+  const incomingMsg = await InstagramMessage.create({
+    organizationId,
+    accountId: account._id,
+    contactId: contact._id,
+    igsid,
+    mid: commentId || `comment_${Date.now()}`,
+    direction: "incoming",
+    senderType: "user",
+    text: `[Comment on Reel/Post]: "${text}"`,
+    triggerSource: "comment_to_dm",
+    timestamp: new Date(),
+  });
+
+  // 3. ALWAYS Upsert Unified Conversation Record so it appears in the "Instagram comments" tab
+  if (Conversation) {
+    try {
+      await Conversation.findOneAndUpdate(
+        {
+          $or: [
+            { instagramContactId: contact._id },
+            { instagramIgsid: igsid },
+            ...(contact.leadId ? [{ leadId: contact.leadId }] : []),
+          ],
+        },
+        {
+          $set: {
+            channel: "instagram_comment",
+            subChannel: "comment",
+            triggerSource: "comment_to_dm",
+            instagramIgsid: igsid,
+            instagramUsername: contact.username,
+            instagramContactId: contact._id,
+            customerName: contact.name || contact.username || "Instagram Commenter",
+            leadId: contact.leadId || null,
+            isLead: Boolean(contact.leadId),
+            lastMessage: `[Comment on Reel/Post]: "${text}"`,
+            lastMessageTime: new Date(),
+          },
+          $inc: { unreadCount: 1 },
+        },
+        { upsert: true, returnDocument: "after" }
+      );
+    } catch (cErr) {
+      console.warn("[InstagramComment] Conversation upsert warning:", cErr.message);
+    }
+  }
+
+  // 4. Emit Socket.io Real-time update so the comment shows up instantly in "Instagram comments" tab
+  if (io) {
+    io.to(`org_${organizationId}`).emit("instagram_new_message", {
+      contact,
+      message: incomingMsg,
+      type: "comment_to_dm",
+      igsid,
+      username,
+      text: `[Comment on Reel/Post]: "${text}"`,
+    });
+    io.to(`org_${organizationId}`).emit("conversation_updated", {
+      channel: "instagram_comment",
+      contactId: contact._id,
+    });
+  }
+
+  // 5. Check Automated Comment-to-DM Rules
   const rules = await InstagramAutomationRule.find({
     organizationId,
     triggerType: "comment_to_dm",
@@ -195,9 +307,14 @@ export const handleIncomingInstagramComment = async ({
     }
   }
 
-  if (!matchedRule) return;
+  if (!matchedRule) {
+    console.log(`[InstagramComment] No active comment_to_dm rule matched for "${text}". Saved to Unified Inbox.`);
+    return;
+  }
 
-  // 1. Post randomized public reply to the comment if configured
+  console.log(`[InstagramComment] Rule matched: '${matchedRule.title}'. Sending auto-DM & public reply...`);
+
+  // Post randomized public reply to the comment if configured
   if (matchedRule.publicCommentReplies && matchedRule.publicCommentReplies.length > 0) {
     try {
       const replies = matchedRule.publicCommentReplies;
@@ -212,7 +329,7 @@ export const handleIncomingInstagramComment = async ({
     }
   }
 
-  // 2. Send automated DM to the commenter
+  // Send automated DM to the commenter
   const dmText =
     matchedRule.dmMessageTemplate ||
     `Hey @${username}! Thanks for reaching out. Here are the details you requested:`;
@@ -226,22 +343,6 @@ export const handleIncomingInstagramComment = async ({
       callToAction: matchedRule.callToAction,
     });
 
-    // 3. Upsert contact and log message
-    let contact = await InstagramContact.findOne({
-      accountId: account._id,
-      igsid,
-    });
-
-    if (!contact) {
-      contact = await InstagramContact.create({
-        organizationId,
-        accountId: account._id,
-        igsid,
-        username,
-        lastInteractedAt: new Date(),
-      });
-    }
-
     if (dmResult?.message_id) {
       await InstagramMessage.create({
         organizationId,
@@ -254,7 +355,45 @@ export const handleIncomingInstagramComment = async ({
         text: dmText,
         triggerSource: "comment_to_dm",
         ruleId: matchedRule._id,
+        timestamp: new Date(),
       });
+    }
+
+    if (Conversation) {
+      try {
+        await Conversation.findOneAndUpdate(
+          {
+            $or: [
+              { instagramContactId: contact._id },
+              { instagramIgsid: igsid },
+              ...(contact.leadId ? [{ leadId: contact.leadId }] : []),
+            ],
+          },
+          {
+            $set: {
+              lastMessage: `[Comment]: "${text}" ➔ Auto-DM Sent`,
+              lastMessageTime: new Date(),
+            },
+          }
+        );
+      } catch (_) {}
+    }
+
+    if (Message && dmResult?.message_id) {
+      try {
+        await Message.create({
+          messageId: dmResult.message_id,
+          leadId: contact.leadId || null,
+          contactPhone: contact.phone || "",
+          sender: "System",
+          senderName: "SalesBuster AI",
+          direction: "outgoing",
+          messageType: "text",
+          text: dmText,
+          timestamp: new Date(),
+          rawPayload: { igsid, channel: "instagram_comment", commentId },
+        });
+      } catch (_) {}
     }
 
     await InstagramAutomationRule.findByIdAndUpdate(matchedRule._id, {
@@ -263,10 +402,15 @@ export const handleIncomingInstagramComment = async ({
 
     if (io) {
       io.to(`org_${organizationId}`).emit("instagram_new_message", {
+        contact,
         type: "comment_to_dm",
         igsid,
         username,
         text: dmText,
+      });
+      io.to(`org_${organizationId}`).emit("conversation_updated", {
+        channel: "instagram_comment",
+        contactId: contact._id,
       });
     }
   } catch (dmErr) {
@@ -465,7 +609,7 @@ export const handleIncomingInstagramMessage = async ({
 
     if (matchedRule && matchedRule.dmMessageTemplate) {
       try {
-        await sendInstagramMessage({
+        const dmResult = await sendInstagramMessage({
           pageAccessToken: account.pageAccessTokenEncrypted,
           igsid,
           text: matchedRule.dmMessageTemplate,
@@ -476,6 +620,69 @@ export const handleIncomingInstagramMessage = async ({
           $inc: { timesTriggered: 1 },
         });
         console.log(`[InstagramService] Auto-reply triggered for rule: '${matchedRule.title}' to IGSID: ${igsid}`);
+
+        const replyMid = dmResult?.message_id || `mid_out_${Date.now()}`;
+        const autoReplyMsg = await InstagramMessage.create({
+          organizationId,
+          accountId: account._id,
+          contactId: contact._id,
+          igsid,
+          mid: replyMid,
+          direction: "outgoing",
+          senderType: "auto_dm",
+          text: matchedRule.dmMessageTemplate,
+          triggerSource: "direct_message",
+          ruleId: matchedRule._id,
+          timestamp: new Date(),
+        });
+
+        if (Message) {
+          try {
+            await Message.create({
+              messageId: replyMid,
+              leadId: contact.leadId || null,
+              contactPhone: contact.phone || "",
+              sender: "System",
+              senderName: "SalesBuster AI",
+              direction: "outgoing",
+              messageType: "text",
+              text: matchedRule.dmMessageTemplate,
+              timestamp: new Date(),
+              rawPayload: { igsid, channel: "instagram" },
+            });
+          } catch (_) {}
+        }
+
+        if (Conversation) {
+          try {
+            await Conversation.findOneAndUpdate(
+              {
+                $or: [
+                  { instagramContactId: contact._id },
+                  { instagramIgsid: igsid },
+                  ...(contact.leadId ? [{ leadId: contact.leadId }] : []),
+                ],
+              },
+              {
+                $set: {
+                  lastMessage: matchedRule.dmMessageTemplate,
+                  lastMessageTime: new Date(),
+                },
+              }
+            );
+          } catch (_) {}
+        }
+
+        if (io) {
+          io.to(`org_${organizationId}`).emit("instagram_new_message", {
+            contact,
+            message: autoReplyMsg,
+          });
+          io.to(`org_${organizationId}`).emit("conversation_updated", {
+            channel: "instagram",
+            contactId: contact._id,
+          });
+        }
       } catch (err) {
         console.warn("[InstagramService] DM Keyword response failed:", err.message);
       }
