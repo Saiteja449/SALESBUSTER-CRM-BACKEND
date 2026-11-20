@@ -409,6 +409,7 @@ export const resubscribeInstagramWebhooks = async (req, res) => {
  * GET /api/instagram/status
  */
 export const getInstagramStatus = async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   const organizationId = req.user?.organizationId || req.organization?._id;
   const tenantModels = req.tenantModels || getTenantModels(req.organization?.tenantDbName);
 
@@ -509,6 +510,7 @@ export const disconnectInstagramAccount = async (req, res) => {
  * Automation Rules CRUD
  */
 export const getAutomationRules = async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   const organizationId = req.user?.organizationId || req.organization?._id;
   const tenantModels = req.tenantModels || getTenantModels(req.organization?.tenantDbName);
 

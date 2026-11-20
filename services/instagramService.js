@@ -427,25 +427,48 @@ export const handleIncomingInstagramMessage = async ({
   // 4. Keyword Auto-DM trigger check
   if (!detectedPhone) {
     const normalizedText = text.toLowerCase().trim();
-    const rule = await InstagramAutomationRule.findOne({
+    const rules = await InstagramAutomationRule.find({
       organizationId,
       triggerType: "dm_keyword",
       isActive: true,
-      keywords: { $in: [normalizedText] },
     });
 
-    if (rule && rule.dmMessageTemplate) {
+    let matchedRule = null;
+    for (const r of rules) {
+      // 1. Direct title match (e.g. if the user titled the rule "Hi")
+      if (r.title && r.title.toLowerCase().trim() === normalizedText) {
+        matchedRule = r;
+        break;
+      }
+
+      // 2. Keyword match (case-insensitive & supports exact or contains)
+      const matches = (r.keywords || []).some((kw) => {
+        const cleanKw = kw.toLowerCase().trim();
+        if (!cleanKw) return false;
+        return r.matchType === "exact"
+          ? normalizedText === cleanKw
+          : normalizedText.includes(cleanKw) || cleanKw.includes(normalizedText);
+      });
+
+      if (matches) {
+        matchedRule = r;
+        break;
+      }
+    }
+
+    if (matchedRule && matchedRule.dmMessageTemplate) {
       try {
         await sendInstagramMessage({
           pageAccessToken: account.pageAccessTokenEncrypted,
           igsid,
-          text: rule.dmMessageTemplate,
-          callToAction: rule.callToAction,
+          text: matchedRule.dmMessageTemplate,
+          callToAction: matchedRule.callToAction,
         });
 
-        await InstagramAutomationRule.findByIdAndUpdate(rule._id, {
+        await InstagramAutomationRule.findByIdAndUpdate(matchedRule._id, {
           $inc: { timesTriggered: 1 },
         });
+        console.log(`[InstagramService] Auto-reply triggered for rule: '${matchedRule.title}' to IGSID: ${igsid}`);
       } catch (err) {
         console.warn("[InstagramService] DM Keyword response failed:", err.message);
       }
