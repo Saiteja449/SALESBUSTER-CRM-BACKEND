@@ -9,7 +9,7 @@ import InstagramMessage, { instagramMessageSchema } from "../models/InstagramMes
 import Lead from "../models/Lead.js";
 
 // Services & Helpers
-import { extractPhoneNumber } from "../services/instagramService.js";
+import { extractPhoneNumber, autoAssignLead, createOrLinkInstagramLead } from "../services/instagramService.js";
 import { verifyInstagramWebhook } from "../controllers/instagramController.js";
 
 describe("Instagram Automation - Database Models & Schemas", () => {
@@ -184,5 +184,156 @@ describe("Instagram Automation - Services & Utilities", () => {
     const urlCodeMatch = reelUrl.match(/(?:reel|p|tv)\/([a-zA-Z0-9_-]+)/);
     assert.ok(urlCodeMatch);
     assert.equal(urlCodeMatch[1], "C7xyz123_abc");
+  });
+});
+
+describe("Instagram Automation - Lead Capture & Auto-Assignment", () => {
+  it("enhanced extractPhoneNumber handles dots, dashes, parentheses and mixed text", () => {
+    assert.equal(extractPhoneNumber("call me (987) 654-3210 please"), "919876543210");
+    assert.equal(extractPhoneNumber("my phone 987.654.3210"), "919876543210");
+    assert.equal(extractPhoneNumber("+91 98765 43210"), "919876543210");
+    assert.equal(extractPhoneNumber("price details 9876543210!"), "919876543210");
+    assert.equal(extractPhoneNumber("just a comment without numbers"), null);
+  });
+
+  it("autoAssignLead performs round-robin assignment across sales representatives", async () => {
+    const mockReps = [
+      { _id: "rep_1", name: "Alice", role: "sales person" },
+      { _id: "rep_2", name: "Bob", role: "sales person" },
+      { _id: "rep_3", name: "Charlie", role: "sales person" },
+    ];
+
+    let savedState = { key: "leadAssignment", lastAssignedIndex: -1, save: async () => {} };
+
+    const mockTenantModels = {
+      User: {
+        find: () => ({
+          sort: () => Promise.resolve(mockReps),
+        }),
+      },
+      AssignmentState: {
+        findOne: async () => savedState,
+        create: async (data) => {
+          savedState = { ...data, save: async () => {} };
+          return savedState;
+        },
+      },
+    };
+
+    // First assignment -> index 0 (Alice)
+    const res1 = await autoAssignLead({ tenantModels: mockTenantModels });
+    assert.equal(res1.assignedTo, "rep_1");
+    assert.equal(res1.assignedRepName, "Alice");
+    assert.equal(savedState.lastAssignedIndex, 0);
+
+    // Second assignment -> index 1 (Bob)
+    const res2 = await autoAssignLead({ tenantModels: mockTenantModels });
+    assert.equal(res2.assignedTo, "rep_2");
+    assert.equal(res2.assignedRepName, "Bob");
+    assert.equal(savedState.lastAssignedIndex, 1);
+
+    // Third assignment -> index 2 (Charlie)
+    const res3 = await autoAssignLead({ tenantModels: mockTenantModels });
+    assert.equal(res3.assignedTo, "rep_3");
+    assert.equal(res3.assignedRepName, "Charlie");
+    assert.equal(savedState.lastAssignedIndex, 2);
+
+    // Fourth assignment -> wraps back to index 0 (Alice)
+    const res4 = await autoAssignLead({ tenantModels: mockTenantModels });
+    assert.equal(res4.assignedTo, "rep_1");
+    assert.equal(res4.assignedRepName, "Alice");
+    assert.equal(savedState.lastAssignedIndex, 0);
+  });
+
+  it("createOrLinkInstagramLead creates new Lead, executes auto-assignment, notification, and socket events", async () => {
+    let createdLeadDoc = null;
+    let createdNotification = null;
+    const emittedEvents = [];
+
+    const mockReps = [
+      { _id: "rep_sales_1", name: "Sarah Sales", role: "sales person" },
+    ];
+
+    let assignmentState = { key: "leadAssignment", lastAssignedIndex: -1, save: async () => {} };
+
+    const mockTenantModels = {
+      Lead: {
+        findOne: async () => null,
+        create: async (data) => {
+          createdLeadDoc = { ...data, _id: "lead_ig_123" };
+          return createdLeadDoc;
+        },
+      },
+      User: {
+        find: () => ({
+          sort: () => Promise.resolve(mockReps),
+        }),
+        findById: async () => ({ name: "Sarah Sales" }),
+      },
+      AssignmentState: {
+        findOne: async () => assignmentState,
+        create: async (data) => {
+          assignmentState = { ...data, save: async () => {} };
+          return assignmentState;
+        },
+      },
+      Notification: {
+        create: async (data) => {
+          createdNotification = { ...data, _id: "notif_ig_123" };
+          return createdNotification;
+        },
+      },
+      Conversation: {
+        updateMany: async () => {},
+      },
+    };
+
+    const mockContact = {
+      _id: "contact_123",
+      username: "pet_lover",
+      name: "Pet Lover",
+      igsid: "1784140001",
+      phone: null,
+      leadId: null,
+      save: async () => {},
+    };
+
+    const mockIo = {
+      to: (room) => ({
+        emit: (event, payload) => {
+          emittedEvents.push({ room, event, payload });
+        },
+      }),
+    };
+
+    const result = await createOrLinkInstagramLead({
+      phone: "9876543210",
+      name: "Pet Lover",
+      source: "Instagram",
+      contact: mockContact,
+      tenantModels: mockTenantModels,
+      organizationId: "org_test_123",
+      account: { userId: "admin_123" },
+      io: mockIo,
+    });
+
+    assert.ok(result);
+    assert.equal(result.isNewLead, true);
+    assert.equal(result.assignedRepName, "Sarah Sales");
+    assert.equal(createdLeadDoc.assignedTo, "rep_sales_1");
+    assert.equal(createdLeadDoc.source, "Instagram");
+    assert.equal(createdLeadDoc.phone, "919876543210");
+    assert.equal(mockContact.phone, "919876543210");
+    assert.equal(mockContact.leadId, "lead_ig_123");
+
+    // Notification assertions
+    assert.ok(createdNotification);
+    assert.deepEqual(createdNotification.targetUsers, ["rep_sales_1"]);
+    assert.deepEqual(createdNotification.targetRoles, ["sales manager"]);
+
+    // Socket events assertions
+    assert.ok(emittedEvents.some((e) => e.event === "new_lead" && e.room === "org_org_test_123"));
+    assert.ok(emittedEvents.some((e) => e.event === "whatsapp_new_lead" && e.room === "org_org_test_123"));
+    assert.ok(emittedEvents.some((e) => e.event === "new_notification" && e.room === "org_org_test_123"));
   });
 });

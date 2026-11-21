@@ -251,7 +251,21 @@ export const onboardInstagramAccount = async (req, res) => {
         method: "POST",
         headers: { Authorization: `Bearer ${pageToken}` },
       });
-      const pageSubData = await pageRes.json();
+      let pageSubData = await pageRes.json();
+      if (pageSubData?.error) {
+        // Fallback to feed if pages_messaging is not yet granted on the page token
+        try {
+          const fallbackPageRes = await fetch(
+            `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed`,
+            {
+              method: "POST",
+              headers: { Authorization: `Bearer ${pageToken}` },
+            }
+          );
+          const fallbackPageData = await fallbackPageRes.json();
+          if (fallbackPageData?.success) pageSubData = fallbackPageData;
+        } catch (_) {}
+      }
       console.log("[InstagramOnboard] Page subscribed_apps response:", pageSubData);
 
       if (igId) {
@@ -394,6 +408,20 @@ export const resubscribeInstagramWebhooks = async (req, res) => {
         headers: { Authorization: `Bearer ${pageToken}` },
       });
       pageSubData = await pageRes.json();
+      if (pageSubData?.error) {
+        // Fallback to feed if pages_messaging is not yet granted on the page token
+        try {
+          const fallbackPageRes = await fetch(
+            `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed`,
+            {
+              method: "POST",
+              headers: { Authorization: `Bearer ${pageToken}` },
+            }
+          );
+          const fallbackPageData = await fallbackPageRes.json();
+          if (fallbackPageData?.success) pageSubData = fallbackPageData;
+        } catch (_) {}
+      }
     }
 
     if (igId) {

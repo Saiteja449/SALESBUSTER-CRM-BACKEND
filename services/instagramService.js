@@ -161,15 +161,228 @@ export const fetchInstagramUserProfile = async ({ pageAccessToken, igsid }) => {
 export const extractPhoneNumber = (text) => {
   if (!text || typeof text !== "string") return null;
 
-  // Match phone-like strings with optional country code, spaces, and dashes
-  const matches = text.match(/(?:\+?\d{1,3}[\s-]?)?(?:\d[\s-]?){10,12}\b/);
-  if (matches && matches[0]) {
-    const cleaned = matches[0].replace(/\D/g, "");
+  // Match phone-like candidate substrings (supports +country code, spaces, dashes, dots, parens)
+  const candidates =
+    text.match(/(?:\+?\d{1,4}[-.\s]?)?(?:\(?\d{2,5}\)?[-.\s]?)?\d{3,5}[-.\s]?\d{3,5}\b/g) || [];
+
+  for (const candidate of candidates) {
+    const cleaned = candidate.replace(/\D/g, "");
     if (cleaned.length >= 10 && cleaned.length <= 15) {
       return toInternationalPhone(cleaned);
     }
   }
+
+  // Fallback: search for any sequence of 10-15 digits within text
+  const digitsMatch = text.replace(/[^0-9]/g, " ").match(/\b\d{10,15}\b/);
+  if (digitsMatch && digitsMatch[0]) {
+    return toInternationalPhone(digitsMatch[0]);
+  }
+
   return null;
+};
+
+/**
+ * Auto-assigns a lead to an eligible sales representative using round-robin distribution.
+ */
+export const autoAssignLead = async ({ tenantModels, defaultUserId = null }) => {
+  const { User, AssignmentState } = tenantModels;
+  try {
+    const reps = await User.find({
+      role: { $in: ["sales person", "Sales Representative", "sales_person"] },
+    }).sort({ _id: 1 });
+
+    if (!reps || reps.length === 0) {
+      console.log("[InstagramAutoAssign] No sales reps found. Falling back to default or Unassigned.");
+      return {
+        assignedTo: defaultUserId ? defaultUserId.toString() : "Unassigned",
+        assignedRepName: "Unassigned",
+      };
+    }
+
+    let state = await AssignmentState.findOne({ key: "leadAssignment" });
+    if (!state) {
+      state = await AssignmentState.create({
+        key: "leadAssignment",
+        lastAssignedIndex: -1,
+      });
+    }
+
+    let nextIndex = state.lastAssignedIndex + 1;
+    if (nextIndex >= reps.length || nextIndex < 0) {
+      nextIndex = 0;
+    }
+
+    const assignedRep = reps[nextIndex];
+    state.lastAssignedIndex = nextIndex;
+    await state.save();
+
+    console.log(
+      `[InstagramAutoAssign] Round-robin assigned to ${assignedRep.name} (${assignedRep._id}) at index ${nextIndex}`
+    );
+
+    return {
+      assignedTo: assignedRep._id.toString(),
+      assignedRepName: assignedRep.name || "Sales Representative",
+      assignedRepUser: assignedRep,
+    };
+  } catch (err) {
+    console.error("[InstagramAutoAssign] Error during auto-assignment:", err.message);
+    return {
+      assignedTo: defaultUserId ? defaultUserId.toString() : "Unassigned",
+      assignedRepName: "Unassigned",
+    };
+  }
+};
+
+/**
+ * Creates or links a Lead for an Instagram interaction when a mobile number is detected,
+ * executing round-robin auto-assignment, notification dispatch, and real-time socket events.
+ */
+export const createOrLinkInstagramLead = async ({
+  phone,
+  name,
+  source = "Instagram",
+  service = "General Enquiry",
+  contact,
+  tenantModels,
+  organizationId,
+  account,
+  io = null,
+}) => {
+  const { Lead, User, Notification, Conversation } = tenantModels;
+  if (!phone || !Lead) return null;
+
+  try {
+    const normalizedPhone = toInternationalPhone(phone);
+
+    // 1. Check for existing lead by phone
+    let lead = await Lead.findOne({
+      $or: [
+        { phone: normalizedPhone },
+        { phoneNormalized: normalizedPhone },
+        { phone: phone },
+      ],
+    });
+
+    let isNewLead = false;
+    let assignedRepName = "Sales Representative";
+
+    if (!lead) {
+      // 2. Auto-assign via round-robin among sales representatives
+      const assignResult = await autoAssignLead({
+        tenantModels,
+        defaultUserId: account?.userId,
+      });
+      assignedRepName = assignResult.assignedRepName;
+
+      lead = await Lead.create({
+        name: name || contact?.name || contact?.username || "Instagram Prospect",
+        phone: normalizedPhone,
+        source: "Instagram",
+        service: service || "General Enquiry",
+        status: "New",
+        assignedTo: assignResult.assignedTo,
+        joinedAt: new Date(),
+      });
+      isNewLead = true;
+      console.log(
+        `[InstagramLead] Created new lead ${lead._id} (${lead.phone}) assigned to ${assignedRepName} (${lead.assignedTo})`
+      );
+    } else {
+      console.log(`[InstagramLead] Found existing lead ${lead._id} (${lead.phone})`);
+      if (!lead.assignedTo || lead.assignedTo === "Unassigned") {
+        const assignResult = await autoAssignLead({
+          tenantModels,
+          defaultUserId: account?.userId,
+        });
+        lead.assignedTo = assignResult.assignedTo;
+        assignedRepName = assignResult.assignedRepName;
+        await lead.save();
+      } else if (lead.assignedTo && User) {
+        try {
+          const user = await User.findById(lead.assignedTo).select("name").lean();
+          if (user) assignedRepName = user.name;
+        } catch (_) {}
+      }
+    }
+
+    // 3. Link contact to lead and save detected phone
+    if (contact) {
+      contact.phone = normalizedPhone;
+      contact.leadId = lead._id;
+      await contact.save();
+    }
+
+    // 4. Update Conversation record if present
+    if (Conversation && contact) {
+      try {
+        await Conversation.updateMany(
+          {
+            $or: [
+              { instagramContactId: contact._id },
+              { instagramIgsid: contact.igsid },
+              { leadId: lead._id },
+            ],
+          },
+          {
+            $set: {
+              leadId: lead._id,
+              isLead: true,
+              customerPhone: normalizedPhone,
+            },
+          }
+        );
+      } catch (cErr) {
+        console.warn("[InstagramLead] Conversation link warning:", cErr.message);
+      }
+    }
+
+    // 5. In-App Notification for assigned rep and sales managers
+    if (Notification && isNewLead) {
+      try {
+        const targetUsers =
+          lead.assignedTo && lead.assignedTo !== "Unassigned"
+            ? [lead.assignedTo]
+            : [];
+
+        await Notification.create({
+          title: "New Lead Added (Instagram)",
+          message: `Lead ${lead.name} (${lead.phone}) has been captured from Instagram and assigned to ${assignedRepName}.`,
+          type: "new_lead",
+          targetRoles: ["sales manager"],
+          targetUsers,
+        });
+        console.log(`[InstagramLead] In-app notification created for lead ${lead._id}`);
+      } catch (nErr) {
+        console.warn("[InstagramLead] Notification creation warning:", nErr.message);
+      }
+    }
+
+    // 6. Real-time Socket.io dispatch
+    if (io && organizationId) {
+      const room = `org_${organizationId}`;
+      const payload = {
+        lead,
+        source: "Instagram",
+        assignedRepName,
+        message: `New Instagram lead: ${lead.name} (${lead.phone}) assigned to ${assignedRepName}`,
+        timestamp: new Date(),
+      };
+
+      io.to(room).emit("new_lead", payload);
+      io.to(room).emit("whatsapp_new_lead", payload);
+      io.to(room).emit("new_notification", {
+        title: "New Lead Added (Instagram)",
+        message: payload.message,
+      });
+      io.to(room).emit("lead_updated", { leadId: lead._id, lead });
+    }
+
+    return { lead, isNewLead, assignedRepName };
+  } catch (err) {
+    console.error("[InstagramLead] createOrLinkInstagramLead failed:", err.message);
+    return null;
+  }
 };
 
 /**
@@ -268,6 +481,30 @@ export const handleIncomingInstagramComment = async ({
       contact.igsid = igsid;
     }
     await contact.save();
+  }
+
+  // 1b. Lead Detection: Check if commenter provided a mobile number in their comment
+  const detectedPhone = extractPhoneNumber(text);
+  let commentLeadResult = null;
+  if (detectedPhone) {
+    try {
+      commentLeadResult = await createOrLinkInstagramLead({
+        phone: detectedPhone,
+        name: contact.name || username || "Instagram Commenter",
+        source: "Instagram",
+        service: "General Enquiry",
+        contact,
+        tenantModels,
+        organizationId,
+        account,
+        io,
+      });
+      console.log(
+        `[InstagramComment] Lead processed from comment: phone=${detectedPhone}, leadId=${commentLeadResult?.lead?._id}`
+      );
+    } catch (leadErr) {
+      console.error("[InstagramComment] Failed to process comment lead:", leadErr.message);
+    }
   }
 
   // 2. ALWAYS Save Incoming Comment Event to InstagramMessage (if not already recorded)
@@ -404,6 +641,23 @@ export const handleIncomingInstagramComment = async ({
   }
 
   if (!matchedRule) {
+    if (commentLeadResult?.isNewLead && commentId) {
+      try {
+        const greeting = username ? `@${username}` : "there";
+        const leadConfirmText = `Hey ${greeting}! Thank you for sharing your contact number. Our team has received your details and will get in touch shortly!`;
+        await sendInstagramMessage({
+          pageAccessToken: account.pageAccessTokenEncrypted,
+          pageId: account.facebookPageId,
+          igsid,
+          commentId,
+          text: leadConfirmText,
+        });
+        console.log(`[InstagramComment] Sent lead confirmation DM for comment ${commentId}`);
+      } catch (dmErr) {
+        console.warn("[InstagramComment] Lead confirmation DM warning:", dmErr.message);
+      }
+    }
+
     console.log(`[InstagramComment] No active comment_to_dm rule matched for "${text}". Saved to Unified Inbox.`);
     return;
   }
@@ -669,46 +923,39 @@ export const handleIncomingInstagramMessage = async ({
 
   // 3. Lead Detection: Check if user shared phone number
   const detectedPhone = extractPhoneNumber(text);
-  if (detectedPhone && !contact.leadId) {
+  let dmLeadResult = null;
+  if (detectedPhone) {
     try {
-      const leadName = contact.name || contact.username || "Instagram Prospect";
-      const newLead = await Lead.create({
-        name: leadName,
+      dmLeadResult = await createOrLinkInstagramLead({
         phone: detectedPhone,
+        name: contact.name || contact.username || "Instagram Prospect",
         source: "Instagram",
         service: "General Enquiry",
-        assignedTo: account.userId || null,
+        contact,
+        tenantModels,
         organizationId,
+        account,
+        io,
       });
 
-      contact.phone = detectedPhone;
-      contact.leadId = newLead._id;
-      await contact.save();
-
-      console.log(`[InstagramLead] Created new lead ${newLead._id} from IGSID ${igsid}`);
-
-      // Send confirmation DM
-      const confirmText =
-        "Thank you! We've received your contact number and our team will get in touch shortly.";
-      await sendInstagramMessage({
-        pageAccessToken: account.pageAccessTokenEncrypted,
-        igsid,
-        text: confirmText,
-      });
-
-      if (io) {
-        io.to(`org_${organizationId}`).emit("new_lead", {
-          lead: newLead,
-          source: "Instagram",
+      if (dmLeadResult && dmLeadResult.isNewLead) {
+        // Send confirmation DM
+        const confirmText =
+          "Thank you! We've received your contact number and our team will get in touch shortly.";
+        await sendInstagramMessage({
+          pageAccessToken: account.pageAccessTokenEncrypted,
+          pageId: account.facebookPageId,
+          igsid,
+          text: confirmText,
         });
       }
     } catch (leadErr) {
-      console.error("[InstagramLead] Failed to create lead:", leadErr.message);
+      console.error("[InstagramLead] Failed to process DM lead:", leadErr.message);
     }
   }
 
   // 4. Keyword Auto-DM trigger check
-  if (!detectedPhone) {
+  if (!detectedPhone || !dmLeadResult?.isNewLead) {
     const normalizedText = text.toLowerCase().trim();
     const rules = await InstagramAutomationRule.find({
       organizationId,
