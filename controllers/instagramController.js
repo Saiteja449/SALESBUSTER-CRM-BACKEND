@@ -52,7 +52,8 @@ export const handleInstagramWebhook = async (req, res) => {
   try {
     const entries = Array.isArray(body.entry) ? body.entry : [];
     for (const entry of entries) {
-      const pageOrIgId = entry.id;
+      const pageOrIgId = entry.id ? String(entry.id) : null;
+      if (!pageOrIgId) continue;
 
       // Fast O(1) indexed lookup from Master DB cache first
       const { Organization, InstagramAccount: MasterInstagramAccount } = getMasterModels();
@@ -127,11 +128,17 @@ export const handleInstagramWebhook = async (req, res) => {
           const isComment =
             change.field === "comments" ||
             change.field === "comment" ||
+            change.field === "live_comments" ||
             (change.field === "feed" && (change.value?.item === "comment" || change.value?.comment_id));
 
           if (isComment && change.value) {
+            const commentEvent = {
+              ...change.value,
+              // Fallback to entry timestamp if not provided inside change.value
+              created_time: change.value.created_time || change.value.timestamp || entry.time,
+            };
             await handleIncomingInstagramComment({
-              commentEvent: change.value,
+              commentEvent,
               organizationId: orgId,
               tenantModels,
               io,
@@ -239,7 +246,7 @@ export const onboardInstagramAccount = async (req, res) => {
 
     // 2. Subscribe Page and Instagram Account to Webhooks
     try {
-      const pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed`;
+      const pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed,messages,messaging_postbacks,conversations`;
       const pageRes = await fetch(pageSubUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${pageToken}` },
@@ -248,12 +255,23 @@ export const onboardInstagramAccount = async (req, res) => {
       console.log("[InstagramOnboard] Page subscribed_apps response:", pageSubData);
 
       if (igId) {
-        const igSubUrl = `${getGraphApiBaseUrl()}/${igId}/subscribed_apps?subscribed_fields=comments,messages,messaging_postbacks`;
+        const igSubUrl = `${getGraphApiBaseUrl()}/${igId}/subscribed_apps?subscribed_fields=comments,messages,messaging_postbacks,live_comments`;
         const igSubRes = await fetch(igSubUrl, {
           method: "POST",
           headers: { Authorization: `Bearer ${pageToken}` },
         });
-        const igSubData = await igSubRes.json();
+        let igSubData = await igSubRes.json();
+        if (igSubData?.error) {
+          // Fallback to direct app install on IG user edge without fields if rejected
+          try {
+            const fallbackRes = await fetch(`${getGraphApiBaseUrl()}/${igId}/subscribed_apps`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${pageToken}` },
+            });
+            const fallbackData = await fallbackRes.json();
+            if (fallbackData?.success) igSubData = fallbackData;
+          } catch (_) {}
+        }
         console.log("[InstagramOnboard] IG subscribed_apps response:", igSubData);
       }
     } catch (subErr) {
@@ -370,7 +388,7 @@ export const resubscribeInstagramWebhooks = async (req, res) => {
     let igSubData = null;
 
     if (pageId) {
-      const pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed`;
+      const pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed,messages,messaging_postbacks,conversations`;
       const pageRes = await fetch(pageSubUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${pageToken}` },
@@ -379,12 +397,22 @@ export const resubscribeInstagramWebhooks = async (req, res) => {
     }
 
     if (igId) {
-      const igSubUrl = `${getGraphApiBaseUrl()}/${igId}/subscribed_apps?subscribed_fields=comments,messages,messaging_postbacks`;
+      const igSubUrl = `${getGraphApiBaseUrl()}/${igId}/subscribed_apps?subscribed_fields=comments,messages,messaging_postbacks,live_comments`;
       const igRes = await fetch(igSubUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${pageToken}` },
       });
       igSubData = await igRes.json();
+      if (igSubData?.error) {
+        try {
+          const fallbackRes = await fetch(`${getGraphApiBaseUrl()}/${igId}/subscribed_apps`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${pageToken}` },
+          });
+          const fallbackData = await fallbackRes.json();
+          if (fallbackData?.success) igSubData = fallbackData;
+        } catch (_) {}
+      }
     }
 
     console.log("[InstagramSubscribe] Meta response:", { pageSubData, igSubData });

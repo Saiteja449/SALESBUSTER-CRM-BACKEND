@@ -11,6 +11,7 @@ const getGraphApiBaseUrl = () => `https://graph.facebook.com/${getGraphApiVersio
  */
 export const sendInstagramMessage = async ({
   pageAccessToken,
+  pageId = null,
   igsid,
   commentId = null,
   text,
@@ -21,7 +22,8 @@ export const sendInstagramMessage = async ({
   }
 
   const token = decryptApiKey(pageAccessToken);
-  const url = `${getGraphApiBaseUrl()}/me/messages`;
+  const targetId = pageId || "me";
+  const url = `${getGraphApiBaseUrl()}/${targetId}/messages`;
 
   let messagePayload;
   if (commentId) {
@@ -70,6 +72,31 @@ export const sendInstagramMessage = async ({
   });
 
   const data = await response.json();
+
+  // If private reply with comment_id failed (e.g. duplicate reply error) and numeric igsid is available, try fallback
+  if ((!response.ok || data.error) && commentId && igsid && /^\d+$/.test(String(igsid))) {
+    console.warn(
+      `[InstagramService] Private reply with comment_id=${commentId} failed (${data?.error?.message}). Attempting fallback to igsid=${igsid}...`
+    );
+    try {
+      const fallbackRes = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          recipient: { id: igsid },
+          message: messagePayload,
+        }),
+      });
+      const fallbackData = await fallbackRes.json();
+      if (fallbackRes.ok && !fallbackData.error) {
+        return fallbackData;
+      }
+    } catch (_) {}
+  }
+
   if (!response.ok || data.error) {
     console.error("[InstagramService] sendInstagramMessage failure:", data);
     throw new Error(data.error?.message || "Failed to send Instagram direct message.");
@@ -87,7 +114,8 @@ export const replyToInstagramComment = async ({ pageAccessToken, commentId, text
   }
 
   const token = decryptApiKey(pageAccessToken);
-  const url = `${getGraphApiBaseUrl()}/${commentId}/replies`;
+  // Pass message in URL query string AND JSON body for maximum compatibility with Meta Graph API
+  const url = `${getGraphApiBaseUrl()}/${commentId}/replies?message=${encodeURIComponent(text)}`;
 
   const response = await fetch(url, {
     method: "POST",
@@ -153,14 +181,29 @@ export const handleIncomingInstagramComment = async ({
   tenantModels,
   io,
 }) => {
-  const { id: commentId, text: rawText, message: rawMsg, from, user, media } = commentEvent;
-  const text = rawText || rawMsg || "";
-  const igsid = from?.id || user?.id;
-  const username = from?.username || user?.username || "";
-  const postId = media?.id || commentEvent.post_id || "";
+  const commentId = commentEvent.id || commentEvent.comment_id;
+  const rawText = commentEvent.text || commentEvent.message || "";
+  const text = (typeof rawText === "string" ? rawText : "").trim();
+  const igsid =
+    commentEvent.from?.id ||
+    commentEvent.user?.id ||
+    commentEvent.sender_id ||
+    commentEvent.from_id ||
+    (typeof commentEvent.from === "string" ? commentEvent.from : null);
+  const username =
+    commentEvent.from?.username ||
+    commentEvent.user?.username ||
+    commentEvent.sender_name ||
+    "";
+  const rawPostId =
+    commentEvent.media?.id ||
+    commentEvent.post_id ||
+    commentEvent.target_post_id ||
+    "";
+  const postId = String(rawPostId);
 
-  if (!text || !igsid) {
-    console.warn("[InstagramComment] Missing text or commenter ID:", commentEvent);
+  if (!text || (!igsid && !commentId)) {
+    console.warn("[InstagramComment] Missing text or commenter ID/comment ID:", commentEvent);
     return;
   }
 
@@ -177,24 +220,40 @@ export const handleIncomingInstagramComment = async ({
   }
 
   // Prevent bot reply loops if the comment is made by the business account itself
-  if (account.instagramBusinessId && String(account.instagramBusinessId) === String(igsid)) {
+  if (
+    (account.instagramBusinessId && String(account.instagramBusinessId) === String(igsid)) ||
+    (account.username && username && account.username.toLowerCase() === username.toLowerCase())
+  ) {
     console.log("[InstagramComment] Skipping comment made by business account itself.");
     return;
   }
 
-  console.log(`[InstagramComment] Processing incoming comment from @${username} (${igsid}) on post ${postId}: "${text}"`);
+  console.log(`[InstagramComment] Processing incoming comment from @${username} (${igsid || commentId}) on post ${postId}: "${text}"`);
+
+  // Check if this comment ID was already ingested to prevent duplicate triggers
+  let isExistingComment = false;
+  if (commentId) {
+    const existing = await InstagramMessage.findOne({
+      mid: commentId,
+      direction: "incoming",
+    }).lean();
+    if (existing) {
+      isExistingComment = true;
+    }
+  }
 
   // 1. ALWAYS Upsert Contact
+  const contactIgsid = igsid || `commenter_${commentId}`;
   let contact = await InstagramContact.findOne({
     accountId: account._id,
-    igsid,
+    $or: [{ igsid: contactIgsid }, ...(username ? [{ username }] : [])],
   });
 
   if (!contact) {
     contact = await InstagramContact.create({
       organizationId,
       accountId: account._id,
-      igsid,
+      igsid: contactIgsid,
       username: username || "instagram_user",
       name: username || "Instagram User",
       lastInteractedAt: new Date(),
@@ -205,22 +264,28 @@ export const handleIncomingInstagramComment = async ({
       contact.username = username;
       contact.name = contact.name || username;
     }
+    if (igsid && !contact.igsid.startsWith("commenter_")) {
+      contact.igsid = igsid;
+    }
     await contact.save();
   }
 
-  // 2. ALWAYS Save Incoming Comment Event to InstagramMessage
-  const incomingMsg = await InstagramMessage.create({
-    organizationId,
-    accountId: account._id,
-    contactId: contact._id,
-    igsid,
-    mid: commentId || `comment_${Date.now()}`,
-    direction: "incoming",
-    senderType: "user",
-    text: `[Comment on Reel/Post]: "${text}"`,
-    triggerSource: "comment_to_dm",
-    timestamp: new Date(),
-  });
+  // 2. ALWAYS Save Incoming Comment Event to InstagramMessage (if not already recorded)
+  let incomingMsg = null;
+  if (!isExistingComment) {
+    incomingMsg = await InstagramMessage.create({
+      organizationId,
+      accountId: account._id,
+      contactId: contact._id,
+      igsid: contact.igsid,
+      mid: commentId || `comment_${Date.now()}`,
+      direction: "incoming",
+      senderType: "user",
+      text: `[Comment on Reel/Post]: "${text}"`,
+      triggerSource: "comment_to_dm",
+      timestamp: new Date(),
+    });
+  }
 
   // 3. ALWAYS Upsert Unified Conversation Record so it appears in the "Instagram comments" tab
   if (Conversation) {
@@ -229,7 +294,7 @@ export const handleIncomingInstagramComment = async ({
         {
           $or: [
             { instagramContactId: contact._id },
-            { instagramIgsid: igsid },
+            { instagramIgsid: contact.igsid },
             ...(contact.leadId ? [{ leadId: contact.leadId }] : []),
           ],
         },
@@ -238,7 +303,7 @@ export const handleIncomingInstagramComment = async ({
             channel: "instagram_comment",
             subChannel: "comment",
             triggerSource: "comment_to_dm",
-            instagramIgsid: igsid,
+            instagramIgsid: contact.igsid,
             instagramUsername: contact.username,
             instagramContactId: contact._id,
             customerName: contact.name || contact.username || "Instagram Commenter",
@@ -262,14 +327,20 @@ export const handleIncomingInstagramComment = async ({
       contact,
       message: incomingMsg,
       type: "comment_to_dm",
-      igsid,
-      username,
+      igsid: contact.igsid,
+      username: contact.username,
       text: `[Comment on Reel/Post]: "${text}"`,
     });
     io.to(`org_${organizationId}`).emit("conversation_updated", {
       channel: "instagram_comment",
       contactId: contact._id,
     });
+  }
+
+  // If this comment was already processed in a previous pass, stop here to avoid duplicate replies/DMs
+  if (isExistingComment) {
+    console.log(`[InstagramComment] Comment ${commentId} was already processed previously. Skipping duplicate auto-replies.`);
+    return;
   }
 
   // 5. Check Automated Comment-to-DM Rules
@@ -283,22 +354,47 @@ export const handleIncomingInstagramComment = async ({
   let matchedRule = null;
 
   for (const rule of rules) {
-    if (rule.postScope === "specific_post" && rule.targetPostId && rule.targetPostId !== postId) {
-      continue;
+    // 1. Post Scope check
+    if (rule.postScope === "specific_post" && rule.targetPostId) {
+      const cleanTarget = String(rule.targetPostId).trim().toLowerCase();
+      const cleanPostId = postId.toLowerCase();
+      // Extract shortcode if user pasted a link e.g. instagram.com/reel/CODE or /p/CODE
+      const urlCodeMatch = cleanTarget.match(/(?:reel|p|tv)\/([a-zA-Z0-9_-]+)/);
+      const targetCode = urlCodeMatch ? urlCodeMatch[1].toLowerCase() : cleanTarget;
+
+      const postMatches =
+        cleanPostId === cleanTarget ||
+        (cleanPostId && cleanPostId.includes(targetCode)) ||
+        (cleanTarget && cleanTarget.includes(cleanPostId));
+
+      if (!postMatches) continue;
     }
 
-    // Direct title match or keyword match
+    const keywords = (rule.keywords || []).map((k) => k.toLowerCase().trim()).filter(Boolean);
+
+    // If keywords is empty, or explicitly set to '*', 'all', 'any' -> match ALL comments
+    const isCatchAll =
+      keywords.length === 0 ||
+      keywords.includes("*") ||
+      keywords.includes("all") ||
+      keywords.includes("any");
+
+    if (isCatchAll) {
+      matchedRule = rule;
+      break;
+    }
+
+    // Direct title match
     const titleMatches =
       rule.title &&
       (normalizedComment === rule.title.toLowerCase().trim() ||
         normalizedComment.includes(rule.title.toLowerCase().trim()));
 
-    const keywordMatches = (rule.keywords || []).some((kw) => {
-      const cleanKw = kw.toLowerCase().trim();
-      if (!cleanKw) return false;
+    // Keyword match
+    const keywordMatches = keywords.some((cleanKw) => {
       return rule.matchType === "exact"
         ? normalizedComment === cleanKw
-        : normalizedComment.includes(cleanKw) || cleanKw.includes(normalizedComment);
+        : normalizedComment.includes(cleanKw);
     });
 
     if (titleMatches || keywordMatches) {
@@ -312,9 +408,50 @@ export const handleIncomingInstagramComment = async ({
     return;
   }
 
-  const commentTime = commentEvent.created_time || commentEvent.timestamp;
-  const isWithin7Days = commentTime
-    ? Date.now() - new Date(commentTime).getTime() < 7 * 24 * 60 * 60 * 1000
+  console.log(`[InstagramComment] Rule matched: '${matchedRule.title}'.`);
+
+  // 6. Post randomized public reply to the comment if configured
+  if (matchedRule.publicCommentReplies && matchedRule.publicCommentReplies.length > 0 && commentId) {
+    try {
+      const replies = matchedRule.publicCommentReplies
+        .map((r) => (typeof r === "string" ? r.trim() : ""))
+        .filter(Boolean);
+
+      if (replies.length > 0) {
+        const chosenReply = replies[Math.floor(Math.random() * replies.length)];
+        await replyToInstagramComment({
+          pageAccessToken: account.pageAccessTokenEncrypted,
+          commentId,
+          text: chosenReply,
+        });
+        console.log(`[InstagramComment] Posted public reply to comment ${commentId}: "${chosenReply}"`);
+      }
+    } catch (e) {
+      console.warn("[InstagramService] Public comment reply skipped/failed:", e.message);
+    }
+  }
+
+  // 7. Verify 7-day policy for Meta Private Reply (DM)
+  // Ensure timestamp parsing correctly handles Unix timestamps in seconds (Meta format) vs ms vs ISO
+  const rawCommentTime = commentEvent.created_time || commentEvent.timestamp || commentEvent.time;
+  let parsedCommentTime = null;
+  if (rawCommentTime) {
+    if (typeof rawCommentTime === "number") {
+      parsedCommentTime = rawCommentTime < 1e12 ? rawCommentTime * 1000 : rawCommentTime;
+    } else if (
+      !isNaN(Number(rawCommentTime)) &&
+      !String(rawCommentTime).includes("-") &&
+      !String(rawCommentTime).includes("T")
+    ) {
+      const num = Number(rawCommentTime);
+      parsedCommentTime = num < 1e12 ? num * 1000 : num;
+    } else {
+      parsedCommentTime = new Date(rawCommentTime).getTime();
+    }
+  }
+
+  const isWithin7Days = parsedCommentTime
+    ? Date.now() - parsedCommentTime < 7 * 24 * 60 * 60 * 1000
     : true;
 
   if (!isWithin7Days) {
@@ -322,31 +459,16 @@ export const handleIncomingInstagramComment = async ({
     return;
   }
 
-  console.log(`[InstagramComment] Rule matched: '${matchedRule.title}'. Sending auto-DM & public reply...`);
-
-  // Post randomized public reply to the comment if configured
-  if (matchedRule.publicCommentReplies && matchedRule.publicCommentReplies.length > 0) {
-    try {
-      const replies = matchedRule.publicCommentReplies;
-      const chosenReply = replies[Math.floor(Math.random() * replies.length)];
-      await replyToInstagramComment({
-        pageAccessToken: account.pageAccessTokenEncrypted,
-        commentId,
-        text: chosenReply,
-      });
-    } catch (e) {
-      console.warn("[InstagramService] Public comment reply skipped/failed:", e.message);
-    }
-  }
-
-  // Send automated DM to the commenter
+  // 8. Send automated DM to the commenter
+  const greeting = username ? `@${username}` : "there";
   const dmText =
     matchedRule.dmMessageTemplate ||
-    `Hey @${username}! Thanks for reaching out. Here are the details you requested:`;
+    `Hey ${greeting}! Thanks for reaching out. Here are the details you requested:`;
 
   try {
     const dmResult = await sendInstagramMessage({
       pageAccessToken: account.pageAccessTokenEncrypted,
+      pageId: account.facebookPageId,
       igsid,
       commentId, // Private Reply for Reel/Post comment
       text: dmText,
@@ -358,7 +480,7 @@ export const handleIncomingInstagramComment = async ({
         organizationId,
         accountId: account._id,
         contactId: contact._id,
-        igsid,
+        igsid: contact.igsid,
         mid: dmResult.message_id,
         direction: "outgoing",
         senderType: "auto_dm",
@@ -375,7 +497,7 @@ export const handleIncomingInstagramComment = async ({
           {
             $or: [
               { instagramContactId: contact._id },
-              { instagramIgsid: igsid },
+              { instagramIgsid: contact.igsid },
               ...(contact.leadId ? [{ leadId: contact.leadId }] : []),
             ],
           },
@@ -401,7 +523,7 @@ export const handleIncomingInstagramComment = async ({
           messageType: "text",
           text: dmText,
           timestamp: new Date(),
-          rawPayload: { igsid, channel: "instagram_comment", commentId },
+          rawPayload: { igsid: contact.igsid, channel: "instagram_comment", commentId },
         });
       } catch (_) {}
     }
@@ -414,8 +536,8 @@ export const handleIncomingInstagramComment = async ({
       io.to(`org_${organizationId}`).emit("instagram_new_message", {
         contact,
         type: "comment_to_dm",
-        igsid,
-        username,
+        igsid: contact.igsid,
+        username: contact.username,
         text: dmText,
       });
       io.to(`org_${organizationId}`).emit("conversation_updated", {
@@ -741,7 +863,7 @@ export const syncRecentInstagramComments = async (organizationId, io = null) => 
     let syncedCount = 0;
 
     // 1. Fetch recent media (posts and reels)
-    const mediaUrl = `${getGraphApiBaseUrl()}/${igId}/media?fields=id,caption,media_type,comments_count,timestamp&limit=15&access_token=${token}`;
+    const mediaUrl = `${getGraphApiBaseUrl()}/${igId}/media?fields=id,caption,media_type,media_product_type,comments_count,timestamp,shortcode&limit=20&access_token=${token}`;
     const mediaRes = await fetch(mediaUrl);
     const mediaJson = await mediaRes.json();
 
@@ -750,10 +872,11 @@ export const syncRecentInstagramComments = async (organizationId, io = null) => 
     }
 
     for (const media of mediaJson.data) {
-      if (!media.comments_count || media.comments_count <= 0) continue;
+      // Only skip if comments_count is explicitly 0 (some reels don't immediately return comments_count)
+      if (media.comments_count !== undefined && media.comments_count === 0) continue;
 
-      // 2. Fetch comments for this media
-      const commentsUrl = `${getGraphApiBaseUrl()}/${media.id}/comments?fields=id,text,timestamp,from,username,parent_id&limit=30&access_token=${token}`;
+      // 2. Fetch comments with explicit subfield expansion for from{id,username}
+      const commentsUrl = `${getGraphApiBaseUrl()}/${media.id}/comments?fields=id,text,timestamp,from{id,username},username,parent_id&limit=40&access_token=${token}`;
       const comRes = await fetch(commentsUrl);
       const comJson = await comRes.json();
 
@@ -772,7 +895,11 @@ export const syncRecentInstagramComments = async (organizationId, io = null) => 
           text: comment.text,
           from: comment.from || (comment.username ? { id: comment.username, username: comment.username } : null),
           user: comment.from || { username: comment.username },
-          media: { id: media.id },
+          media: {
+            id: media.id,
+            media_product_type: media.media_product_type,
+            shortcode: media.shortcode,
+          },
           created_time: comment.timestamp,
         };
 

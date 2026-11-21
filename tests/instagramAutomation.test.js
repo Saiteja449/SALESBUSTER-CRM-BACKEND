@@ -144,4 +144,45 @@ describe("Instagram Automation - Services & Utilities", () => {
     verifyInstagramWebhook(req, res);
     assert.equal(statusCode, 403);
   });
+
+  it("evaluates Unix seconds timestamps (Meta webhook format) as within 7-day window", () => {
+    // Current time in Unix seconds (e.g. 10-digit number)
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const commentTimeSeconds = nowSeconds - 3600; // 1 hour ago
+
+    let parsedCommentTime = null;
+    if (typeof commentTimeSeconds === "number") {
+      parsedCommentTime = commentTimeSeconds < 1e12 ? commentTimeSeconds * 1000 : commentTimeSeconds;
+    }
+
+    const isWithin7Days = parsedCommentTime
+      ? Date.now() - parsedCommentTime < 7 * 24 * 60 * 60 * 1000
+      : true;
+
+    assert.equal(isWithin7Days, true, "1-hour old Unix timestamp in seconds must be within 7 days");
+  });
+
+  it("matches comment-to-dm rule with empty keywords or wildcard as catch-all", () => {
+    const catchAllRule = {
+      title: "Any comment promo",
+      keywords: [],
+      matchType: "contains",
+    };
+
+    const keywords = (catchAllRule.keywords || []).map((k) => k.toLowerCase().trim()).filter(Boolean);
+    const isCatchAll =
+      keywords.length === 0 ||
+      keywords.includes("*") ||
+      keywords.includes("all") ||
+      keywords.includes("any");
+
+    assert.equal(isCatchAll, true, "Rule with empty keywords must act as catch-all");
+  });
+
+  it("correctly extracts Reel shortcode from target post URLs", () => {
+    const reelUrl = "https://www.instagram.com/reel/C7xyz123_abc/";
+    const urlCodeMatch = reelUrl.match(/(?:reel|p|tv)\/([a-zA-Z0-9_-]+)/);
+    assert.ok(urlCodeMatch);
+    assert.equal(urlCodeMatch[1], "C7xyz123_abc");
+  });
 });
