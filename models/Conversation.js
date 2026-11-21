@@ -29,7 +29,7 @@ const conversationSchema = new mongoose.Schema(
     },
     channel: {
       type: String,
-      enum: ["whatsapp", "instagram"],
+      enum: ["whatsapp", "instagram", "instagram_dm", "instagram_comment"],
       default: "whatsapp",
       index: true,
     },

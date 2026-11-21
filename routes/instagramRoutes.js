@@ -6,6 +6,7 @@ import {
   getInstagramStatus,
   disconnectInstagramAccount,
   resubscribeInstagramWebhooks,
+  syncInstagramCommentsHandler,
   getAutomationRules,
   createAutomationRule,
   updateAutomationRule,
@@ -27,6 +28,7 @@ router.post("/onboard", protect, requireCrmAccount, onboardInstagramAccount);
 router.get("/status", protect, requireCrmAccount, getInstagramStatus);
 router.post("/disconnect", protect, requireCrmAccount, disconnectInstagramAccount);
 router.post("/subscribe-webhooks", protect, requireCrmAccount, resubscribeInstagramWebhooks);
+router.post("/sync-comments", protect, requireCrmAccount, syncInstagramCommentsHandler);
 
 // Protected Automation Rules CRUD
 router.get("/rules", protect, requireCrmAccount, getAutomationRules);

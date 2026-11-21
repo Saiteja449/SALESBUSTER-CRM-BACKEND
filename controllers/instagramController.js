@@ -5,6 +5,7 @@ import {
   sendInstagramMessage,
   handleIncomingInstagramComment,
   handleIncomingInstagramMessage,
+  syncRecentInstagramComments,
 } from "../services/instagramService.js";
 
 const getGraphApiVersion = () => process.env.META_GRAPH_API_VERSION || "v21.0";
@@ -238,23 +239,12 @@ export const onboardInstagramAccount = async (req, res) => {
 
     // 2. Subscribe Page and Instagram Account to Webhooks
     try {
-      let pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed,messages,messaging_postbacks`;
-      let pageRes = await fetch(pageSubUrl, {
+      const pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed`;
+      const pageRes = await fetch(pageSubUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${pageToken}` },
       });
-      let pageSubData = await pageRes.json();
-
-      // Graceful fallback: If pages_messaging permission is not yet approved on Page, subscribe with feed only
-      if (pageSubData?.error?.code === 200 && pageSubData?.error?.message?.includes("pages_messaging")) {
-        console.warn("[InstagramOnboard] pages_messaging missing on Page; falling back to feed subscription.");
-        pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed`;
-        pageRes = await fetch(pageSubUrl, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${pageToken}` },
-        });
-        pageSubData = await pageRes.json();
-      }
+      const pageSubData = await pageRes.json();
       console.log("[InstagramOnboard] Page subscribed_apps response:", pageSubData);
 
       if (igId) {
@@ -380,21 +370,12 @@ export const resubscribeInstagramWebhooks = async (req, res) => {
     let igSubData = null;
 
     if (pageId) {
-      let pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed,messages,messaging_postbacks`;
-      let pageRes = await fetch(pageSubUrl, {
+      const pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed`;
+      const pageRes = await fetch(pageSubUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${pageToken}` },
       });
       pageSubData = await pageRes.json();
-
-      if (pageSubData?.error?.code === 200 && pageSubData?.error?.message?.includes("pages_messaging")) {
-        pageSubUrl = `${getGraphApiBaseUrl()}/${pageId}/subscribed_apps?subscribed_fields=feed`;
-        pageRes = await fetch(pageSubUrl, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${pageToken}` },
-        });
-        pageSubData = await pageRes.json();
-      }
     }
 
     if (igId) {
@@ -416,6 +397,29 @@ export const resubscribeInstagramWebhooks = async (req, res) => {
       message: "Webhook subscriptions refreshed successfully with Meta.",
       pageResult: pageSubData,
       igResult: igSubData,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * Manual Trigger to sync recent comments from Meta Graph API
+ * POST /api/instagram/sync-comments
+ */
+export const syncInstagramCommentsHandler = async (req, res) => {
+  const organizationId = req.user?.organizationId || req.organization?._id;
+  if (!organizationId) {
+    return res.status(400).json({ success: false, message: "Organization context required." });
+  }
+
+  const io = req.app.get("io");
+  try {
+    const result = await syncRecentInstagramComments(organizationId, io);
+    return res.status(200).json({
+      success: true,
+      message: `Sync completed. ${result.synced || 0} new comment(s) imported.`,
+      result,
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });

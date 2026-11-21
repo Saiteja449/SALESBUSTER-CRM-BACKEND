@@ -39,7 +39,7 @@ import marketingRoiRoutes from "./routes/marketingRoiRoutes.js";
 import cashfreeRoutes from "./routes/cashfreeRoutes.js";
 
 // Socket & WhatsApp Cloud Imports
-import { initSocket } from "./socket/socket.js";
+import { initSocket, getIO } from "./socket/socket.js";
 import {
   initAllOrganizationWhatsAppConnections,
   startWhatsAppWatchdog,
@@ -47,6 +47,7 @@ import {
 import { resumeInterruptedCampaigns } from "./services/whatsappCampaignWorker.js";
 import { startCampaignScheduler } from "./services/whatsappCampaignScheduler.js";
 import { startWebhookRetryWorker } from "./services/whatsappWebhookRetryWorker.js";
+import { startInstagramCommentWatcher } from "./services/instagramService.js";
 import {
   getWebhookSecurityDiagnostics,
   logStartupDiagnostics,
@@ -168,6 +169,9 @@ const startServer = async () => {
 
     // Start background retry worker for pending webhook events
     startWebhookRetryWorker();
+
+    // Start background watcher for Instagram comments (polling backstop for Reels/Posts)
+    startInstagramCommentWatcher(getIO());
   });
 };
 

@@ -242,7 +242,7 @@ export const handleIncomingInstagramComment = async ({
             instagramUsername: contact.username,
             instagramContactId: contact._id,
             customerName: contact.name || contact.username || "Instagram Commenter",
-            leadId: contact.leadId || null,
+            ...(contact.leadId ? { leadId: contact.leadId } : {}),
             isLead: Boolean(contact.leadId),
             lastMessage: `[Comment on Reel/Post]: "${text}"`,
             lastMessageTime: new Date(),
@@ -309,6 +309,16 @@ export const handleIncomingInstagramComment = async ({
 
   if (!matchedRule) {
     console.log(`[InstagramComment] No active comment_to_dm rule matched for "${text}". Saved to Unified Inbox.`);
+    return;
+  }
+
+  const commentTime = commentEvent.created_time || commentEvent.timestamp;
+  const isWithin7Days = commentTime
+    ? Date.now() - new Date(commentTime).getTime() < 7 * 24 * 60 * 60 * 1000
+    : true;
+
+  if (!isWithin7Days) {
+    console.log(`[InstagramComment] Comment ${commentId} is older than 7 days; skipping Meta Private Reply DM per Meta policy.`);
     return;
   }
 
@@ -695,4 +705,138 @@ export const handleIncomingInstagramMessage = async ({
       message: incomingMsg,
     });
   }
+};
+
+/**
+ * Polling Backstop: Syncs recent comments across an organization's connected Instagram account.
+ * Fetches recent media and comments from Meta Graph API to ingest any comments that were not delivered via webhook.
+ */
+export const syncRecentInstagramComments = async (organizationId, io = null) => {
+  if (!organizationId) return { synced: 0, error: "organizationId required" };
+
+  try {
+    const { getMasterModels, getTenantModels } = await import("./tenantManager.js");
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(organizationId).lean();
+    if (!org || !org.tenantDbName) return { synced: 0, error: "Organization not found" };
+
+    const tenantModels = getTenantModels(org.tenantDbName);
+    const { InstagramAccount, InstagramMessage } = tenantModels;
+
+    const account = await InstagramAccount.findOne({
+      organizationId,
+      status: "connected",
+    });
+
+    if (!account || !account.pageAccessTokenEncrypted || !account.instagramBusinessId) {
+      return { synced: 0, error: "No connected Instagram account" };
+    }
+
+    const token = decryptApiKey(account.pageAccessTokenEncrypted);
+    if (!token) {
+      return { synced: 0, error: "Could not decrypt page access token" };
+    }
+
+    const igId = account.instagramBusinessId;
+    let syncedCount = 0;
+
+    // 1. Fetch recent media (posts and reels)
+    const mediaUrl = `${getGraphApiBaseUrl()}/${igId}/media?fields=id,caption,media_type,comments_count,timestamp&limit=15&access_token=${token}`;
+    const mediaRes = await fetch(mediaUrl);
+    const mediaJson = await mediaRes.json();
+
+    if (!mediaJson.data || !Array.isArray(mediaJson.data)) {
+      return { synced: 0, metaResponse: mediaJson };
+    }
+
+    for (const media of mediaJson.data) {
+      if (!media.comments_count || media.comments_count <= 0) continue;
+
+      // 2. Fetch comments for this media
+      const commentsUrl = `${getGraphApiBaseUrl()}/${media.id}/comments?fields=id,text,timestamp,from,username,parent_id&limit=30&access_token=${token}`;
+      const comRes = await fetch(commentsUrl);
+      const comJson = await comRes.json();
+
+      if (!comJson.data || !Array.isArray(comJson.data)) continue;
+
+      for (const comment of comJson.data) {
+        if (!comment.id || !comment.text) continue;
+
+        // Skip if comment is already ingested
+        const existingMsg = await InstagramMessage.findOne({ mid: comment.id });
+        if (existingMsg) continue;
+
+        // Ingest new comment
+        const commentEvent = {
+          id: comment.id,
+          text: comment.text,
+          from: comment.from || (comment.username ? { id: comment.username, username: comment.username } : null),
+          user: comment.from || { username: comment.username },
+          media: { id: media.id },
+          created_time: comment.timestamp,
+        };
+
+        await handleIncomingInstagramComment({
+          commentEvent,
+          organizationId,
+          tenantModels,
+          io,
+        });
+
+        syncedCount++;
+      }
+    }
+
+    if (syncedCount > 0) {
+      console.log(`[InstagramSync] Organization ${organizationId}: synced ${syncedCount} new comments.`);
+    }
+    return { success: true, synced: syncedCount };
+  } catch (err) {
+    console.error("[InstagramSync] Error syncing comments:", err);
+    return { synced: 0, error: err.message };
+  }
+};
+
+/**
+ * Background watcher: Periodically checks and syncs recent comments across all active organizations
+ */
+let watcherInterval = null;
+let isWatcherRunning = false;
+
+export const startInstagramCommentWatcher = (io = null) => {
+  if (watcherInterval) return;
+
+  const runWatcherPass = async () => {
+    if (isWatcherRunning) return;
+    isWatcherRunning = true;
+
+    try {
+      const { getMasterModels } = await import("./tenantManager.js");
+      const { Organization, InstagramAccount: MasterInstagramAccount } = getMasterModels();
+
+      let orgIds = [];
+      if (MasterInstagramAccount) {
+        const accounts = await MasterInstagramAccount.find({ status: "connected" }).lean();
+        orgIds = accounts.map((a) => a.organizationId).filter(Boolean);
+      } else {
+        const orgs = await Organization.find({ status: { $ne: "suspended" } }).lean();
+        orgIds = orgs.map((o) => o._id);
+      }
+
+      for (const orgId of orgIds) {
+        try {
+          await syncRecentInstagramComments(orgId, io);
+        } catch (_) {}
+      }
+    } catch (e) {
+      console.warn("[InstagramCommentWatcher] Pass warning:", e.message);
+    } finally {
+      isWatcherRunning = false;
+    }
+  };
+
+  // Run initial pass after 10 seconds, then every 45 seconds
+  setTimeout(runWatcherPass, 10000);
+  watcherInterval = setInterval(runWatcherPass, 45000);
+  console.log("[InstagramCommentWatcher] Background watcher started (interval: 45000ms).");
 };

@@ -6,8 +6,12 @@ const IV_LENGTH = 12; // 12 bytes recommended for AES-GCM
 /**
  * Derives a consistent 32-byte key for AES-256 using SHA-256
  */
-const getDerivedKey = () => {
-  const secret = process.env.ENCRYPTION_KEY || process.env.JWT_SECRET;
+const getDerivedKey = (secretOverride) => {
+  const secret =
+    secretOverride ||
+    process.env.ENCRYPTION_KEY ||
+    process.env.JWT_SECRET ||
+    "salesbuster_gemini_api_key_secret_salt_2026";
   return crypto.createHash("sha256").update(secret).digest();
 };
 
@@ -54,22 +58,32 @@ export const decryptApiKey = (cipherText) => {
     return trimmed;
   }
 
-  try {
-    const [ivHex, authTagHex, encryptedHex] = parts;
-    const iv = Buffer.from(ivHex, "hex");
-    const authTag = Buffer.from(authTagHex, "hex");
+  const [ivHex, authTagHex, encryptedHex] = parts;
+  const iv = Buffer.from(ivHex, "hex");
+  const authTag = Buffer.from(authTagHex, "hex");
 
-    const decipher = crypto.createDecipheriv(ALGORITHM, getDerivedKey(), iv);
-    decipher.setAuthTag(authTag);
+  const candidateSecrets = [
+    process.env.ENCRYPTION_KEY,
+    process.env.JWT_SECRET,
+    "salesbuster_gemini_api_key_secret_salt_2026",
+    "salesbuster_super_secret_jwt_key_2026",
+    "default-secret-key-32-chars-length!",
+  ].filter(Boolean);
 
-    let decrypted = decipher.update(encryptedHex, "hex", "utf8");
-    decrypted += decipher.final("utf8");
-
-    return decrypted;
-  } catch (err) {
-    console.error("[Encryption] Failed to decrypt API key:", err.message);
-    return "";
+  for (const sec of candidateSecrets) {
+    try {
+      const decipher = crypto.createDecipheriv(ALGORITHM, getDerivedKey(sec), iv);
+      decipher.setAuthTag(authTag);
+      let decrypted = decipher.update(encryptedHex, "hex", "utf8");
+      decrypted += decipher.final("utf8");
+      if (decrypted) return decrypted;
+    } catch {
+      // try next candidate secret
+    }
   }
+
+  console.error("[Encryption] Failed to decrypt API key with all candidate secrets.");
+  return "";
 };
 
 /**
