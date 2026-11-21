@@ -2,6 +2,7 @@ import express from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { randomUUID } from "crypto";
 import {
   getPublicAppGuideVideo,
   getAdminAppGuideVideo,
@@ -27,7 +28,7 @@ const videoStorage = multer.diskStorage({
   },
   filename: function (req, file, cb) {
     const sanitized = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, "_");
-    cb(null, `guide_${Date.now()}_${sanitized}`);
+    cb(null, `guide_${Date.now()}_${randomUUID()}_${sanitized}`);
   },
 });
 
@@ -56,6 +57,14 @@ const uploadFields = upload.fields([
   { name: "banner", maxCount: 1 },
   { name: "poster", maxCount: 1 },
   { name: "image", maxCount: 1 },
+  { name: "stepVideo_0", maxCount: 1 },
+  { name: "stepVideo_1", maxCount: 1 },
+  { name: "stepVideo_2", maxCount: 1 },
+  { name: "stepVideo_3", maxCount: 1 },
+  { name: "stepPoster_0", maxCount: 1 },
+  { name: "stepPoster_1", maxCount: 1 },
+  { name: "stepPoster_2", maxCount: 1 },
+  { name: "stepPoster_3", maxCount: 1 },
 ]);
 
 const handleUploadMiddleware = (req, res, next) => {
