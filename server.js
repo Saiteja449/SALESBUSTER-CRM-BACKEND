@@ -1,11 +1,16 @@
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
+import helmet from "helmet";
 import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 import dns from "dns";
+import mongoose from "mongoose";
 import connectDB from "./configs/db.js";
+import { corsOptions } from "./configs/corsConfig.js";
+import { apiLimiter, authLimiter } from "./middleware/rateLimiter.js";
+import errorHandler from "./middleware/errorHandler.js";
 import {
   tenantMiddleware,
   checkSubscriptionActive,
@@ -41,13 +46,10 @@ import cashfreeRoutes from "./routes/cashfreeRoutes.js";
 // Socket & WhatsApp Cloud Imports
 import { initSocket, getIO } from "./socket/socket.js";
 import {
-  initAllOrganizationWhatsAppConnections,
-  startWhatsAppWatchdog,
-} from "./whatsapp/whatsappService.js";
-import { resumeInterruptedCampaigns } from "./services/whatsappCampaignWorker.js";
-import { startCampaignScheduler } from "./services/whatsappCampaignScheduler.js";
-import { startWebhookRetryWorker } from "./services/whatsappWebhookRetryWorker.js";
-import { startInstagramCommentWatcher } from "./services/instagramService.js";
+  startBackgroundWorkers,
+  stopBackgroundWorkers,
+  getBackgroundWorkersStatus,
+} from "./services/backgroundTaskManager.js";
 import {
   getWebhookSecurityDiagnostics,
   logStartupDiagnostics,
@@ -76,14 +78,15 @@ const __dirname = path.dirname(__filename);
 
 // Middlewares
 app.use(
-  cors({
-    origin: function (origin, callback) {
-      // Allow all origins
-      callback(null, true);
-    },
-    credentials: true,
-  }),
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
 );
+app.use(cors(corsOptions));
+app.use(apiLimiter);
+
 app.use(
   express.json({
     limit: "25mb",
@@ -104,7 +107,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // Mount routes
 app.use("/api/organizations", organizationRoutes);
 app.use("/api/organization", organizationRoutes);
-app.use("/api/auth", authRoutes);
+app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/leads", leadRoutes);
 app.use("/api/whatsapp/cloud/webhook", whatsappWebhookRoutes);
@@ -147,7 +150,42 @@ app.get("/health", (req, res) => {
   });
 });
 
+// 404 Fallback for unhandled API routes
+app.use("/api", (req, res) => {
+  res.status(404).json({
+    success: false,
+    code: "ENDPOINT_NOT_FOUND",
+    message: `API route ${req.method} ${req.originalUrl} not found.`,
+  });
+});
+
+// Centralized Global Error Handler
+app.use(errorHandler);
+
 const PORT = process.env.PORT || 5000;
+
+// Graceful application shutdown
+const gracefulShutdown = (signal) => {
+  console.log(`[Shutdown] Received ${signal}. Initiating graceful shutdown...`);
+  server.close(async () => {
+    console.log("[Shutdown] HTTP server closed.");
+    try {
+      await mongoose.connection.close(false);
+      console.log("[Shutdown] MongoDB connections closed cleanly.");
+    } catch (e) {
+      console.error("[Shutdown] Error during MongoDB disconnection:", e.message);
+    }
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    console.error("[Shutdown] Forcefully terminating process after 10s timeout.");
+    process.exit(1);
+  }, 10000).unref();
+};
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 const startServer = async () => {
   await connectDB();
@@ -155,23 +193,8 @@ const startServer = async () => {
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 
-    // Auto-connect WhatsApp on server start for all active tenant organizations
-    initAllOrganizationWhatsAppConnections();
-
-    // Start background watchdog to auto-heal disconnected WhatsApp sessions
-    startWhatsAppWatchdog();
-
-    // Resume any interrupted WhatsApp Cloud campaigns
-    resumeInterruptedCampaigns();
-
-    // Start background scheduler for scheduled & recurring campaigns
-    startCampaignScheduler();
-
-    // Start background retry worker for pending webhook events
-    startWebhookRetryWorker();
-
-    // Start background watcher for Instagram comments (polling backstop for Reels/Posts)
-    startInstagramCommentWatcher(getIO());
+    // Start all periodic background workers and scheduled tasks
+    startBackgroundWorkers(getIO());
   });
 };
 

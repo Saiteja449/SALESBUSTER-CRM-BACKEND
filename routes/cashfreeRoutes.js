@@ -1,25 +1,58 @@
 import express from "express";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
+import validateRequest from "../middleware/validateRequest.js";
+import {
+  createCashfreeOrderSchema,
+  queryOrdersSchema,
+} from "../schemas/cashfreeSchemas.js";
 import {
   createOrderHandler,
   getOrderStatusHandler,
   handleCashfreeWebhook,
   getOrderHistoryHandler,
+  getAdminOrdersHandler,
+  devSimulateSuccessHandler,
 } from "../controllers/cashfreeController.js";
 
 const router = express.Router();
 
 // 1. Order Creation (Auth required)
-router.post("/create-order", protect, createOrderHandler);
+router.post(
+  "/create-order",
+  protect,
+  requireCrmAccount,
+  validateRequest(createCashfreeOrderSchema),
+  createOrderHandler
+);
 
-// 2. Fetch / Verify Order Status (Auth required)
+// 1b. Public Website Order Creation (No auth required for marketing web checkout)
+router.post(
+  "/public/create-order",
+  validateRequest(createCashfreeOrderSchema),
+  createOrderHandler
+);
+
+// 1c. Dev simulation endpoint (Testing only)
+router.post("/public/dev-simulate-success", devSimulateSuccessHandler);
+
+// 2. Fetch / Verify Order Status (Auth required or public order inquiry)
 router.get("/order/:orderId", protect, getOrderStatusHandler);
+router.get("/public/order/:orderId", getOrderStatusHandler);
 
 // 3. Webhook Ingestion (Public S2S callback, verified via HMAC-SHA256 signature)
 router.post("/webhook", handleCashfreeWebhook);
 
-// 4. Payment History (Auth required)
-router.get("/history", protect, getOrderHistoryHandler);
-router.get("/orders", protect, getOrderHistoryHandler);
+// 4. Payment History for Tenant Organization (Auth required)
+router.get("/history", protect, requireCrmAccount, getOrderHistoryHandler);
+router.get("/orders", protect, requireCrmAccount, getOrderHistoryHandler);
+
+// 5. Admin & Management View across orders and metrics (Auth required)
+router.get(
+  "/admin/orders",
+  protect,
+  requireCrmAccount,
+  validateRequest(queryOrdersSchema),
+  getAdminOrdersHandler
+);
 
 export default router;

@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import mongoose from "mongoose";
 import { getTenantModels, getMasterModels } from "../services/tenantManager.js";
 import {
   createCashfreePgOrder,
@@ -38,6 +39,16 @@ export const CASHFREE_PRICING_CATALOG = {
       amount: 7999,
       currency: "INR",
       title: "Enterprise Plan Monthly Subscription",
+    },
+    yearly: {
+      amount: 53940,
+      currency: "INR",
+      title: "Yearly Plan (5 Sales Reps) Annual Subscription",
+    },
+    quarterly: {
+      amount: 17985,
+      currency: "INR",
+      title: "Quarterly Plan (5 Sales Reps) Subscription",
     },
   },
 };
@@ -128,9 +139,20 @@ const fulfillOrderBenefits = async (order) => {
  */
 export const createOrderHandler = async (req, res) => {
   try {
-    const organizationId = req.user?.organizationId || req.organization?._id;
+    let organizationId = req.user?.organizationId || req.organization?._id;
     if (!organizationId) {
-      return res.status(400).json({ success: false, message: "Organization is required." });
+      // Allow public website checkout by resolving or generating guest organization
+      const custEmail = req.body.customerDetails?.customerEmail;
+      const { Organization } = getMasterModels();
+      if (custEmail && Organization) {
+        const existingOrg = await Organization.findOne({ email: custEmail.toLowerCase() }).lean();
+        if (existingOrg) {
+          organizationId = existingOrg._id;
+        }
+      }
+      if (!organizationId) {
+        organizationId = new mongoose.Types.ObjectId();
+      }
     }
 
     const {
@@ -180,13 +202,27 @@ export const createOrderHandler = async (req, res) => {
 
     // Webhook and redirect return URLs
     const appBaseUrl =
-      process.env.APP_URL || process.env.FRONTEND_URL || "https://crm.salesbuster.ai";
+      process.env.APP_URL || process.env.FRONTEND_URL || "https://salesbuster.ai";
     const backendBaseUrl =
-      process.env.BACKEND_URL || "https://api.salesbuster.ai";
+      process.env.BACKEND_URL || "https://betaapi.salesbuster.ai";
 
-    const finalReturnUrl =
+    let finalReturnUrl =
       returnUrl || `${appBaseUrl}/payment/status?order_id={order_id}`;
-    const finalNotifyUrl = `${backendBaseUrl}/api/payment/cashfree/webhook`;
+    let finalNotifyUrl = `${backendBaseUrl}/api/payment/cashfree/webhook`;
+
+    // Cashfree Production strictly enforces https:// on returnUrl and notifyUrl
+    if (finalReturnUrl.startsWith("http://")) {
+      finalReturnUrl = finalReturnUrl.replace(
+        /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+        "https://salesbuster.ai"
+      );
+    }
+    if (finalNotifyUrl.startsWith("http://")) {
+      finalNotifyUrl = finalNotifyUrl.replace(
+        /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+        "https://betaapi.salesbuster.ai"
+      );
+    }
 
     // 4. Call Cashfree PG Order API
     const cfResult = await createCashfreePgOrder({
@@ -252,16 +288,22 @@ export const createOrderHandler = async (req, res) => {
       // Non-blocking fallback
     }
 
-    return res.status(201).json({
-      success: true,
-      message: "Cashfree order created successfully.",
+    const responsePayload = {
       orderId: newOrder.orderId,
       cfOrderId: newOrder.cfOrderId,
       paymentSessionId: newOrder.paymentSessionId,
       orderStatus: newOrder.orderStatus,
       orderAmount: newOrder.orderAmount,
       orderCurrency: newOrder.orderCurrency,
+      isDevMock: Boolean(cfResult.isDevMock),
       environment: process.env.CASHFREE_ENV || "SANDBOX",
+    };
+
+    return res.status(201).json({
+      success: true,
+      message: "Cashfree order created successfully.",
+      order: responsePayload,
+      ...responsePayload,
     });
   } catch (error) {
     console.error("[CashfreeCreateOrder] Error:", error);
@@ -292,8 +334,10 @@ export const getOrderStatusHandler = async (req, res) => {
       return res.status(404).json({ success: false, message: "Order not found." });
     }
 
-    // IDOR Prevention: Enforce organization isolation
+    // IDOR Prevention: Enforce organization isolation if authenticated user
+    const isPublicStatus = req.path.includes("/public/") || !req.user;
     if (
+      !isPublicStatus &&
       req.user?.role !== "super_admin" &&
       String(localOrder.organizationId) !== String(organizationId)
     ) {
@@ -491,5 +535,150 @@ export const getOrderHistoryHandler = async (req, res) => {
   } catch (error) {
     console.error("[CashfreeHistory] Error:", error);
     return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/payment/cashfree/admin/orders
+ * Admin & Management overview of all orders, revenue metrics, and transaction statuses
+ */
+export const getAdminOrdersHandler = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, status = "all", search = "", organizationId } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+    const skip = (pageNum - 1) * limitNum;
+
+    const { CashfreeOrder } = getMasterModels();
+
+    const query = {};
+    const userRole = String(req.user?.role || "").toLowerCase();
+    const isSuperAdmin = userRole === "super_admin" || userRole === "super admin";
+
+    if (!isSuperAdmin) {
+      const userOrgId = req.user?.organizationId || req.organization?._id;
+      if (userOrgId) query.organizationId = userOrgId;
+    } else if (organizationId) {
+      query.organizationId = organizationId;
+    }
+
+    if (status && status !== "all") {
+      query.orderStatus = status.toUpperCase();
+    }
+
+    if (search && search.trim()) {
+      const rx = new RegExp(search.trim(), "i");
+      query.$or = [
+        { orderId: rx },
+        { cfOrderId: rx },
+        { "customerDetails.customerName": rx },
+        { "customerDetails.customerEmail": rx },
+        { "customerDetails.customerPhone": rx },
+        { planId: rx },
+        { addonType: rx },
+      ];
+    }
+
+    const [orders, total, stats] = await Promise.all([
+      CashfreeOrder.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      CashfreeOrder.countDocuments(query),
+      CashfreeOrder.aggregate([
+        { $match: query.organizationId ? { organizationId: query.organizationId } : {} },
+        {
+          $group: {
+            _id: null,
+            totalRevenue: {
+              $sum: { $cond: [{ $eq: ["$orderStatus", "PAID"] }, "$orderAmount", 0] },
+            },
+            paidCount: {
+              $sum: { $cond: [{ $eq: ["$orderStatus", "PAID"] }, 1, 0] },
+            },
+            activeCount: {
+              $sum: { $cond: [{ $in: ["$orderStatus", ["ACTIVE", "PENDING"]] }, 1, 0] },
+            },
+            failedCount: {
+              $sum: { $cond: [{ $in: ["$orderStatus", ["FAILED", "EXPIRED", "TERMINATED"]] }, 1, 0] },
+            },
+            totalOrders: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
+
+    const metrics = stats[0] || {
+      totalRevenue: 0,
+      paidCount: 0,
+      activeCount: 0,
+      failedCount: 0,
+      totalOrders: 0,
+    };
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        orders,
+        metrics,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum),
+        },
+      },
+    });
+  } catch (error) {
+    console.error("[CashfreeAdminOrders] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Dev-only simulation endpoint to complete payment for local testing
+ */
+export const devSimulateSuccessHandler = async (req, res) => {
+  try {
+    const { orderId } = req.body;
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: "Order ID is required." });
+    }
+    const { CashfreeOrder, Organization } = getMasterModels();
+    const order = await CashfreeOrder.findOne({ orderId });
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found." });
+    }
+
+    order.orderStatus = "PAID";
+    order.paymentDetails = {
+      cfPaymentId: `cf_pay_sim_${Date.now()}`,
+      paymentMethod: "upi",
+      paymentTime: new Date(),
+      bankReference: `UPI_SIM_${Date.now()}`,
+    };
+    await order.save();
+
+    if (order.organizationId) {
+      const org = await Organization.findById(order.organizationId);
+      if (org) {
+        org.status = "active";
+        org.plan = order.planId;
+        const durationDays = order.planId === "yearly" ? 365 : 90;
+        org.subscriptionEndDate = new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000);
+        await org.save();
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: "Order successfully marked as PAID (dev simulation).",
+      orderStatus: "PAID",
+      order,
+    });
+  } catch (err) {
+    console.error("[devSimulateSuccessHandler] Error:", err);
+    return res.status(500).json({ success: false, message: err.message });
   }
 };

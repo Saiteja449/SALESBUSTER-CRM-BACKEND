@@ -157,6 +157,7 @@ export const checkSubscriptionActive = (req, res, next) => {
     path.startsWith("/api/webhooks/meta") ||
     path.startsWith("/api/leads/webhook/status") ||
     path.startsWith("/api/website") ||
+    path.startsWith("/api/payment/cashfree") ||
     path === "/" ||
     path === "/health"
   ) {
