@@ -6,7 +6,7 @@ import { getSalespersonAnalytics } from "../analytics/crmAnalyticsService.js";
  * Creates Sales Performance & Analytics tool bound to authenticated tenant context.
  * Used for both get_salesperson_performance and get_salesperson_analytics.
  */
-export const createSalesPerformanceTool = ({ tenantModels, toolName = "get_salesperson_performance" }) => {
+export const createSalesPerformanceTool = ({ tenantModels, organization, toolName = "get_salesperson_performance" }) => {
   return tool(
     async ({
       period = "all_time",
@@ -22,6 +22,7 @@ export const createSalesPerformanceTool = ({ tenantModels, toolName = "get_sales
             startDate,
             endDate,
             salespersonNameOrId,
+            timezone: organization?.timezone || "Asia/Kolkata",
           },
         });
         return JSON.stringify(result);

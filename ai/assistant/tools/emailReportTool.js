@@ -7,6 +7,7 @@ import { buildOwnerDirectory } from "../analytics/ownerResolver.js";
 
 // Session-level or global pending draft cache with 15-minute TTL
 export const pendingEmailDrafts = new Map();
+const processingEmailDraftIds = new Set();
 
 // Helper to clean expired drafts
 const pruneExpiredDrafts = () => {
@@ -417,6 +418,7 @@ export const createEmailReportTools = ({ tenantModels, organization, user, socke
   );
 
  const executeConfirmEmailReport = async ({ draftId, confirmed, socket = null }) => {
+  let claimedDraftId = null;
   try {
     pruneExpiredDrafts();
 
@@ -437,6 +439,15 @@ export const createEmailReportTools = ({ tenantModels, organization, user, socke
     }
 
     const effectiveDraftId = draft.draftId;
+    if (processingEmailDraftIds.has(effectiveDraftId)) {
+      return {
+        status: "error",
+        success: false,
+        message: "This report email is already being processed. Please wait for the result.",
+      };
+    }
+    processingEmailDraftIds.add(effectiveDraftId);
+    claimedDraftId = effectiveDraftId;
 
     // If user cancelled
     if (!confirmed) {
@@ -490,15 +501,18 @@ export const createEmailReportTools = ({ tenantModels, organization, user, socke
     }
 
     return {
-      status: "sent",
+      status: allSucceeded ? "sent" : successCount > 0 ? "partial" : "error",
       success: allSucceeded,
       sentCount: successCount,
       totalCount: sendResults.length,
       recipients: sendResults.map((r) => `${r.rep} (${r.email})`),
-      message:
-        successCount === 1
+      message: allSucceeded
+        ? successCount === 1
           ? `The report email has been successfully sent to ${sendResults[0].rep} at ${sendResults[0].email}.`
-          : `Successfully sent report emails to ${successCount} sales team member(s).`,
+          : `Successfully sent report emails to ${successCount} sales team member(s).`
+        : successCount > 0
+          ? `The report was sent to ${successCount} of ${sendResults.length} recipients. Some deliveries failed.`
+          : "The report email could not be delivered to any recipient.",
     };
   } catch (err) {
     console.error("[EmailReportTool] Error confirming and sending report email:", err);
@@ -507,6 +521,8 @@ export const createEmailReportTools = ({ tenantModels, organization, user, socke
       success: false,
       error: `Failed to deliver email: ${err.message}`,
     };
+  } finally {
+    if (claimedDraftId) processingEmailDraftIds.delete(claimedDraftId);
   }
 };
 

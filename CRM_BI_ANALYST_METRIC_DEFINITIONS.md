@@ -28,8 +28,12 @@ This document establishes canonical definitions, data sources, ownership semanti
 | Metric | Data Source | Field / Query Rule | Notes / Legacy Handling |
 | :--- | :--- | :--- | :--- |
 | **Total Leads** | `Lead` | Total matching count of leads within the requested creation or filter scope. | Scoped to tenant database. |
-| **New Leads** | `Lead` | `status: "New"` (case-insensitive). | Default initial stage. |
-| **Active Leads** | `Lead` | `status: { $in: ["New", "Follow Up", "Missed Call"] }` (open, non-terminal pipeline). | Excludes Converted, Lost, and Not Interested. |
+| **New Leads (status)** | `Lead` | `status: "New"` (case-insensitive). | CRM status count. This can include records flagged `isOldLead`; it is not the same as the Leads screen's **New Leads** tab. |
+| **Leads by Status** | `Lead` | Group matching lead population by the exact stored `status`; each lead appears in one bucket. | Use this mutually exclusive breakdown when asked to show leads by status. Keep legacy/null statuses visible as their own bucket (`Unknown` for missing status). |
+| **Old Leads / New Leads tabs** | `Lead` | `status: "New"` plus `isOldLead: true` / `isOldLead` not true. | Screen segmentation of New status leads. Report separately from the full status counts. |
+| **Today Followup Leads tab** | `Lead` | `status` case-insensitive `Follow Up` and `nextFollowUp` is missing, null, empty, or `<=` today's `YYYY-MM-DD` in the CRM's configured tab timezone (currently Asia/Kolkata). | Lead count matching the Leads screen tab, independent of lead creation date. This differs from `Followup` task records scheduled exactly today. |
+| **Upcoming Followup Leads tab** | `Lead` | `status` case-insensitive `Follow Up` and `nextFollowUp >` today's `YYYY-MM-DD` in the CRM's configured tab timezone (currently Asia/Kolkata). | Lead count matching the Leads screen tab, independent of lead creation date. |
+| **Active Leads** | `Lead` | `status: { $in: ["New", "Follow Up", "Missed Call"] }` (open, non-terminal pipeline). | Overlapping KPI group, not a mutually exclusive status bucket; do not add it to New Leads or present it as a status category. |
 | **Converted Leads** | `Lead` | `status: { $regex: /^converted$/i }`. | Successfully won client accounts. |
 | **Lost Leads** | `Lead` | `status: { $in: ["Not Interested", "Price Issue", "Not Attended", "Lost"] }`. | Supports legacy and standard lost statuses. |
 | **Assigned Leads** | `Lead` | `assignedTo: { $exists: true, $nin: ["Unassigned", "", null] }`. | Assigned to a specific representative ID or name. |

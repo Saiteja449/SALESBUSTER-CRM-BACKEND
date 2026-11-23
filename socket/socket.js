@@ -317,7 +317,11 @@ export const initSocket = (server) => {
           // console.log(`[Socket Voice] bi_voice_action_confirm received on socket ${socket.id}: draftId=${draftId}, confirmed=${confirmed}`);
           if (socket.geminiLiveSession) {
             const res = await socket.geminiLiveSession.handleActionConfirmation({ draftId, confirmed });
-            if (typeof callback === "function") callback({ success: true, result: res });
+            if (typeof callback === "function") callback({
+              success: res?.success !== false && res?.status !== "error",
+              result: res,
+              error: res?.status === "error" ? res?.message || res?.error : undefined,
+            });
           } else {
             // console.log(`[Socket Voice] bi_voice_action_confirm fallback to executeConfirmEmailReport`);
             const { executeConfirmEmailReport } = await import("../ai/assistant/tools/emailReportTool.js");

@@ -28,6 +28,8 @@ export const getConversionAnalytics = async ({
     startDate,
     endDate,
   } = filters;
+  const timezone = filters.timezone || "Asia/Kolkata";
+  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate, timezone });
 
   const { page, limit, skip } = validateAnalyticsQuery(pagination);
   const LeadModel = tenantModels.Lead;
@@ -48,8 +50,6 @@ export const getConversionAnalytics = async ({
       },
     });
   }
-
-  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate });
 
   let repResolution = null;
   if (salespersonNameOrId) {
@@ -93,10 +93,8 @@ export const getConversionAnalytics = async ({
   if (!dateRange.isAllTime) {
     if (filters.dateBasis === "conversion_date") {
       baseClauses.push({
-        $or: [
-          { updatedAt: { $gte: dateRange.start, $lte: dateRange.end } },
-          { createdAt: { $gte: dateRange.start, $lte: dateRange.end } },
-        ],
+        status: { $regex: /^converted$/i },
+        convertedAt: { $gte: dateRange.start, $lte: dateRange.end },
       });
     } else {
       baseClauses.push({ createdAt: { $gte: dateRange.start, $lte: dateRange.end } });
@@ -110,6 +108,7 @@ export const getConversionAnalytics = async ({
 
   const [facetResults] = await LeadModel.aggregate([
     { $match: baseMatch },
+    { $set: { _biStatus: { $toLower: { $ifNull: ["$status", ""] } } } },
     {
       $facet: {
         totals: [
@@ -117,7 +116,7 @@ export const getConversionAnalytics = async ({
             $group: {
               _id: null,
               totalLeads: { $sum: 1 },
-              convertedLeads: { $sum: { $cond: [{ $eq: ["$status", "Converted"] }, 1, 0] } },
+              convertedLeads: { $sum: { $cond: [{ $eq: ["$_biStatus", "converted"] }, 1, 0] } },
               lostLeads: {
                 $sum: {
                   $cond: [
@@ -127,13 +126,11 @@ export const getConversionAnalytics = async ({
                   ],
                 },
               },
-              convertedRevenue: {
-                $sum: { $cond: [{ $eq: ["$status", "Converted"] }, { $ifNull: ["$dealValue", 0] }, 0] },
-              },
+              convertedRevenue: { $sum: { $cond: [{ $eq: ["$_biStatus", "converted"] }, { $ifNull: ["$dealValue", 0] }, 0] } },
               activePipelineValue: {
                 $sum: {
                   $cond: [
-                    { $in: ["$status", ["New", "Follow Up", "Missed Call"]] },
+                    { $in: ["$_biStatus", ["new", "follow up", "missed call"]] },
                     { $ifNull: ["$dealValue", 0] },
                     0,
                   ],
@@ -148,7 +145,7 @@ export const getConversionAnalytics = async ({
             $group: {
               _id: "$assignedTo",
               totalLeads: { $sum: 1 },
-              convertedLeads: { $sum: { $cond: [{ $eq: ["$status", "Converted"] }, 1, 0] } },
+              convertedLeads: { $sum: { $cond: [{ $eq: ["$_biStatus", "converted"] }, 1, 0] } },
               lostLeads: {
                 $sum: {
                   $cond: [
@@ -158,13 +155,11 @@ export const getConversionAnalytics = async ({
                   ],
                 },
               },
-              convertedRevenue: {
-                $sum: { $cond: [{ $eq: ["$status", "Converted"] }, { $ifNull: ["$dealValue", 0] }, 0] },
-              },
+              convertedRevenue: { $sum: { $cond: [{ $eq: ["$_biStatus", "converted"] }, { $ifNull: ["$dealValue", 0] }, 0] } },
               activePipelineValue: {
                 $sum: {
                   $cond: [
-                    { $in: ["$status", ["New", "Follow Up", "Missed Call"]] },
+                    { $in: ["$_biStatus", ["new", "follow up", "missed call"]] },
                     { $ifNull: ["$dealValue", 0] },
                     0,
                   ],
@@ -177,6 +172,10 @@ export const getConversionAnalytics = async ({
       },
     },
   ]);
+
+  const legacyConvertedCount = filters.dateBasis === "conversion_date" && typeof LeadModel.countDocuments === "function"
+    ? await LeadModel.countDocuments({ status: { $regex: /^converted$/i }, convertedAt: null })
+    : 0;
 
   const totals = facetResults?.totals[0] || {
     totalLeads: 0,
@@ -263,9 +262,15 @@ export const getConversionAnalytics = async ({
     limit,
     records: paginatedReps,
     summary,
+    timezone,
+    coverage: legacyConvertedCount > 0 ? "partial" : "complete",
+    coverageWarnings: legacyConvertedCount > 0
+      ? [`${legacyConvertedCount} converted lead(s) have no convertedAt timestamp and are excluded from conversion-date results. Backfill or verify historical conversion dates.`]
+      : [],
     filtersApplied: {
       period: dateRange.label,
       salesperson: repResolution?.canonicalName || "All Sales Representatives",
+      dateBasis: filters.dateBasis === "conversion_date" ? "conversion_date" : "created_date",
     },
   });
 };

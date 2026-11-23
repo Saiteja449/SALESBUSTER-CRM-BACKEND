@@ -6,7 +6,7 @@ import { getFollowupAnalytics } from "../analytics/crmAnalyticsService.js";
  * Creates Follow-ups & Tasks analytics tool bound to authenticated tenant context.
  * Supports both get_followup_status and get_followup_analytics.
  */
-export const createFollowupTool = ({ tenantModels, toolName = "get_followup_status" }) => {
+export const createFollowupTool = ({ tenantModels, organization, toolName = "get_followup_status" }) => {
   return tool(
     async ({
       filter,
@@ -30,6 +30,7 @@ export const createFollowupTool = ({ tenantModels, toolName = "get_followup_stat
             period,
             startDate,
             endDate,
+            timezone: organization?.timezone || "Asia/Kolkata",
           },
           pagination: { page, limit },
         });
@@ -41,7 +42,7 @@ export const createFollowupTool = ({ tenantModels, toolName = "get_followup_stat
     {
       name: toolName,
       description:
-        "Analyzes scheduled and pending follow-ups and CRM tasks. Reports total pending, overdue, pending today, upcoming, completed follow-ups, priority breakdown, salesperson-wise follow-up distribution, and missed-call follow-ups. Answers: 'Which salesperson has highest overdue missed-call follow-ups?', 'Show pending follow-ups for Shanmukh', and 'How many tasks are overdue?'. Internal IDs are for tooling only; never expose MongoDB ObjectIds to the user. Always use resolved human names.",
+        "Analyzes Followup collection task records (counts are follow-up tasks, not distinct leads). Reports total pending, overdue, tasks scheduled today, upcoming, completed follow-ups, priority breakdown, salesperson-wise follow-up distribution, and missed-call follow-ups. Use for questions about tasks or scheduled activities. For leads in the CRM Leads screen's Today/Upcoming Followup tabs, use get_crm_overview instead. Answers: 'Which salesperson has highest overdue missed-call follow-ups?', 'Show pending follow-up tasks for Shanmukh', and 'How many follow-up tasks are overdue?'. Internal IDs are for tooling only; never expose MongoDB ObjectIds to the user. Always use resolved human names.",
       schema: z.object({
         status: z
           .enum([

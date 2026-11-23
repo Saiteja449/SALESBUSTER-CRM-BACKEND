@@ -61,7 +61,7 @@ export const searchCallRecords = async ({
   } = filters;
 
   const { page, limit, skip } = validateAnalyticsQuery(pagination);
-  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate });
+  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate, timezone: filters.timezone || "Asia/Kolkata" });
 
   // 1. Resolve salesperson if specified
   let repResolution = null;
@@ -451,7 +451,7 @@ export const getMissedCallAnalytics = async ({
   } = filters;
 
   const { page, limit, skip } = validateAnalyticsQuery(pagination);
-  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate });
+  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate, timezone: filters.timezone || "Asia/Kolkata" });
 
   // 1. Resolve salesperson if specified
   let repResolution = null;

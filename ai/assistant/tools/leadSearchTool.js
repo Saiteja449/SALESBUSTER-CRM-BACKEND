@@ -6,7 +6,7 @@ import { searchLeadsAdvanced } from "../analytics/crmAnalyticsService.js";
  * Creates Lead Search & Advanced Discovery tool bound to authenticated tenant context.
  * Used for both search_leads and search_leads_advanced.
  */
-export const createLeadSearchTool = ({ tenantModels, toolName = "search_leads" }) => {
+export const createLeadSearchTool = ({ tenantModels, organization, toolName = "search_leads" }) => {
   return tool(
     async ({
       searchTerm,
@@ -42,6 +42,7 @@ export const createLeadSearchTool = ({ tenantModels, toolName = "search_leads" }
             followupStatusFilter,
             inactiveDays,
             unassignedOnly,
+            timezone: organization?.timezone || "Asia/Kolkata",
           },
           pagination: { page, limit },
         });
@@ -75,5 +76,5 @@ export const createLeadSearchTool = ({ tenantModels, toolName = "search_leads" }
   );
 };
 
-export const createAdvancedLeadSearchTool = ({ tenantModels }) =>
-  createLeadSearchTool({ tenantModels, toolName: "search_leads_advanced" });
+export const createAdvancedLeadSearchTool = ({ tenantModels, organization }) =>
+  createLeadSearchTool({ tenantModels, organization, toolName: "search_leads_advanced" });

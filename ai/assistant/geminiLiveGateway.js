@@ -138,12 +138,15 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
   },
   {
     name: "get_whatsapp_analytics",
-    description: "Checks unread WhatsApp messages, incoming customer inquiries awaiting reply, and chat volume.",
+    description: "Checks unread leads, message volume, recent messages, or WhatsApp activity. For conversation counts and chat lists, use search_whatsapp_conversations.",
     parameters: {
       type: "OBJECT",
       properties: {
-        unreadOnly: { type: "BOOLEAN", description: "Only return chats with unread customer messages" },
-        limit: { type: "INTEGER", description: "Max chats to inspect" },
+        type: { type: "STRING", enum: ["unreplied_leads", "unread_leads", "recent_messages_overview", "message_stats", "connection_status", "all"], description: "WhatsApp metric category" },
+        period: { type: "STRING", description: "Date range such as today, this_month, or all_time" },
+        salespersonNameOrId: { type: "STRING", description: "Filter by assigned salesperson" },
+        page: { type: "INTEGER", description: "Page number" },
+        limit: { type: "INTEGER", description: "Records per page" },
       },
     },
   },
@@ -335,6 +338,7 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
       properties: {
         customerName: { type: "STRING", description: "Customer name" },
         customerPhone: { type: "STRING", description: "Customer phone number" },
+        leadId: { type: "STRING", description: "CRM lead ID" },
         salespersonNameOrId: { type: "STRING", description: "Filter by assigned salesperson name or ID" },
         unreadOnly: { type: "BOOLEAN", description: "Set true to only return unread conversations" },
         period: { type: "STRING", description: "Time period e.g. 'all_time', 'today', 'this_week', 'this_month'" },
@@ -351,8 +355,9 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
     parameters: {
       type: "OBJECT",
       properties: {
-        phone: { type: "STRING", description: "Customer phone number" },
+        conversationId: { type: "STRING", description: "Selected WhatsApp conversation ID" },
         leadId: { type: "STRING", description: "Associated lead ID" },
+        customerPhone: { type: "STRING", description: "Customer phone number" },
         page: { type: "INTEGER", description: "Pagination page number" },
         limit: { type: "INTEGER", description: "Number of messages to return" },
       },
@@ -364,8 +369,9 @@ export const CRM_LIVE_FUNCTION_DECLARATIONS = [
     parameters: {
       type: "OBJECT",
       properties: {
-        phone: { type: "STRING", description: "Customer phone number to summarize chat for" },
+        conversationId: { type: "STRING", description: "Selected WhatsApp conversation ID" },
         leadId: { type: "STRING", description: "Associated lead ID" },
+        customerPhone: { type: "STRING", description: "Customer phone number" },
       },
     },
   },
@@ -501,11 +507,13 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
    - Finding leads by name, source, service, status: CALL 'search_leads'
    - Phone numbers: CALL 'lookup_phone_number'
    - Overdue tasks and follow-ups: CALL 'get_followup_status'
-   - WhatsApp unread chats: CALL 'get_whatsapp_analytics'
+   - WhatsApp unread chats / message volume: CALL 'get_whatsapp_analytics'
    - Team WhatsApp connection statuses: CALL 'get_whatsapp_connection_status'
    - Searching WhatsApp conversations: CALL 'search_whatsapp_conversations'
    - Reading message transcripts: CALL 'get_conversation_messages'
    - Summarizing customer WhatsApp chat: CALL 'summarize_whatsapp_conversation'
+   - Total WhatsApp chat/conversation counts or filtered chat lists: CALL 'search_whatsapp_conversations'; report totalMatchingCount, not unread leads or message totals.
+   - Before summarizing a specific lead chat, resolve the exact conversation/lead first and pass its ID. Never use stale last-message previews as the transcript or infer sentiment/unanswered questions without transcript evidence.
    - Integrations and configurations: CALL 'get_org_integrations_and_config'
    - Composing sales report emails: CALL 'compose_salesperson_report_email'
    - Confirming or cancelling email report send: CALL 'confirm_send_email_report'
@@ -676,9 +684,12 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
 
       // In real-time voice, let Gemini know the user made a choice via the UI
       if (this.session && this.isActive) {
-        const textPrompt = confirmed
-          ? "The user clicked 'Send Email' in the CRM screen. The report email was dispatched successfully. Inform the user in 1 short spoken sentence that their email was sent."
-          : "The user clicked 'Cancel' in the CRM screen. The report email was discarded. Acknowledge this cancellation in 1 short spoken sentence.";
+        const succeeded = result?.success !== false && result?.status !== "error";
+        const textPrompt = !succeeded
+          ? `The report email action failed: ${result?.message || result?.error || "unknown error"}. Do not claim it was sent. Briefly explain the failure and invite the user to try again.`
+          : confirmed
+            ? "The user confirmed sending the report email, and delivery succeeded. Inform the user in one short spoken sentence that the email was sent."
+            : "The user cancelled the report email. Acknowledge that it was not sent in one short spoken sentence.";
         try {
           this.session.sendRealtimeInput({
             text: textPrompt,

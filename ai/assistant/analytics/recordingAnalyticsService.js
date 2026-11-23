@@ -53,7 +53,7 @@ export const getRecordingAnalytics = async ({
     });
   }
 
-  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate });
+  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate, timezone: filters.timezone || "Asia/Kolkata" });
 
   let repResolution = null;
   if (salespersonNameOrId) {

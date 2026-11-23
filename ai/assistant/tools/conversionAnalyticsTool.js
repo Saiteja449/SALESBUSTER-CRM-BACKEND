@@ -5,18 +5,19 @@ import { getConversionAnalytics } from "../analytics/crmAnalyticsService.js";
 /**
  * Creates Conversion Analytics tool bound to authenticated tenant context
  */
-export const createConversionAnalyticsTool = ({ tenantModels }) => {
+export const createConversionAnalyticsTool = ({ tenantModels, organization }) => {
   return tool(
     async ({
       period = "all_time",
       startDate,
       endDate,
       salespersonNameOrId,
+      dateBasis = "created_date",
     }) => {
       try {
         const result = await getConversionAnalytics({
           tenantModels,
-          filters: { period, startDate, endDate, salespersonNameOrId },
+          filters: { period, startDate, endDate, salespersonNameOrId, dateBasis, timezone: organization?.timezone || "Asia/Kolkata" },
         });
         return JSON.stringify(result);
       } catch (err) {
@@ -32,6 +33,7 @@ export const createConversionAnalyticsTool = ({ tenantModels }) => {
         startDate: z.string().optional().describe("Start date in YYYY-MM-DD format"),
         endDate: z.string().optional().describe("End date in YYYY-MM-DD format"),
         salespersonNameOrId: z.string().optional().describe("Filter down to a specific salesperson"),
+        dateBasis: z.enum(["created_date", "conversion_date"]).default("created_date").describe("Use conversion_date to attribute wins by the recorded conversion timestamp."),
       }),
     }
   );

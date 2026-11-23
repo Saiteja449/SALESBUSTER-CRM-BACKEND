@@ -5,7 +5,7 @@ import { getMissedCallAnalytics } from "../analytics/crmAnalyticsService.js";
 /**
  * Creates Missed Call Analytics tool bound to authenticated tenant context
  */
-export const createMissedCallAnalyticsTool = ({ tenantModels }) => {
+export const createMissedCallAnalyticsTool = ({ tenantModels, organization }) => {
   return tool(
     async ({
       salespersonNameOrId,
@@ -31,6 +31,7 @@ export const createMissedCallAnalyticsTool = ({ tenantModels }) => {
             followupStatus,
             leadStatus,
             unknownSalespersonOnly,
+            timezone: organization?.timezone || "Asia/Kolkata",
           },
           pagination: { page, limit },
         });
