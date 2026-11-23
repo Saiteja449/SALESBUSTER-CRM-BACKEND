@@ -17,13 +17,19 @@ export const analyzeVoiceAudio = async (req, res) => {
     const organization = orgId ? await Organization.findById(orgId).lean() : null;
     const apiKey = decryptApiKey(organization?.aiSettings?.geminiApiKey) || process.env.GEMINI_API_KEY;
     console.info(`[CONTACT_CAPTURE][${requestId}] Audio received`, { organizationId: orgId, sizeBytes: audioFile.size, mimeType: audioFile.mimetype });
-    const details = await extractProspectDetailsFromVoice(audioFile.path, audioFile.mimetype, apiKey, requestId);
+    const details = await extractProspectDetailsFromVoice(
+      audioFile.path,
+      audioFile.mimetype,
+      apiKey,
+      requestId,
+      { profileRegistration: req.body?.purpose === "profile_registration" },
+    );
     console.info(`[CONTACT_CAPTURE][${requestId}] Audio analyzed`, { durationMs: Date.now() - startedAt });
     const name = details.customerName === "Valued Customer" ? "" : details.customerName;
     return res.json({ success: true, data: {
       name, customerName: name, phone: details.spokenPhone || "",
       companyName: details.companyName || "", designation: details.designation || "",
-      summary: details.keyTopic || "",
+      summary: details.keyTopic || "", city: details.city || "",
     }});
   } catch (error) {
     console.error(`[CONTACT_CAPTURE][${requestId}] Audio analysis failed`, { durationMs: Date.now() - startedAt, error: error.message });

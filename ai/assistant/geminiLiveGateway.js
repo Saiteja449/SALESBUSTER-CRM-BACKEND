@@ -948,6 +948,14 @@ STRICT OPERATIONAL & VOICE DIALOGUE RULES:
 
       // Turn complete flag — reset speaking and quota reservation trackers for the next turn
       if (content.turnComplete) {
+        this.telemetry.logEvent("final_audio_response", {
+          turnId: this.currentTurnId || "unknown",
+          audioChunkCount: this.audioChunksOutCount,
+          audioBytes: this.audioBytesOutCount,
+          hasAudio: this.audioChunksOutCount > 0,
+          assistantTranscriptPresent: Boolean(this.currentTurnAssistantText?.trim()),
+          assistantTranscriptLength: this.currentTurnAssistantText?.trim().length || 0,
+        });
         console.log(
           `[LiveVoice TurnComplete] Turn ${this.currentTurnId || "unknown"} finished! User mic chunks in: ${this.audioChunksInCount}, Assistant audio chunks out: ${this.audioChunksOutCount} (${this.audioBytesOutCount} bytes). Emitted 'listening'.`
         );
