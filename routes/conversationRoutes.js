@@ -4,7 +4,7 @@ import {
   getConversationById,
   confirmContact,
 } from "../controllers/conversationController.js";
-import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
+import { protect } from "../middleware/authMiddleware.js";
 import validateRequest from "../middleware/validateRequest.js";
 import {
   queryConversationsSchema,
@@ -13,9 +13,8 @@ import {
 
 const router = express.Router();
 
-// All conversation routes require authentication and active CRM account
+// All conversation routes require authentication (available to both CRM and Guest accounts)
 router.use(protect);
-router.use(requireCrmAccount);
 
 router.get("/", validateRequest(queryConversationsSchema), getConversations);
 router.get("/:id", getConversationById);

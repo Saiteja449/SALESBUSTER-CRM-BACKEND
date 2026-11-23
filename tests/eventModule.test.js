@@ -237,4 +237,30 @@ describe("Event Module - Business Service Layer", () => {
     assert.equal(deletedEvent, true);
     assert.equal(deletedContactsEventId, "ev_to_delete");
   });
+
+  it("createEventService allows guest accounts to create and manage events", async () => {
+    let createdEvent = null;
+    const mockTenantModels = {
+      Event: {
+        create: async (data) => {
+          createdEvent = { ...data, _id: "ev_guest_99" };
+          return createdEvent;
+        },
+      },
+    };
+
+    const res = await createEventService({
+      tenantModels: mockTenantModels,
+      data: {
+        name: "Conference Networking Expo",
+        venue: "Hyderabad HITEX",
+      },
+      user: { id: "guest_user_1", name: "Guest User", accountType: "guest" },
+      organizationId: "org_guest_1",
+    });
+
+    assert.ok(res);
+    assert.equal(res.name, "Conference Networking Expo");
+    assert.equal(res.organizationId, "org_guest_1");
+  });
 });

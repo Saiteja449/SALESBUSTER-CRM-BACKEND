@@ -17,7 +17,7 @@ import {
   deleteEventContact,
   analyzeVoiceAudio,
 } from "../controllers/eventController.js";
-import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
+import { protect } from "../middleware/authMiddleware.js";
 import validateRequest from "../middleware/validateRequest.js";
 import {
   createEventSchema,
@@ -79,9 +79,8 @@ const handleEventFilesUpload = (req, res, next) => {
   });
 };
 
-// All event routes are protected by user authentication and require active CRM account
+// All event routes are protected by user authentication (available to both CRM and Guest accounts)
 router.use(protect);
-router.use(requireCrmAccount);
 
 // 1. AI Real-Time Transcript & Card Vision
 router.post("/summarize-text", validateRequest(summarizeTranscriptSchema), summarizeTranscript);
