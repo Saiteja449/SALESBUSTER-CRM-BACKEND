@@ -100,6 +100,15 @@ export const cashfreeOrderSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    isFulfilled: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    receiptEmailSent: {
+      type: Boolean,
+      default: false,
+    },
     rawResponse: {
       type: mongoose.Schema.Types.Mixed,
       default: {},

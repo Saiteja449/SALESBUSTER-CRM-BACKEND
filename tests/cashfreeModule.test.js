@@ -114,3 +114,40 @@ describe("Cashfree Module - Signature Verification", () => {
     assert.equal(isTampered, false);
   });
 });
+
+describe("Payment Receipt Email Helper", () => {
+  it("sendPaymentReceiptEmail formats receipt and dispatches successfully", async () => {
+    const { sendPaymentReceiptEmail } = await import("../helpers/emailHelper.js");
+    const mockOrder = {
+      orderId: "sb_ord_test_123",
+      orderAmount: 17985,
+      orderCurrency: "INR",
+      planId: "quarterly",
+      customerDetails: {
+        customerName: "Test Customer",
+        customerEmail: "testcustomer@example.com",
+        customerPhone: "9876543210",
+      },
+      paymentDetails: {
+        cfPaymentId: "cf_pay_test_999",
+        paymentMethod: "upi",
+        paymentTime: new Date(),
+      },
+    };
+    const mockOrg = {
+      name: "Test Customer Workspace",
+      email: "testcustomer@example.com",
+      subscriptionEndDate: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+    };
+
+    const result = await sendPaymentReceiptEmail({
+      order: mockOrder,
+      organization: mockOrg,
+      temporaryPassword: "TestPassword#123",
+      isNewAccount: true,
+      loginUrl: "https://salesbuster.ai/beta",
+    });
+
+    assert.equal(result, true);
+  });
+});

@@ -467,3 +467,195 @@ export const sendPasswordResetEmail = async ({
     htmlMessage,
   });
 };
+
+/**
+ * Sends a formal payment receipt & subscription confirmation email
+ */
+export const sendPaymentReceiptEmail = async ({
+  order,
+  organization,
+  temporaryPassword,
+  isNewAccount = false,
+  loginUrl,
+}) => {
+  const customerEmail =
+    order.customerDetails?.customerEmail || organization?.email;
+  const customerName =
+    order.customerDetails?.customerName || organization?.name || "Valued Customer";
+  const orgName = organization?.name || "SalesBuster Workspace";
+  const appLoginUrl =
+    loginUrl ||
+    process.env.APP_URL ||
+    process.env.FRONTEND_URL ||
+    "https://salesbuster.ai/beta";
+
+  const orderId = order.orderId || "N/A";
+  const paymentId =
+    order.paymentDetails?.cfPaymentId ||
+    order.paymentDetails?.bankReference ||
+    order.cfOrderId ||
+    "Online (Cashfree)";
+  const paymentMethod = (
+    order.paymentDetails?.paymentMethod || "Online (UPI / Cards / NetBanking)"
+  ).toUpperCase();
+
+  const formattedAmount = Number(order.orderAmount || 0).toLocaleString("en-IN", {
+    style: "currency",
+    currency: order.orderCurrency || "INR",
+    maximumFractionDigits: 0,
+  });
+
+  const paymentDate = order.paymentDetails?.paymentTime
+    ? new Date(order.paymentDetails.paymentTime).toLocaleString("en-IN", {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: "Asia/Kolkata",
+      }) + " IST"
+    : new Date().toLocaleString("en-IN", {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: "Asia/Kolkata",
+      }) + " IST";
+
+  const validityDate = organization?.subscriptionEndDate
+    ? new Date(organization.subscriptionEndDate).toLocaleDateString("en-IN", {
+        dateStyle: "long",
+        timeZone: "Asia/Kolkata",
+      })
+    : "Active Subscription";
+
+  const planTitle =
+    order.notes ||
+    (order.planId === "yearly"
+      ? "Yearly Plan (5 Sales Rep Seats, Annual Subscription)"
+      : order.planId === "quarterly"
+      ? "Quarterly Plan (5 Sales Rep Seats, 3-Month Subscription)"
+      : order.purpose === "addon"
+      ? `Addon: ${order.addonType || "Feature"}`
+      : `${order.planId || "Standard"} Plan`);
+
+  const htmlMessage = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Receipt - SalesBuster CRM</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b;">
+  <div style="max-width: 620px; margin: 30px auto; background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
+    
+    <!-- Top Gradient Header -->
+    <div style="background: linear-gradient(135deg, #0ea5e9 0%, #3b82f6 50%, #6366f1 100%); padding: 36px 30px; text-align: center;">
+      <h1 style="margin: 0 0 8px 0; color: #ffffff; font-size: 26px; font-weight: 800; letter-spacing: -0.5px;">SalesBuster CRM</h1>
+      <p style="margin: 0; color: #e0f2fe; font-size: 15px; font-weight: 500;">Payment Receipt & Subscription Confirmation</p>
+    </div>
+
+    <!-- Main Content -->
+    <div style="padding: 32px 30px;">
+      <!-- Success Badge -->
+      <div style="text-align: center; margin-bottom: 24px;">
+        <span style="display: inline-block; background-color: #dcfce7; color: #15803d; font-size: 13px; font-weight: 700; padding: 6px 16px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px;">
+          ✓ Payment Received & Verified
+        </span>
+        <h2 style="margin: 12px 0 6px 0; color: #0f172a; font-size: 22px; font-weight: 700;">Thank You, ${customerName}!</h2>
+        <p style="margin: 0; color: #64748b; font-size: 14px;">Your payment has been successfully processed via Cashfree Payment Gateway.</p>
+      </div>
+
+      <!-- Receipt Summary Box -->
+      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-bottom: 24px;">
+        <div style="padding-bottom: 12px; margin-bottom: 14px; border-bottom: 1px solid #e2e8f0;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+              <td style="color: #64748b; font-size: 13px; font-weight: 600; text-transform: uppercase;">Amount Paid:</td>
+              <td style="color: #0284c7; font-size: 24px; font-weight: 800; text-align: right;">${formattedAmount}</td>
+            </tr>
+          </table>
+        </div>
+        
+        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Order ID:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 600; text-align: right; font-family: monospace;">${orderId}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Plan / Service:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 700; text-align: right;">${planTitle}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Payment Reference:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 600; text-align: right; font-family: monospace;">${paymentId}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Payment Method:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 600; text-align: right;">${paymentMethod}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Transaction Date:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 600; text-align: right;">${paymentDate}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Subscription Valid Until:</td>
+            <td style="padding: 6px 0; color: #16a34a; font-weight: 700; text-align: right;">${validityDate}</td>
+          </tr>
+        </table>
+      </div>
+
+      ${
+        isNewAccount && temporaryPassword
+          ? `
+      <!-- Workspace Login Credentials Box -->
+      <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px; padding: 20px; margin-bottom: 24px;">
+        <h3 style="margin: 0 0 8px 0; color: #15803d; font-size: 14px; font-weight: 700;">🔐 Your Administrator Access Credentials</h3>
+        <p style="margin: 0 0 14px 0; color: #166534; font-size: 13px;">Your workspace <strong>${orgName}</strong> is ready. Log in to get started:</p>
+        
+        <div style="background: #ffffff; border: 1px dashed #86efac; border-radius: 8px; padding: 14px 18px; margin-bottom: 12px;">
+          <div style="margin-bottom: 8px;">
+            <span style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">Login Email:</span>
+            <div style="font-size: 15px; font-weight: 700; color: #0f172a; font-family: monospace;">${customerEmail}</div>
+          </div>
+          <div>
+            <span style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">Temporary Password:</span>
+            <div style="font-size: 16px; font-weight: 800; color: #0284c7; font-family: monospace; letter-spacing: 0.5px;">${temporaryPassword}</div>
+          </div>
+        </div>
+        <p style="margin: 0; color: #64748b; font-size: 12px;">* For security reasons, please change your password after logging in.</p>
+      </div>
+      `
+          : ""
+      }
+
+      <!-- Action Button -->
+      <div style="text-align: center; margin-bottom: 28px;">
+        <a href="${appLoginUrl}" style="display: inline-block; background: linear-gradient(135deg, #0284c7 0%, #2563eb 100%); color: #ffffff; font-size: 15px; font-weight: 700; text-decoration: none; padding: 14px 32px; border-radius: 10px; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);">
+          ${isNewAccount ? "Log In to Your SalesBuster Workspace →" : "Access Your CRM Dashboard →"}
+        </a>
+      </div>
+
+      <p style="margin: 0 0 12px 0; color: #64748b; font-size: 13px; line-height: 1.5;">
+        Have questions about your subscription or need support? Contact our customer success team anytime at <a href="mailto:info@salesbuster.ai" style="color: #0284c7; font-weight: 600;">info@salesbuster.ai</a>.
+      </p>
+    </div>
+
+    <!-- Footer -->
+    <div style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 20px 30px; text-align: center;">
+      <p style="margin: 0 0 4px 0; color: #94a3b8; font-size: 12px;">© ${new Date().getFullYear()} SalesBuster AI CRM. All rights reserved.</p>
+      <p style="margin: 0; color: #cbd5e1; font-size: 11px;">Official Tax Invoice & Receipt | Cashfree Merchant Partner</p>
+    </div>
+
+  </div>
+</body>
+</html>
+  `;
+
+  return await sendEmail({
+    email: customerEmail,
+    subject: `Payment Receipt: ${planTitle} - Order #${orderId}`,
+    message: `Thank you for your payment!\n\nOrder ID: ${orderId}\nPlan: ${planTitle}\nAmount Paid: ${formattedAmount}\nPayment Method: ${paymentMethod}\nPayment Reference: ${paymentId}\nValid Until: ${validityDate}\n\n${
+      isNewAccount && temporaryPassword
+        ? `Your Login Credentials:\nLogin URL: ${appLoginUrl}\nEmail: ${customerEmail}\nPassword: ${temporaryPassword}\n\nPlease change your password upon logging in.\n\n`
+        : `Login URL: ${appLoginUrl}\n\n`
+    }SalesBuster CRM Support: info@salesbuster.ai`,
+    htmlMessage,
+  });
+};

@@ -1,6 +1,14 @@
 import crypto from "crypto";
 import mongoose from "mongoose";
-import { getTenantModels, getMasterModels } from "../services/tenantManager.js";
+import bcrypt from "bcryptjs";
+import {
+  getTenantModels,
+  getMasterModels,
+  generateTenantDbName,
+  generateSecurePassword,
+} from "../services/tenantManager.js";
+import { getDefaultAISettings } from "../models/Organization.js";
+import { sendPaymentReceiptEmail } from "../helpers/emailHelper.js";
 import {
   createCashfreePgOrder,
   fetchCashfreePgOrder,
@@ -97,37 +105,212 @@ export const resolveAuthoritativePrice = ({ purpose, planId, addonType, clientAm
 };
 
 /**
- * Fulfill organization subscription or addon upon successful payment
+ * Fulfill organization subscription or addon upon successful payment and dispatch confirmation email
  */
-const fulfillOrderBenefits = async (order) => {
+export const fulfillOrderBenefits = async (order) => {
   try {
-    const { Organization } = getMasterModels();
-    const org = await Organization.findById(order.organizationId);
-    if (!org) {
-      console.warn(`[CashfreeFulfillment] Organization not found for ID: ${order.organizationId}`);
+    if (!order) return;
+
+    // Idempotency: skip if already fulfilled and email sent
+    if (order.isFulfilled && order.receiptEmailSent) {
+      console.log(`[CashfreeFulfillment] Order ${order.orderId} already fulfilled and receipt email sent. Skipping.`);
       return;
     }
 
-    if (order.purpose === "addon") {
-      if (order.addonType === "whatsapp_campaigns") {
-        org.hasWhatsAppCampaignsAddon = true;
-      } else if (order.addonType === "instagram_automation") {
-        org.hasInstagramAddon = true;
+    const { Organization, AuthUser } = getMasterModels();
+    let org = null;
+    let temporaryPassword = null;
+    let isNewAccount = false;
+
+    // 1. Resolve existing organization by organizationId or customer email
+    if (order.organizationId) {
+      org = await Organization.findById(order.organizationId);
+    }
+    if (!org && order.customerDetails?.customerEmail) {
+      org = await Organization.findOne({
+        email: order.customerDetails.customerEmail.toLowerCase().trim(),
+      });
+    }
+
+    // 2. If organization does not exist in master DB (website checkout for new user) -> Auto-provision
+    if (!org) {
+      isNewAccount = true;
+      const custName = (order.customerDetails?.customerName || "").trim() || "SalesBuster Customer";
+      const cleanEmail = (order.customerDetails?.customerEmail || "").toLowerCase().trim();
+      const cleanPhone = (order.customerDetails?.customerPhone || "").trim();
+
+      const normalizedPlan =
+        order.planId === "yearly" || order.planId === "annual" || order.planId === "annually"
+          ? "annual"
+          : order.planId === "quarterly"
+          ? "quarterly"
+          : "monthly";
+
+      const orgDisplayName =
+        custName.toLowerCase().includes("workspace") ||
+        custName.toLowerCase().includes("ltd") ||
+        custName.toLowerCase().includes("pvt")
+          ? custName
+          : `${custName}'s Workspace`;
+
+      // Determine seats and duration based on plan
+      let seatCount = 5;
+      let durationMonths = 1;
+      if (order.planId === "yearly" || order.planId === "annual") {
+        durationMonths = 12;
+        seatCount = 5;
+      } else if (order.planId === "quarterly") {
+        durationMonths = 3;
+        seatCount = 5;
+      } else if (order.planId === "enterprise") {
+        durationMonths = 1;
+        seatCount = 10;
+      } else if (order.planId === "growth") {
+        durationMonths = 1;
+        seatCount = 5;
+      } else {
+        durationMonths = 1;
+        seatCount = 1;
       }
-    } else if (order.purpose === "subscription") {
-      if (order.planId) {
-        org.plan = order.planId;
-        org.status = "active";
-        // Extend subscription by 30 days
-        const currentEnd = org.subscriptionEndDate && new Date(org.subscriptionEndDate) > new Date()
-          ? new Date(org.subscriptionEndDate)
-          : new Date();
-        org.subscriptionEndDate = new Date(currentEnd.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+      const startDate = new Date();
+      const endDate = new Date(startDate);
+      endDate.setMonth(endDate.getMonth() + durationMonths);
+
+      // Generate unique tenant database name
+      let tenantDbName = generateTenantDbName(orgDisplayName);
+      let attempts = 0;
+      while (await Organization.findOne({ tenantDbName })) {
+        tenantDbName = generateTenantDbName(orgDisplayName);
+        attempts++;
+        if (attempts > 5) break;
+      }
+
+      temporaryPassword = generateSecurePassword(custName);
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(temporaryPassword, salt);
+
+      // Create Organization in Master DB
+      org = await Organization.create({
+        name: orgDisplayName,
+        email: cleanEmail,
+        mobile: cleanPhone,
+        seats: seatCount,
+        amountPaid: order.orderAmount,
+        pricingPerSeat: Math.round(order.orderAmount / seatCount),
+        paymentMethod: order.paymentDetails?.paymentMethod || "Cashfree PG",
+        subscriptionPlan: normalizedPlan,
+        subscriptionStartDate: startDate,
+        subscriptionEndDate: endDate,
+        status: "active",
+        tenantDbName,
+        notes: order.notes || "Subscribed via Cashfree Payment Gateway",
+        aiSettings: getDefaultAISettings(orgDisplayName),
+      });
+
+      // Register Owner in Master AuthUser registry
+      const masterAuthUser = await AuthUser.create({
+        email: cleanEmail,
+        password: hashedPassword,
+        name: `${custName} Admin`,
+        role: "sales manager",
+        organizationId: org._id,
+        tenantDbName,
+        isOrgOwner: true,
+        status: "active",
+      });
+
+      // Initialize tenant database and create Owner inside tenant DB
+      const tenantModels = getTenantModels(tenantDbName);
+      await tenantModels.User.create({
+        _id: masterAuthUser._id,
+        name: `${custName} Admin`,
+        email: cleanEmail,
+        password: hashedPassword,
+        role: "sales manager",
+        organizationId: org._id,
+        isOrgOwner: true,
+        phone: cleanPhone,
+        status: "active",
+      });
+
+      org.ownerId = masterAuthUser._id;
+      await org.save();
+
+      order.organizationId = org._id;
+      console.log(`[CashfreeFulfillment] Auto-provisioned new tenant organization: ${org._id} (${org.name})`);
+    } else {
+      // Existing Organization: fulfill addon or subscription
+      if (order.purpose === "addon") {
+        org.addons = org.addons || {};
+        if (order.addonType === "whatsapp_campaigns") {
+          org.hasWhatsAppCampaignsAddon = true;
+          org.addons.whatsappCampaigns = true;
+        } else if (order.addonType === "instagram_automation") {
+          org.hasInstagramAddon = true;
+        }
+      } else if (order.purpose === "subscription") {
+        if (order.planId) {
+          const normalizedPlan =
+            order.planId === "yearly" || order.planId === "annual" || order.planId === "annually"
+              ? "annual"
+              : order.planId === "quarterly"
+              ? "quarterly"
+              : "monthly";
+          org.subscriptionPlan = normalizedPlan;
+          org.plan = order.planId;
+          org.status = "active";
+
+          let extensionMonths = 1;
+          if (order.planId === "yearly" || order.planId === "annual") extensionMonths = 12;
+          else if (order.planId === "quarterly") extensionMonths = 3;
+
+          const currentEnd =
+            org.subscriptionEndDate && new Date(org.subscriptionEndDate) > new Date()
+              ? new Date(org.subscriptionEndDate)
+              : new Date();
+
+          const newEnd = new Date(currentEnd);
+          newEnd.setMonth(newEnd.getMonth() + extensionMonths);
+          org.subscriptionEndDate = newEnd;
+          org.amountPaid = (org.amountPaid || 0) + (order.orderAmount || 0);
+        }
+      }
+
+      await org.save();
+      console.log(`[CashfreeFulfillment] Benefits successfully applied for org: ${org._id}`);
+    }
+
+    // 3. Dispatch Payment Receipt & Confirmation Email
+    const targetEmail = order.customerDetails?.customerEmail || org.email;
+    if (targetEmail) {
+      try {
+        const appLoginUrl =
+          process.env.APP_URL ||
+          process.env.FRONTEND_URL ||
+          "https://salesbuster.ai/beta";
+
+        const emailResult = await sendPaymentReceiptEmail({
+          order,
+          organization: org,
+          temporaryPassword,
+          isNewAccount,
+          loginUrl: appLoginUrl,
+        });
+
+        if (emailResult) {
+          order.receiptEmailSent = true;
+          console.log(`[CashfreeFulfillment] Payment receipt email sent to ${targetEmail}`);
+        } else {
+          console.warn(`[CashfreeFulfillment] Payment receipt email could not be delivered to ${targetEmail}`);
+        }
+      } catch (emailErr) {
+        console.error("[CashfreeFulfillment] Error dispatching payment receipt email:", emailErr.message);
       }
     }
 
-    await org.save();
-    console.log(`[CashfreeFulfillment] Benefits successfully applied for org: ${org._id}`);
+    order.isFulfilled = true;
+    await order.save();
   } catch (err) {
     console.error("[CashfreeFulfillment] Error fulfilling order benefits:", err.message);
   }
@@ -660,20 +843,11 @@ export const devSimulateSuccessHandler = async (req, res) => {
     };
     await order.save();
 
-    if (order.organizationId) {
-      const org = await Organization.findById(order.organizationId);
-      if (org) {
-        org.status = "active";
-        org.plan = order.planId;
-        const durationDays = order.planId === "yearly" ? 365 : 90;
-        org.subscriptionEndDate = new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000);
-        await org.save();
-      }
-    }
+    await fulfillOrderBenefits(order);
 
     return res.json({
       success: true,
-      message: "Order successfully marked as PAID (dev simulation).",
+      message: "Order successfully marked as PAID and benefits fulfilled (dev simulation).",
       orderStatus: "PAID",
       order,
     });
