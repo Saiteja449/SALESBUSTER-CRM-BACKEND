@@ -105,6 +105,13 @@ export const login = async (req, res) => {
           email: org.email,
           mobile: org.mobile,
           website: org.website,
+          // Sales users do not fetch the full organization profile after login.
+          // Include only the service catalog they need for lead entry/editing.
+          aiSettings: {
+            services: Array.isArray(org.aiSettings?.services)
+              ? org.aiSettings.services
+              : [],
+          },
           accountType: org.accountType || "crm",
           seats: org.seats,
           usedSeats,
