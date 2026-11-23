@@ -17,6 +17,8 @@ import {
   handleInboundCall,
 } from "../controllers/leadController.js";
 import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
+import { validateRequest } from "../middleware/validateRequest.js";
+import { createLeadSchema } from "../schemas/leadSchemas.js";
 
 const router = express.Router();
 
@@ -101,7 +103,13 @@ router.post("/import-excel", protect, requireCrmAccount, handleExcelUpload, impo
 router
   .route("/")
   .get(protect, requireCrmAccount, getLeads)
-  .post(protect, requireCrmAccount, handleRecordingUpload, createLead);
+  .post(
+    protect,
+    requireCrmAccount,
+    handleRecordingUpload,
+    validateRequest(createLeadSchema),
+    createLead
+  );
 
 // 3. Paginated leads (Protected)
 router.route("/paginated").get(protect, requireCrmAccount, getPaginatedLeads);

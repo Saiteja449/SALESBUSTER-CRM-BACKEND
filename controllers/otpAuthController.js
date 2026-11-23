@@ -119,11 +119,16 @@ export const sendOtp = async (req, res) => {
       });
     }
 
-    const defaultOtp = DEFAULT_OTP_CONFIGS[cleanPhone];
-    const isDefaultPhone = Boolean(defaultOtp);
+    const isDevelopment =
+      process.env.NODE_ENV === "development" ||
+      process.env.NODE_ENV === "dev" ||
+      (!process.env.NODE_ENV && process.env.NODE_ENV !== "production" && process.env.NODE_ENV !== "test");
 
-    // Rate-limiting check: Prevent spamming within 30 seconds (bypassed in test or for default test accounts)
-    if (process.env.NODE_ENV !== "test" && !isDefaultPhone) {
+    const defaultTestPhoneOtp = DEFAULT_OTP_CONFIGS[cleanPhone];
+    const isDefaultAccount = Boolean(defaultTestPhoneOtp);
+
+    // Rate-limiting check: Prevent spamming within 30 seconds (bypassed in dev / test or for default test accounts)
+    if (process.env.NODE_ENV === "production" && !isDefaultAccount) {
       const existingRecentOtp = await Otp.findOne({
         phone: cleanPhone,
         createdAt: { $gt: new Date(Date.now() - 30 * 1000) },
@@ -137,8 +142,12 @@ export const sendOtp = async (req, res) => {
       }
     }
 
-    // Generate numeric OTP (use default OTP for test accounts, otherwise random 4-digit 1000 to 9999)
-    const otp = defaultOtp || Math.floor(1000 + Math.random() * 9000).toString();
+    // Generate numeric OTP:
+    // In development environment: default OTP 1234
+    // Else (production / test): default account OTP if configured, otherwise random 4-digit (1000 to 9999)
+    const otp = isDevelopment
+      ? "1234"
+      : defaultTestPhoneOtp || Math.floor(1000 + Math.random() * 9000).toString();
 
     // Hash OTP with bcrypt
     const salt = await bcrypt.genSalt(10);
@@ -154,17 +163,15 @@ export const sendOtp = async (req, res) => {
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
 
-    // Console logging in dev / test mode for effortless testing
-    if (isDefaultPhone) {
+    // Logging & SMS Dispatch
+    if (isDevelopment) {
+      console.log(`[OTP] Development mode active: default OTP 1234 set for ${cleanPhone}. Real SMS dispatch suppressed.`);
+    } else if (isDefaultAccount) {
       console.log(`[OTP] Default OTP set for ${cleanPhone}: ${otp}. SMS dispatch suppressed.`);
     } else {
       console.log(`[OTP] Generated 4-digit OTP for ${cleanPhone}: ${otp}`);
-    }
-
-    // Dispatch via Fast2SMS DLT route (skip SMS for default test accounts)
-    if (!isDefaultPhone) {
+      // Dispatch real OTP via Fast2SMS DLT route in production
       const smsResult = await sendDltOtp(cleanPhone, otp);
-
       if (!smsResult.success && !smsResult.simulated) {
         console.warn(`[OTP] Fast2SMS dispatch warning:`, smsResult.message);
       }
@@ -172,10 +179,12 @@ export const sendOtp = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: isDefaultPhone
-        ? "Verification code sent successfully."
-        : "4-digit verification code sent successfully.",
-      ...(process.env.NODE_ENV !== "production" || isDefaultPhone ? { debugOtp: otp } : {}),
+      message: isDevelopment
+        ? "Development environment: default verification code 1234."
+        : isDefaultAccount
+          ? "Verification code sent successfully."
+          : "4-digit verification code sent successfully.",
+      ...(process.env.NODE_ENV !== "production" || isDefaultAccount ? { debugOtp: otp } : {}),
     });
   } catch (error) {
     console.error("Error in sendOtp:", error);
@@ -211,20 +220,23 @@ export const verifyOtp = async (req, res) => {
       });
     }
 
-    const defaultOtp = DEFAULT_OTP_CONFIGS[cleanPhone];
-    const isDefaultPhone = Boolean(defaultOtp);
+    const isDevelopment =
+      process.env.NODE_ENV === "development" ||
+      process.env.NODE_ENV === "dev" ||
+      (!process.env.NODE_ENV && process.env.NODE_ENV !== "production" && process.env.NODE_ENV !== "test");
+
+    const defaultTestPhoneOtp = DEFAULT_OTP_CONFIGS[cleanPhone];
+    const isDefaultAccount = Boolean(defaultTestPhoneOtp);
 
     // Validate OTP length (standard: 4 digits; default test account: defaultOtp length or 4 digits)
     const isValidLength =
       cleanOtp.length === 4 ||
-      (isDefaultPhone && cleanOtp.length === defaultOtp.length);
+      (isDefaultAccount && cleanOtp.length === defaultTestPhoneOtp.length);
 
     if (!isValidLength) {
       return res.status(400).json({
         success: false,
-        message: isDefaultPhone
-          ? `OTP must be a 4-digit or ${defaultOtp.length}-digit code.`
-          : "OTP must be a 4-digit code.",
+        message: "OTP must be a 4-digit code.",
       });
     }
 
@@ -239,10 +251,14 @@ export const verifyOtp = async (req, res) => {
       ? await otpQuery.sort({ createdAt: -1 })
       : await otpQuery;
 
-    // For default test phone, if no active OTP record exists, auto-provision one
-    if (!otpRecord && isDefaultPhone && (cleanOtp === defaultOtp || cleanOtp === defaultOtp.slice(0, 4))) {
+    // For development (cleanOtp === "1234") or default test phone, auto-provision OTP record if missing
+    const isDevDefaultOtp = isDevelopment && cleanOtp === "1234";
+    const isTestAccountDefault = isDefaultAccount && (cleanOtp === defaultTestPhoneOtp || cleanOtp === defaultTestPhoneOtp.slice(0, 4));
+
+    if (!otpRecord && (isDevDefaultOtp || isTestAccountDefault)) {
+      const targetOtp = isDevDefaultOtp ? "1234" : defaultTestPhoneOtp;
       const salt = await bcrypt.genSalt(10);
-      const otpHash = await bcrypt.hash(defaultOtp, salt);
+      const otpHash = await bcrypt.hash(targetOtp, salt);
       otpRecord = await Otp.create({
         phone: cleanPhone,
         otpHash,
@@ -266,7 +282,7 @@ export const verifyOtp = async (req, res) => {
     }
 
     let isMatch = false;
-    if (isDefaultPhone && (cleanOtp === defaultOtp || cleanOtp === defaultOtp.slice(0, 4))) {
+    if (isDevDefaultOtp || isTestAccountDefault) {
       isMatch = true;
     } else {
       isMatch = await bcrypt.compare(cleanOtp, otpRecord.otpHash);

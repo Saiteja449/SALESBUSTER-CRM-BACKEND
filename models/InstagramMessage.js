@@ -74,6 +74,10 @@ export const instagramMessageSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Compound indexes for rapid thread lookups and trigger source querying
+instagramMessageSchema.index({ contactId: 1, timestamp: -1 });
+instagramMessageSchema.index({ organizationId: 1, triggerSource: 1, timestamp: -1 });
+
 const InstagramMessage =
   mongoose.models.InstagramMessage ||
   mongoose.model("InstagramMessage", instagramMessageSchema);

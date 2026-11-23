@@ -49,6 +49,7 @@ import CashfreeWebhookEvent, { cashfreeWebhookEventSchema } from "../models/Cash
 
 let _masterModelsOverride = null;
 let _tenantModelsOverride = null;
+const _tenantModelsCache = new Map();
 
 export const setMasterModelsMock = (mockFn) => {
   _masterModelsOverride = mockFn;
@@ -56,6 +57,7 @@ export const setMasterModelsMock = (mockFn) => {
 
 export const setTenantModelsMock = (mockFn) => {
   _tenantModelsOverride = mockFn;
+  _tenantModelsCache.clear();
 };
 
 /**
@@ -135,9 +137,13 @@ export const getTenantModels = (tenantDbName) => {
   if (typeof _tenantModelsOverride === "function") {
     return _tenantModelsOverride(tenantDbName);
   }
-  const db = getTenantConnection(tenantDbName);
+  const effectiveDbName = tenantDbName || process.env.MASTER_DB_NAME || "salesbuster_master";
+  if (_tenantModelsCache.has(effectiveDbName)) {
+    return _tenantModelsCache.get(effectiveDbName);
+  }
+  const db = getTenantConnection(effectiveDbName);
 
-  return {
+  const models = {
     User: db.models.User || db.model("User", User.schema),
     Lead: db.models.Lead || db.model("Lead", Lead.schema),
     Followup: db.models.Followup || db.model("Followup", Followup.schema),
@@ -235,6 +241,8 @@ export const getTenantModels = (tenantDbName) => {
       db.model("CashfreeWebhookEvent", cashfreeWebhookEventSchema),
     db,
   };
+  _tenantModelsCache.set(effectiveDbName, models);
+  return models;
 };
 
 /**

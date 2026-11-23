@@ -1214,3 +1214,15 @@ export const startInstagramCommentWatcher = (io = null) => {
   watcherInterval = setInterval(runWatcherPass, 45000);
   console.log("[InstagramCommentWatcher] Background watcher started (interval: 45000ms).");
 };
+
+/**
+ * Stops periodic background watcher for Instagram comments.
+ */
+export const stopInstagramCommentWatcher = () => {
+  if (watcherInterval) {
+    clearInterval(watcherInterval);
+    watcherInterval = null;
+    isWatcherRunning = false;
+    console.log("[InstagramCommentWatcher] Background watcher stopped.");
+  }
+};

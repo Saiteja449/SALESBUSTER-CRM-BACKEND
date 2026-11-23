@@ -7,6 +7,12 @@ import {
   handleAIFollowup,
 } from "../controllers/followupController.js";
 import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
+import validateRequest from "../middleware/validateRequest.js";
+import {
+  createFollowupSchema,
+  updateFollowupSchema,
+  queryFollowupsSchema,
+} from "../schemas/followupSchemas.js";
 
 const router = express.Router();
 
@@ -18,7 +24,13 @@ router.use(requireCrmAccount);
 router.get("/ai", getAIFollowups);
 router.put("/ai/:id/handle", handleAIFollowup);
 
-router.route("/").get(getFollowups).post(createFollowup);
-router.route("/:id").put(updateFollowup);
+router
+  .route("/")
+  .get(validateRequest(queryFollowupsSchema), getFollowups)
+  .post(validateRequest(createFollowupSchema), createFollowup);
+
+router
+  .route("/:id")
+  .put(validateRequest(updateFollowupSchema), updateFollowup);
 
 export default router;

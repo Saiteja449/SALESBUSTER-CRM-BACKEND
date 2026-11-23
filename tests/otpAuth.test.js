@@ -492,4 +492,36 @@ describe("OTP Authentication & Speech Profile Completion Tests", () => {
 
     assert.equal(getVStatus(), 400);
   });
+
+  it("should send default OTP 1234 in development environment for any phone", async () => {
+    process.env.NODE_ENV = "development";
+    const testPhone = "9123456789";
+
+    const { req: sReq, res: sRes, getStatus: getSStatus, getJson: getSJson } = mockReqRes({
+      body: { phone: testPhone },
+    });
+    await sendOtp(sReq, sRes);
+
+    assert.equal(getSStatus(), 200);
+    const sJson = getSJson();
+    assert.equal(sJson.success, true);
+    assert.equal(sJson.debugOtp, "1234", "Development environment must always send default OTP 1234");
+
+    // Correct verification with 1234
+    const { req: vReq, res: vRes, getStatus: getVStatus, getJson: getVJson } = mockReqRes({
+      body: { phone: testPhone, otp: "1234" },
+    });
+    await verifyOtp(vReq, vRes);
+
+    assert.equal(getVStatus(), 200);
+    assert.equal(getVJson().success, true);
+    assert.ok(getVJson().token);
+
+    // Incorrect verification with 8888 should reject
+    const { req: badReq, res: badRes, getStatus: getBadStatus } = mockReqRes({
+      body: { phone: testPhone, otp: "8888" },
+    });
+    await verifyOtp(badReq, badRes);
+    assert.equal(getBadStatus(), 400);
+  });
 });

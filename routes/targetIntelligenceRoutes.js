@@ -1,6 +1,17 @@
 import express from "express";
 import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
 import { requireAddon } from "../middleware/addonMiddleware.js";
+import validateRequest from "../middleware/validateRequest.js";
+import {
+  interpretPromptSchema,
+  searchProspectsSchema,
+  resolveProspectSchema,
+  unresolveProspectSchema,
+  bulkResolveSchema,
+  exportProspectsSchema,
+  createTargetListSchema,
+  updateTargetListSchema,
+} from "../schemas/targetIntelligenceSchemas.js";
 import {
   getQuota,
   interpretPrompt,
@@ -55,8 +66,8 @@ router.get("/quota", getQuota);
 router.get("/providers/status", getProviderStatus);
 
 // Search & Prompt Interpretation
-router.post("/interpret-prompt", interpretPrompt);
-router.post("/search", searchProspects);
+router.post("/interpret-prompt", validateRequest(interpretPromptSchema), interpretPrompt);
+router.post("/search", validateRequest(searchProspectsSchema), searchProspects);
 router.get("/searches", getSearches);
 
 // Companies & Enrichment
@@ -65,18 +76,18 @@ router.get("/companies/:id", getCompanyById);
 router.post("/companies/:id/enrich", enrichCompany);
 
 // Resolution Tracking
-router.post("/resolve", resolveProspect);
-router.post("/unresolve", unresolveProspect);
-router.post("/bulk-resolve", bulkResolveProspects);
+router.post("/resolve", validateRequest(resolveProspectSchema), resolveProspect);
+router.post("/unresolve", validateRequest(unresolveProspectSchema), unresolveProspect);
+router.post("/bulk-resolve", validateRequest(bulkResolveSchema), bulkResolveProspects);
 router.get("/resolved-list", getResolvedProspects);
 
 // Export (Excel / CSV)
-router.post("/export", exportProspects);
+router.post("/export", validateRequest(exportProspectsSchema), exportProspects);
 
 // Target Lists
 router.get("/lists", getTargetLists);
-router.post("/lists", createTargetList);
-router.patch("/lists/:id", updateTargetList);
+router.post("/lists", validateRequest(createTargetListSchema), createTargetList);
+router.patch("/lists/:id", validateRequest(updateTargetListSchema), updateTargetList);
 router.delete("/lists/:id", deleteTargetList);
 
 export default router;

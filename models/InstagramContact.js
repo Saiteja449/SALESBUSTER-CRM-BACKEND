@@ -69,6 +69,8 @@ export const instagramContactSchema = new mongoose.Schema(
 
 // Unique compound index on accountId + igsid
 instagramContactSchema.index({ accountId: 1, igsid: 1 }, { unique: true });
+instagramContactSchema.index({ organizationId: 1, lastInteractedAt: -1 });
+instagramContactSchema.index({ organizationId: 1, username: 1 });
 
 const InstagramContact =
   mongoose.models.InstagramContact ||

@@ -350,6 +350,9 @@ leadSchema.index({ createdAt: -1, _id: -1 });
 leadSchema.index({ status: 1 });
 leadSchema.index({ service: 1 });
 leadSchema.index({ source: 1 });
+leadSchema.index({ phoneNormalized: 1, source: 1 });
+leadSchema.index({ assignedTo: 1, status: 1 });
+leadSchema.index({ status: 1, createdAt: -1 });
 
 const normalizeLeadPhone = function () {
   if (this.phone) {

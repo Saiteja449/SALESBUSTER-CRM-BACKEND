@@ -234,6 +234,9 @@ const conversationSchema = new mongoose.Schema(
 // Indexes
 conversationSchema.index({ lastMessageTime: -1, _id: -1 });
 conversationSchema.index({ unreadCount: 1, lastMessageTime: -1, _id: -1 });
+conversationSchema.index({ channel: 1, lastMessageTime: -1 });
+conversationSchema.index({ instagramContactId: 1, channel: 1 });
+conversationSchema.index({ leadId: 1, channel: 1 });
 conversationSchema.index({ organizationId: 1, createdAt: -1 });
 conversationSchema.index({ userId: 1, createdAt: -1 });
 conversationSchema.index({ eventId: 1, createdAt: -1 });

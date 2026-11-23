@@ -17,7 +17,16 @@ import {
   deleteEventContact,
   analyzeVoiceAudio,
 } from "../controllers/eventController.js";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
+import validateRequest from "../middleware/validateRequest.js";
+import {
+  createEventSchema,
+  updateEventSchema,
+  createEventContactSchema,
+  updateEventContactStatusSchema,
+  summarizeTranscriptSchema,
+  scanBusinessCardSchema,
+} from "../schemas/eventSchemas.js";
 
 const router = express.Router();
 const voiceUploadDir = path.resolve(process.cwd(), "uploads", "voice");
@@ -70,25 +79,26 @@ const handleEventFilesUpload = (req, res, next) => {
   });
 };
 
-// All event routes are protected by user authentication
+// All event routes are protected by user authentication and require active CRM account
 router.use(protect);
+router.use(requireCrmAccount);
 
 // 1. AI Real-Time Transcript & Card Vision
-router.post("/summarize-text", summarizeTranscript);
+router.post("/summarize-text", validateRequest(summarizeTranscriptSchema), summarizeTranscript);
 router.post("/analyze-voice-audio", voiceUpload.single("audio"), analyzeVoiceAudio);
-router.post("/scan-card", scanBusinessCard);
+router.post("/scan-card", validateRequest(scanBusinessCardSchema), scanBusinessCard);
 
 // 2. Event Management
 router.get("/", getEvents);
-router.post("/", handleEventFilesUpload, createEvent);
+router.post("/", handleEventFilesUpload, validateRequest(createEventSchema), createEvent);
 router.get("/:id", getEventById);
-router.put("/:id", handleEventFilesUpload, updateEvent);
+router.put("/:id", handleEventFilesUpload, validateRequest(updateEventSchema), updateEvent);
 router.delete("/:id", deleteEvent);
 
 // 3. Contacts under Event (Strictly isolated from CRM Leads)
 router.get("/:id/contacts", getEventContacts);
-router.post("/:id/contacts", createEventContact);
-router.patch("/:id/contacts/:contactId/status", updateContactStatus);
+router.post("/:id/contacts", validateRequest(createEventContactSchema), createEventContact);
+router.patch("/:id/contacts/:contactId/status", validateRequest(updateEventContactStatusSchema), updateContactStatus);
 router.put("/:id/contacts/:contactId", updateEventContact);
 router.delete("/:id/contacts/:contactId", deleteEventContact);
 
