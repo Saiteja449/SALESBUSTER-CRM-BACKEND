@@ -20,6 +20,7 @@ import AssignmentState from "../models/AssignmentState.js";
 import Organization, { getDefaultAISettings } from "../models/Organization.js";
 import { getMasterModels } from "../services/tenantManager.js";
 import { getOrgCollectionName } from "../services/knowledgeService.js";
+import { resolveNotificationUserIds } from "../services/notificationRecipients.js";
 import { decryptApiKey } from "../utils/encryption.js";
 import { recordAiUsage, checkAiQuotaAvailable, reserveAiQuota, releaseAiQuota } from "../services/aiUsageService.js";
 import { getIO } from "../socket/socket.js";
@@ -644,8 +645,10 @@ export const generateAIResponse = async (
       }
     }
 
+    const primaryModelName = "gemini-3.5-flash-lite";
+    const fallbackModelNames = ["gemini-3.1-flash-lite"];
     const modelGeminiPrimary = new ChatGoogleGenerativeAI({
-      model: "gemini-3.5-flash-lite",
+      model: primaryModelName,
       temperature: 0,
       maxOutputTokens: 1500,
       apiKey: geminiApiKey,
@@ -757,30 +760,44 @@ Latest Message: ${incomingText}`;
 
     let parsed = null;
     let lastError = null;
+    let responseModelName = null;
 
     console.log(
       `Generating AI response with Gemini for ${effectiveSettings.companyName}...`,
     );
 
-    try {
-      const structuredModel =
-        modelGeminiPrimary.withStructuredOutput(qualificationSchema);
-      parsed = await structuredModel.invoke([
-        ["system", systemPrompt],
-        ["user", incomingText],
-      ]);
-      console.log("Success with model: Gemini");
-
-      // Quota was already reserved atomically prior to invoking model
-    } catch (e) {
-      lastError = e;
-      console.warn("Model Gemini structured output failed. Error:", e.message);
-      if (organization?._id) {
-        await releaseAiQuota(organization._id, "whatsapp", 1);
+    for (const modelName of [primaryModelName, ...fallbackModelNames]) {
+      try {
+        const model =
+          modelName === primaryModelName
+            ? modelGeminiPrimary
+            : new ChatGoogleGenerativeAI({
+                model: modelName,
+                temperature: 0,
+                maxOutputTokens: 1500,
+                apiKey: geminiApiKey,
+              });
+        const structuredModel = model.withStructuredOutput(qualificationSchema);
+        parsed = await structuredModel.invoke([
+          ["system", systemPrompt],
+          ["user", incomingText],
+        ]);
+        responseModelName = modelName;
+        console.log(`Success with model: ${modelName}`);
+        break;
+      } catch (e) {
+        lastError = e;
+        console.warn(
+          `Model ${modelName} structured output failed. Error:`,
+          e.message,
+        );
       }
     }
 
     if (!parsed) {
+      if (organization?._id) {
+        await releaseAiQuota(organization._id, "whatsapp", 1);
+      }
       console.error(
         "All AI attempts failed. Using fallback.",
         lastError?.message,
@@ -813,7 +830,7 @@ Latest Message: ${incomingText}`;
       leadId,
       prompt: systemPrompt + "\n\nUser Message: " + incomingText,
       response: JSON.stringify(parsed, null, 2),
-      model: "gemini-3.5-flash-lite (Dynamic Multi-Tenant RAG)",
+      model: `${responseModelName || primaryModelName} (Dynamic Multi-Tenant RAG)`,
       tokensUsed: 0,
     });
 
@@ -928,10 +945,10 @@ Latest Message: ${incomingText}`;
 
     if (parsed.disableAI) {
       updatePayload.aiEnabled = false;
-      const targetUsers =
-        lead.assignedTo && lead.assignedTo !== "Unassigned"
-          ? [lead.assignedTo]
-          : [];
+      const targetUsers = await resolveNotificationUserIds(
+        lead.assignedTo,
+        UserModel,
+      );
       await NotificationModel.create({
         title: "AI Disabled - Human Takeover Needed",
         message: `AI has been disabled for ${lead.name} (${lead.phone}) because they requested human support or the AI reached its limit.`,
@@ -1150,10 +1167,10 @@ Latest Message: ${incomingText}`;
         status: "Follow Up",
       });
 
-      const targetUsers =
-        lead.assignedTo && lead.assignedTo !== "Unassigned"
-          ? [lead.assignedTo]
-          : [];
+      const targetUsers = await resolveNotificationUserIds(
+        lead.assignedTo,
+        UserModel,
+      );
       await NotificationModel.create({
         title: "Followup Created by AI",
         message: `AI Agent scheduled a follow-up for lead ${lead.name} on ${followUpDate} at ${prefTime}.`,

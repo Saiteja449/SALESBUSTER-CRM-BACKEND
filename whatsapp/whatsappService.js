@@ -23,6 +23,7 @@ import SystemSettings from "../models/SystemSettings.js";
 import { getIO } from "../socket/socket.js";
 import { generateAIResponse } from "../ai/aiService.js";
 import { getTenantModels, getMasterModels } from "../services/tenantManager.js";
+import { resolveNotificationUserIds } from "../services/notificationRecipients.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1161,13 +1162,10 @@ const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
 
       if (statusChangedFromMissedCall) {
         try {
-          const assignedUserId = lead.assignedTo
-            ? (typeof lead.assignedTo === "object" ? lead.assignedTo._id || lead.assignedTo.id : lead.assignedTo).toString()
-            : null;
-          const targetUsers = [];
-          if (assignedUserId && assignedUserId !== "Unassigned") {
-            targetUsers.push(assignedUserId);
-          }
+          const targetUsers = await resolveNotificationUserIds(
+            lead.assignedTo,
+            UserModel,
+          );
 
           await NotificationModel.create({
             title: "Missed Call Lead Replied on WhatsApp",
@@ -1573,6 +1571,7 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
     const LeadModel = models?.Lead || Lead;
     const ConversationModel = models?.Conversation || Conversation;
     const NotificationModel = models?.Notification || Notification;
+    const UserModel = models?.User || User;
 
     // Safety check: Abort if AI was paused while this request was queued
     const freshLead = await LeadModel.findById(lead._id);
@@ -1657,14 +1656,10 @@ const processAIResponse = async (lead, remoteJid, incomingText, sessionId, tenan
           });
         }
       }
-      const targetUsers =
-        lead.assignedTo && lead.assignedTo !== "Unassigned"
-          ? [
-              typeof lead.assignedTo === "object"
-                ? lead.assignedTo._id || lead.assignedTo.id
-                : lead.assignedTo,
-            ]
-          : [];
+      const targetUsers = await resolveNotificationUserIds(
+        lead.assignedTo,
+        UserModel,
+      );
       await NotificationModel.create({
         title: "AI Disabled - Fallback Triggered",
         message: `AI has been disabled for ${lead.name} (${lead.phone}) because it sent the fallback message.`,
