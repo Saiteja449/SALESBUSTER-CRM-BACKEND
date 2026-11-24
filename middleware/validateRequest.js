@@ -1,6 +1,24 @@
 import { ZodError } from "zod";
 
 /**
+ * Safely assigns or defines a property on the request object.
+ * Handles cases where properties like req.query on IncomingMessage only have a getter.
+ */
+const setReqProperty = (req, prop, value) => {
+  if (value === undefined) return;
+  try {
+    req[prop] = value;
+  } catch {
+    Object.defineProperty(req, prop, {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+};
+
+/**
  * Validates req.body, req.query, or req.params using a Zod schema.
  * Replaces unvalidated request properties with clean, parsed and typed data.
  */
@@ -12,9 +30,9 @@ export const validateRequest = (schema) => (req, res, next) => {
       params: req.params,
     });
 
-    if (parsed.body) req.body = parsed.body;
-    if (parsed.query) req.query = parsed.query;
-    if (parsed.params) req.params = parsed.params;
+    if (parsed.body !== undefined) setReqProperty(req, "body", parsed.body);
+    if (parsed.query !== undefined) setReqProperty(req, "query", parsed.query);
+    if (parsed.params !== undefined) setReqProperty(req, "params", parsed.params);
 
     next();
   } catch (err) {

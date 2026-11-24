@@ -96,6 +96,32 @@ describe("Backend Security & Resilience - Error Handling & Validation", () => {
     });
   });
 
+  it("validateRequest safely populates query on IncomingMessage with getter-only query", (t, done) => {
+    const schema = z.object({
+      query: z.object({
+        status: z.string(),
+        page: z.coerce.number(),
+      }),
+    });
+
+    // Emulate Node.js http.IncomingMessage prototype where query only has a getter
+    const proto = {
+      get query() {
+        return { status: "pending", page: "2" };
+      },
+    };
+    const req = Object.create(proto);
+    req.body = {};
+    req.params = {};
+
+    const middleware = validateRequest(schema);
+    middleware(req, {}, () => {
+      assert.equal(req.query.status, "pending");
+      assert.equal(req.query.page, 2);
+      done();
+    });
+  });
+
   it("validateRequest rejects invalid payload with 400 and structured error paths", () => {
     const schema = z.object({
       body: z.object({
