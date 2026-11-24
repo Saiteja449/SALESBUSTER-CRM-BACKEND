@@ -5,13 +5,13 @@ import { getCRMOverview } from "../analytics/crmAnalyticsService.js";
 /**
  * Creates 360-degree CRM Overview tool bound to authenticated tenant context
  */
-export const createCRMOverviewTool = ({ tenantModels }) => {
+export const createCRMOverviewTool = ({ tenantModels, organization }) => {
   return tool(
     async ({ period = "all_time", startDate, endDate }) => {
       try {
         const overview = await getCRMOverview({
           tenantModels,
-          filters: { period, startDate, endDate },
+          filters: { period, startDate, endDate, timezone: organization?.timezone || "Asia/Kolkata" },
         });
         return JSON.stringify(overview);
       } catch (err) {
@@ -21,7 +21,7 @@ export const createCRMOverviewTool = ({ tenantModels }) => {
     {
       name: "get_crm_overview",
       description:
-        "Returns a complete 360-degree overview of the CRM: total leads, new/active/converted/lost leads, total calls, incoming/outgoing/connected/missed calls, pending and overdue follow-ups, WhatsApp activity, and call recordings. Use when asked for overall metrics, summaries, or dashboard health.",
+        "Returns a complete 360-degree CRM overview including total leads, exact status counts, Old/New Leads tab counts, Today/Upcoming Followup lead counts, follow-up task counts, calls, WhatsApp activity, and recordings. Use for overall summaries and when asked how many leads are in the Leads screen's Today or Upcoming Followup tab. Those tab counts are leads filtered by status and nextFollowUp, independent of lead creation date; use follow-up analytics for task counts.",
       schema: z.object({
         period: z
           .enum([

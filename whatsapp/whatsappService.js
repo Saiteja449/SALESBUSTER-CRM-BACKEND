@@ -18,6 +18,7 @@ import { generateAIResponse } from "../ai/aiService.js";
 import { getTenantModels, getMasterModels } from "../services/tenantManager.js";
 import { sendTextMessage } from "../services/whatsappCloudService.js";
 import { decryptApiKey } from "../utils/encryption.js";
+import { resolveNotificationUserIds } from "../services/notificationRecipients.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -328,6 +329,10 @@ export const clearAIPauseForLead = async (leadId, models, orgId = null) => {
     io.to(leadIdStr).emit("ai_status_updated", resumePayload);
     if (orgId) {
       io.to(`org_${orgId}`).emit("ai_status_updated", resumePayload);
+    } else {
+      console.warn(
+        `[AI SNOOZE] Skipping un-scoped ai_status_updated manual resume: no orgId for lead ${leadIdStr}`
+      );
     }
   }
 };

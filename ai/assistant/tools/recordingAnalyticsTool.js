@@ -5,7 +5,7 @@ import { getRecordingAnalytics } from "../analytics/crmAnalyticsService.js";
 /**
  * Creates Call Recording Analytics tool bound to authenticated tenant context
  */
-export const createRecordingAnalyticsTool = ({ tenantModels }) => {
+export const createRecordingAnalyticsTool = ({ tenantModels, organization }) => {
   return tool(
     async ({
       salespersonNameOrId,
@@ -27,6 +27,7 @@ export const createRecordingAnalyticsTool = ({ tenantModels }) => {
             endDate,
             analysisStatus,
             missingRecordingsOnly,
+            timezone: organization?.timezone || "Asia/Kolkata",
           },
           pagination: { page, limit },
         });

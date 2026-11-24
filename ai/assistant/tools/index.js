@@ -40,7 +40,7 @@ export const TOOL_METADATA = {
   get_whatsapp_connection_status: { isReadOnly: true, sideEffect: false, timeoutMs: 6000 },
   search_whatsapp_conversations: { isReadOnly: true, sideEffect: false, timeoutMs: 6000 },
   get_conversation_messages: { isReadOnly: true, sideEffect: false, timeoutMs: 6000 },
-  summarize_whatsapp_conversation: { isReadOnly: true, sideEffect: false, timeoutMs: 7000 },
+  summarize_whatsapp_conversation: { isReadOnly: false, sideEffect: true, timeoutMs: 20000 },
   lookup_phone_number: { isReadOnly: true, sideEffect: false, timeoutMs: 5000 },
   get_org_integrations_and_config: { isReadOnly: true, sideEffect: false, timeoutMs: 5000 },
   search_crm_documentation_and_features: { isReadOnly: true, sideEffect: false, timeoutMs: 7500 },
@@ -64,19 +64,19 @@ export const buildAssistantTools = ({ tenantModels, organization, user, socket }
 
   // 1. Preferred Canonical Tools exposed to Gemini
   const canonicalTools = [
-    createCRMOverviewTool({ tenantModels }),
-    createMissedCallAnalyticsTool({ tenantModels }),
-    createCallRecordsTool({ tenantModels }),
-    createSalesPerformanceTool({ tenantModels, toolName: "get_salesperson_analytics" }),
-    createAdvancedLeadSearchTool({ tenantModels }),
-    createFollowupTool({ tenantModels, toolName: "get_followup_analytics" }),
-    createConversionAnalyticsTool({ tenantModels }),
-    createRecordingAnalyticsTool({ tenantModels }),
+    createCRMOverviewTool({ tenantModels, organization }),
+    createMissedCallAnalyticsTool({ tenantModels, organization }),
+    createCallRecordsTool({ tenantModels, organization }),
+    createSalesPerformanceTool({ tenantModels, organization, toolName: "get_salesperson_analytics" }),
+    createAdvancedLeadSearchTool({ tenantModels, organization }),
+    createFollowupTool({ tenantModels, organization, toolName: "get_followup_analytics" }),
+    createConversionAnalyticsTool({ tenantModels, organization }),
+    createRecordingAnalyticsTool({ tenantModels, organization }),
     createWhatsAppAnalyticsTool({ tenantModels, organization }),
     createWhatsAppConnectionStatusTool({ tenantModels, organization }),
     createSearchConversationsTool({ tenantModels }),
     createConversationMessagesTool({ tenantModels }),
-    createSummarizeConversationTool({ tenantModels }),
+    createSummarizeConversationTool({ tenantModels, organization }),
     createPhoneLookupTool({ tenantModels }),
     createOrgConfigTool({ organization, tenantModels }),
     createCRMRAGTool({ organization }),
@@ -87,10 +87,10 @@ export const buildAssistantTools = ({ tenantModels, organization, user, socket }
 
   // 2. Legacy overlapping tools preserved for backward compatibility
   const legacyTools = [
-    createDashboardAnalyticsTool({ tenantModels }),
-    createSalesPerformanceTool({ tenantModels, toolName: "get_salesperson_performance" }),
-    createLeadSearchTool({ tenantModels }),
-    createFollowupTool({ tenantModels, toolName: "get_followup_status" }),
+    createDashboardAnalyticsTool({ tenantModels, organization }),
+    createSalesPerformanceTool({ tenantModels, organization, toolName: "get_salesperson_performance" }),
+    createLeadSearchTool({ tenantModels, organization }),
+    createFollowupTool({ tenantModels, organization, toolName: "get_followup_status" }),
   ];
 
   const allTools = [...canonicalTools, ...legacyTools];

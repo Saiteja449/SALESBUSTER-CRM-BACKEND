@@ -1,11 +1,12 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { resolveDateRange, getISTDateBoundaries } from "../dateUtils.js";
+import { getISTDateBoundaries } from "../dateUtils.js";
+import { resolveAnalyticsDateRange } from "../analytics/dateRangeResolver.js";
 
 /**
  * Creates Dashboard Analytics & KPI calculation tool bound to authenticated tenant context
  */
-export const createDashboardAnalyticsTool = ({ tenantModels }) => {
+export const createDashboardAnalyticsTool = ({ tenantModels, organization }) => {
   return tool(
     async ({ period = "today", customStart, customEnd, compareToPrevious = false }) => {
       try {
@@ -14,7 +15,7 @@ export const createDashboardAnalyticsTool = ({ tenantModels }) => {
           return JSON.stringify({ error: "Lead model not found in tenant database" });
         }
 
-        const range = resolveDateRange(period, customStart, customEnd);
+        const range = resolveAnalyticsDateRange({ period, startDate: customStart, endDate: customEnd, timezone: organization?.timezone || "Asia/Kolkata" });
         const { start, end, label } = range;
 
         const dateMatch = range.isAllTime ? null : { createdAt: { $gte: start, $lte: end } };

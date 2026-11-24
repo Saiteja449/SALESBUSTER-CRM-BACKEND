@@ -47,7 +47,8 @@ export const extractProspectDetailsFromVoice = async (
   filePath,
   mimeType,
   customApiKey = null,
-  requestId = "untracked"
+  requestId = "untracked",
+  options = {},
 ) => {
   const activeKey = customApiKey || process.env.GEMINI_API_KEY;
 
@@ -85,32 +86,47 @@ export const extractProspectDetailsFromVoice = async (
     const generationStartedAt = Date.now();
     console.info(`[VoiceExtraction][${requestId}] Generating structured fields`, { model: modelName });
 
+    const profileRegistration = Boolean(options.profileRegistration);
+    const personDescription = profileRegistration
+      ? "the person completing their SalesBuster profile (the speaker introducing themselves)"
+      : "the prospective customer, not the sales manager";
+    const companyDescription = profileRegistration
+      ? "the speaker's own company or business"
+      : "the business, shop, firm, or company associated with the customer";
+    const designationDescription = profileRegistration
+      ? "the speaker's own job title, role, or designation"
+      : "the customer's spoken job title, role, or designation";
+
     const prompt = `
 You are the SalesBuster AI conversation intelligence engine.
-Analyze the attached live recorded voice conversation between a Sales Manager and a prospective customer.
+Analyze the attached recorded voice conversation${profileRegistration ? " for profile registration" : " between a Sales Manager and a prospective customer"}.
 The conversation may be in English, Hindi, Telugu, or natural multilingual mixing (code-switching).
-CRITICAL: The sales manager does NOT enter any data manually. All prospect details including the customer's phone number MUST be extracted directly from this audio recording.
+CRITICAL: Extract all requested details directly from this audio recording. Do not use live transcripts or outside context.
 
 TASK:
 Identify and extract:
-1. customerName: The customer's spoken name or greeting (e.g. "Rahul", "Suresh Sharma", "Dr. Mehta", "Ramesh"). If no clear person name was spoken, return null.
-2. companyName: The business, shop, firm, or company name associated with the customer (e.g. "Apex Technologies", "Balaji Textiles", "Kiran Hospital"). If none was mentioned, return null.
-3. designation: The customer's spoken job title, role, or designation (e.g. "Managing Director", "Founder", "CEO", "Owner", "Procurement Manager", "Operations Head", "Partner", "Doctor", "Purchase In-charge", "Manager"). If not mentioned, return null.
-4. spokenPhone: The customer's mobile or WhatsApp number verbally spoken, dictated, or exchanged anywhere in the conversation (10 digits or partial digits if spoken incompletely, at least 6 digits).
+1. customerName: The actual spoken personal name of ${personDescription} (e.g. "Rahul", "Suresh Sharma", "Dr. Mehta", "Ramesh"). Preserve the name as spoken; do not omit or replace it because it is short, unfamiliar, accented, or sounds similar to a company name. Use the speaker's self-introduction or surrounding conversation to identify it. Do not put a greeting, job title, or company in this field. Return null only if no relevant personal name is audible.
+2. companyName: ${companyDescription} (e.g. "Apex Technologies", "Balaji Textiles", "Kiran Hospital"). If none was mentioned, return null.
+3. designation: ${designationDescription} (e.g. "Managing Director", "Founder", "CEO", "Owner", "Procurement Manager", "Operations Head", "Partner", "Doctor", "Purchase In-charge", "Manager"). If not mentioned, return null.
+4. spokenPhone: The ${profileRegistration ? "profile user's" : "customer's"} mobile or WhatsApp number verbally spoken, dictated, or exchanged anywhere in the conversation (10 digits or partial digits if spoken incompletely, at least 6 digits).
    - May be spoken as digits or words in English, Hindi, or Telugu (e.g. "nine eight seven six five four three two one zero", "double nine, eight seven six...", "mera number 9876543210", "na number note cheyandi 9876543210").
    - Convert spoken number words into a continuous numeric digit string (e.g. "9876543210" or "9848012").
    - If country code (+91 or 91) is mentioned, include it or return the digits.
    - If no phone number was spoken or fewer than 6 digits were spoken, return null.
 5. keyTopic: A short 3-6 word summary of the service or product discussed.
+6. city: The city or town explicitly stated for ${profileRegistration ? "the person registering, including where they are from, live, work, or where their company or office is based" : "the customer or their business"}. Phrases such as "I am from Hyderabad", "our office is in Hyderabad", and "we are based in Hyderabad" all identify the city. Preserve the spoken place name. Return null only when no relevant city is audible.
 
 CRITICAL FORMAT REQUIREMENT:
 Respond ONLY with a valid, raw JSON object and nothing else. Do NOT include markdown code blocks, backticks, or explanatory text.
+Always include every key shown in the schema. Use null for a field only when that information is not audible in the recording; never omit a key.
 Example format:
 {
   "customerName": "Rahul Sharma",
   "companyName": "Apex Technologies",
+  "designation": "Managing Director",
   "spokenPhone": "9876543210",
-  "keyTopic": "CRM automation & WhatsApp marketing"
+  "keyTopic": "CRM automation & WhatsApp marketing",
+  "city": "Hyderabad"
 }
 `;
 
@@ -155,9 +171,46 @@ Example format:
     const designation = parsed.designation && parsed.designation !== "null"
       ? parsed.designation.trim()
       : "";
+    const normalizeCity = (value) => {
+      if (value && typeof value === "object") value = value.value || value.name;
+      if (typeof value !== "string") return "";
+      const cityValue = value.trim().replace(/[.,;!?]+$/, "").trim();
+      if (/^(?:null|undefined|none|unknown|not mentioned|not discussed|not provided|not applicable|n\/a|na|)$/i.test(cityValue)) {
+        return "";
+      }
+      return cityValue;
+    };
 
-    if (!customerName && !companyName) {
-      throw new Error("Could not identify customer name or company in the audio recording. Please ensure clear speech and record again.");
+    let city = normalizeCity(parsed.city || parsed.cityName || parsed.locationCity || parsed.location?.city);
+    console.info(`[VoiceExtraction][${requestId}] Main city extraction completed`, { cityFound: Boolean(city) });
+    if (!city) {
+      try {
+        console.info(`[VoiceExtraction][${requestId}] City missing from main response; running focused audio extraction`);
+        const cityPrompt = `Listen to the attached recording and identify only the city or town explicitly stated for ${profileRegistration ? "the person registering, their work, company, or office" : "the customer or their business"}. Include where they are from, live, work, or are based. Look for phrases such as "I am from [city]", "I live in [city]", "our company is in [city]", "our office is based in [city]", Hindi "main [city] se hoon" / "hamara office [city] mein hai", and Telugu "nenu [city] nunchi" / "maa office [city] lo undi". Return the city name as spoken, with no state, country, explanation, or guessed location. Do not use a person's name, company name, unrelated event location, or a city mentioned about someone else. Return exactly one JSON object in the form {"city":"City Name"}; if no relevant city is audible, return {"city":null}.`;
+        const cityModel = genAI.getGenerativeModel({
+          model: modelName,
+          generationConfig: { responseMimeType: "application/json" },
+        });
+        const cityResult = await cityModel.generateContent([
+          {
+            fileData: {
+              fileUri: uploadResponse.file.uri,
+              mimeType: uploadResponse.file.mimeType,
+            },
+          },
+          { text: cityPrompt },
+        ]);
+        const cityResponseText = cityResult.response.text().trim();
+        const cleanCityResponse = cityResponseText
+          .replace(/^```(?:json)?\s*/i, "")
+          .replace(/\s*```$/i, "")
+          .trim();
+        const parsedCityResponse = JSON.parse(cleanCityResponse);
+        city = normalizeCity(parsedCityResponse.city || parsedCityResponse.cityName || parsedCityResponse.locationCity);
+        console.info(`[VoiceExtraction][${requestId}] Focused city extraction completed`, { cityFound: Boolean(city) });
+      } catch (cityErr) {
+        console.warn(`[VoiceExtraction][${requestId}] Focused city extraction failed`, { error: cityErr.message });
+      }
     }
 
     // Sanitize spoken phone
@@ -175,6 +228,7 @@ Example format:
       designation: designation || "",
       spokenPhone: cleanSpokenPhone,
       keyTopic: (parsed.keyTopic || "our discussion").trim(),
+      city,
     };
   } catch (err) {
     console.error(`[VoiceExtraction][${requestId}] Gemini audio analysis failed`, { error: err.message });

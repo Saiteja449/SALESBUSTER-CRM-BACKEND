@@ -48,7 +48,7 @@ export const getWhatsAppAnalytics = async ({
   const MessageModel = tenantModels.Message;
   const ConversationModel = tenantModels.Conversation;
 
-  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate });
+  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate, timezone: filters.timezone || "Asia/Kolkata" });
 
   // 1. If connection_status is requested, delegate to getWhatsAppConnectionStatus
   if (type === "connection_status") {
@@ -522,7 +522,7 @@ export const searchWhatsAppConversations = async ({
     };
   }
 
-  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate });
+  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate, timezone: filters.timezone || "Asia/Kolkata" });
   const clauses = [];
 
   // Lead ID
@@ -681,29 +681,35 @@ export const getConversationMessages = async ({
 
   const clauses = [];
 
-  if (conversationId && mongoose.Types.ObjectId.isValid(conversationId)) {
-    // If conversationId provided, find its leadId or phone to broaden query safely
+  if (conversationId) {
+    if (!mongoose.Types.ObjectId.isValid(conversationId)) {
+      return { success: false, errorCode: "INVALID_CONVERSATION_ID", message: "The conversation identifier is invalid." };
+    }
+    if (!canQuery(ConversationModel)) {
+      return { success: false, coverage: "unavailable", errorCode: "CONVERSATION_MODEL_UNAVAILABLE", message: "Conversation model is not available to resolve this chat." };
+    }
     if (canQuery(ConversationModel)) {
       try {
         const conv = await ConversationModel.findById(conversationId).lean();
-        if (conv) {
-          const cOr = [];
-          if (conv.leadId) cOr.push({ leadId: conv.leadId });
-          if (conv.phone) {
-            const p10 = normalize10(conv.phone);
-            if (p10) cOr.push({ contactPhone: new RegExp(`${escapeRegex(p10)}$`) });
-          }
-          if (cOr.length > 0) clauses.push({ $or: cOr });
+        if (!conv) {
+          return { success: false, errorCode: "CONVERSATION_NOT_FOUND", message: "No WhatsApp conversation matched that identifier." };
+        }
+        if (leadId && conv.leadId && conv.leadId.toString() !== leadId) {
+          return { success: false, errorCode: "CONVERSATION_LEAD_MISMATCH", message: "The conversation and lead identifiers refer to different records." };
+        }
+        // A lead ID is the canonical identity. Use phone only for unlinked conversations
+        // so a shared or stale phone value cannot pull messages from another lead.
+        const effectiveLeadId = conv.leadId;
+        if (effectiveLeadId) clauses.push({ leadId: new mongoose.Types.ObjectId(effectiveLeadId) });
+        else if (conv.phone) {
+          const p10 = normalize10(conv.phone);
+          if (p10) clauses.push({ contactPhone: new RegExp(`${escapeRegex(p10)}$`) });
         }
       } catch (_) {}
     }
-  }
-
-  if (leadId && mongoose.Types.ObjectId.isValid(leadId)) {
+  } else if (leadId && mongoose.Types.ObjectId.isValid(leadId)) {
     clauses.push({ leadId: new mongoose.Types.ObjectId(leadId) });
-  }
-
-  if (customerPhone) {
+  } else if (customerPhone) {
     const last10 = normalize10(customerPhone);
     if (last10) {
       clauses.push({ contactPhone: new RegExp(`${escapeRegex(last10)}$`) });
@@ -766,6 +772,7 @@ export const getConversationMessages = async ({
 export const summarizeWhatsAppConversation = async ({
   tenantModels = {},
   filters = {},
+  organization = null,
 }) => {
   const { conversationId, leadId, customerPhone } = filters;
   const ConversationModel = tenantModels.Conversation;
@@ -774,6 +781,13 @@ export const summarizeWhatsAppConversation = async ({
 
   let convDoc = null;
   let leadDoc = null;
+
+  if (conversationId && !mongoose.Types.ObjectId.isValid(conversationId)) {
+    return { success: false, errorCode: "INVALID_CONVERSATION_ID", message: "The conversation identifier is invalid." };
+  }
+  if (conversationId && !canQuery(ConversationModel)) {
+    return { success: false, coverage: "unavailable", errorCode: "CONVERSATION_MODEL_UNAVAILABLE", message: "Conversation model is not available to resolve this chat." };
+  }
 
   if (canQuery(ConversationModel)) {
     try {
@@ -790,29 +804,109 @@ export const summarizeWhatsAppConversation = async ({
     } catch (_) {}
   }
 
-  const effectiveLeadId = convDoc?.leadId || (leadId && mongoose.Types.ObjectId.isValid(leadId) ? leadId : null);
-  if (canQuery(LeadModel) && effectiveLeadId) {
+  if (conversationId && !convDoc) {
+    return { success: false, errorCode: "CONVERSATION_NOT_FOUND", message: "No WhatsApp conversation matched that identifier." };
+  }
+
+  if (!convDoc && !leadId && customerPhone && canQuery(LeadModel)) {
+    const last10 = normalize10(customerPhone);
+    if (last10) {
+      try {
+        leadDoc = await LeadModel.findOne({ phone: new RegExp(`${escapeRegex(last10)}$`) })
+          .select("name phone company service status assignedTo notes")
+          .lean();
+      } catch (_) {}
+    }
+  }
+
+  const effectiveLeadId = convDoc
+    ? (convDoc.leadId ? convDoc.leadId.toString() : null)
+    : (leadDoc?._id?.toString() || (leadId && mongoose.Types.ObjectId.isValid(leadId) ? leadId : null));
+  if (!leadDoc && canQuery(LeadModel) && effectiveLeadId) {
     try {
       leadDoc = await LeadModel.findById(effectiveLeadId).select("name phone company service status assignedTo notes").lean();
     } catch (_) {}
   }
 
-  // Retrieve up to 40 chronological messages
+  // Prefer the existing AI summarizer for CRM leads. It validates its cache against
+  // the full lead message count and analyzes the transcript instead of keyword guessing.
+  if (effectiveLeadId && organization) {
+    try {
+      const { summarizeChatConversation } = await import("../../aiService.js");
+      const aiSummary = await summarizeChatConversation({
+        leadId: effectiveLeadId.toString(),
+        tenantModels,
+        organization,
+      });
+      const summaryLead = leadDoc || (canQuery(LeadModel)
+        ? await LeadModel.findById(effectiveLeadId).select("name phone company service status assignedTo").lean()
+        : null);
+      const ownerDir = await buildOwnerDirectory({ tenantModels });
+      const owner = ownerDir.resolveOwner(summaryLead?.assignedTo);
+      const displayName = (convDoc?.customerName && convDoc.customerName.trim()) || (summaryLead?.name && summaryLead.name.trim()) || (summaryLead?.company && summaryLead.company.trim()) || convDoc?.phone || summaryLead?.phone || "Customer";
+      return {
+        success: true,
+        conversationId: convDoc?._id?.toString() || undefined,
+        leadId: effectiveLeadId.toString(),
+        displayName,
+        customerName: (convDoc?.customerName && convDoc.customerName.trim()) || (summaryLead?.name && summaryLead.name.trim()) || displayName,
+        customerPhone: convDoc?.phone || summaryLead?.phone || customerPhone || "Unknown",
+        assignedRep: owner.name,
+        assignedRepId: owner.id || undefined,
+        totalMessagesAnalyzed: aiSummary.messagesAnalyzed || 0,
+        totalMessagesAvailable: aiSummary.messagesAnalyzed || 0,
+        dataCoverage: "complete",
+        summary: {
+          overview: aiSummary.summary,
+          keyPoints: aiSummary.keyPoints || [],
+          customerIntent: aiSummary.customerIntent || "Not clearly established in the conversation.",
+          unresolvedQuestions: aiSummary.unresolvedQuestions || [],
+          sentiment: aiSummary.sentiment || "Neutral",
+          nextSteps: aiSummary.nextSteps || [],
+          generatedAt: aiSummary.generatedAt,
+        },
+      };
+    } catch (summaryErr) {
+      return {
+        success: false,
+        errorCode: "WHATSAPP_SUMMARY_FAILED",
+        message: `Could not generate a verified conversation summary: ${summaryErr.message}`,
+        leadId: effectiveLeadId.toString(),
+      };
+    }
+  }
+
+  if (organization && !effectiveLeadId) {
+    return {
+      success: false,
+      errorCode: "CONVERSATION_NOT_LINKED_TO_LEAD",
+      message: "This WhatsApp conversation is not linked to a CRM lead, so a lead-specific summary cannot be verified.",
+      conversationId: convDoc?._id?.toString() || undefined,
+    };
+  }
+
+  // Retrieve the newest 40 messages for a fallback summary, and report truncation.
   let messages = [];
+  let totalMessagesAvailable = 0;
   if (canQuery(MessageModel)) {
     try {
       const clauses = [];
-      if (effectiveLeadId) clauses.push({ leadId: effectiveLeadId });
+      if (effectiveLeadId) clauses.push({ leadId: new mongoose.Types.ObjectId(effectiveLeadId) });
       const phone = convDoc?.phone || customerPhone;
-      if (phone) {
+      if (!effectiveLeadId && phone) {
         const last10 = normalize10(phone);
         if (last10) clauses.push({ contactPhone: new RegExp(`${escapeRegex(last10)}$`) });
       }
       if (clauses.length > 0) {
-        messages = await MessageModel.find(composeMongoQuery({ $or: clauses }))
-          .sort({ timestamp: 1 })
+        const messageQuery = composeMongoQuery(...clauses);
+        totalMessagesAvailable = typeof MessageModel.countDocuments === "function"
+          ? await MessageModel.countDocuments(messageQuery)
+          : 0;
+        const recent = await MessageModel.find(messageQuery)
+          .sort({ timestamp: -1 })
           .limit(40)
           .lean();
+        messages = (recent || []).reverse();
       }
     } catch (_) {}
   }
@@ -826,7 +920,10 @@ export const summarizeWhatsAppConversation = async ({
   }
 
   // If chatSummary is already saved on Conversation document
-  const savedSummary = convDoc?.chatSummary;
+  const savedSummary = convDoc?.chatSummary &&
+    convDoc.chatSummary.messagesAnalyzed === totalMessagesAvailable
+    ? convDoc.chatSummary
+    : null;
 
   // Extract customer and team text fragments
   const customerTexts = messages
@@ -878,6 +975,8 @@ export const summarizeWhatsAppConversation = async ({
     assignedRep: owner.name,
     assignedRepId: owner.id || undefined,
     totalMessagesAnalyzed: messages.length,
+    totalMessagesAvailable,
+    dataCoverage: totalMessagesAvailable > messages.length ? "partial" : "complete",
     summary: {
       overview: savedSummary?.summary || (customerTexts.length > 0 ? `Customer initiated ${customerTexts.length} inquiries; team sent ${teamTexts.length} replies.` : "Conversation initiated with no recent messages."),
       keyPoints,

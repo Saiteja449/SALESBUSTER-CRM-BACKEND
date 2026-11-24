@@ -129,7 +129,7 @@ export const getFollowupAnalytics = async ({
   }
 
   if (period || startDate || endDate) {
-    const dRange = resolveAnalyticsDateRange({ period: period || "all_time", startDate, endDate });
+    const dRange = resolveAnalyticsDateRange({ period: period || "all_time", startDate, endDate, timezone: filters.timezone || "Asia/Kolkata" });
     if (!dRange.isAllTime) {
       baseClauses.push({ date: { $gte: dRange.startStr, $lte: dRange.endStr } });
     }

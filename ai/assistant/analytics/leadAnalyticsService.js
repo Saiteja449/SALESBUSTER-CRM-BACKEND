@@ -111,7 +111,7 @@ export const searchLeadsAdvanced = async ({
 
   // 2. CreatedAt Date Range
   if (period || startDate || endDate) {
-    const dRange = resolveAnalyticsDateRange({ period: period || "all_time", startDate, endDate });
+    const dRange = resolveAnalyticsDateRange({ period: period || "all_time", startDate, endDate, timezone: filters.timezone || "Asia/Kolkata" });
     if (!dRange.isAllTime) {
       queryConditions.push({ createdAt: { $gte: dRange.start, $lte: dRange.end } });
     }
@@ -119,7 +119,7 @@ export const searchLeadsAdvanced = async ({
 
   // 3. Last Activity Date Range
   if (lastActivityPeriod) {
-    const actRange = resolveAnalyticsDateRange({ period: lastActivityPeriod });
+    const actRange = resolveAnalyticsDateRange({ period: lastActivityPeriod, timezone: filters.timezone || "Asia/Kolkata" });
     if (!actRange.isAllTime) {
       queryConditions.push({ lastActivity: { $gte: actRange.start, $lte: actRange.end } });
     }

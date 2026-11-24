@@ -346,6 +346,66 @@ describe("OTP Authentication & Speech Profile Completion Tests", () => {
     assert.equal(cData.isProfileComplete, true);
   });
 
+  it("should complete profile without error when email is explicitly sent as empty string", async () => {
+    // 1. Verify OTP for User A
+    const { req: sReqA, res: sResA, getJson: getSJsonA } = mockReqRes({ body: { phone: "9111111111" } });
+    await sendOtp(sReqA, sResA);
+    const otpA = getSJsonA().debugOtp;
+
+    const { req: vReqA, res: vResA, getJson: getVJsonA } = mockReqRes({
+      body: { phone: "9111111111", otp: otpA },
+    });
+    await verifyOtp(vReqA, vResA);
+    const userA = getVJsonA();
+
+    // 2. Complete Profile for User A with email: ""
+    const { req: cReqA, res: cResA, getStatus: getCStatusA, getJson: getCJsonA } = mockReqRes({
+      user: { _id: userA._id, id: userA._id },
+      body: {
+        name: "User Alpha",
+        companyName: "Alpha Corp",
+        role: "Manager",
+        city: "Mumbai",
+        email: "",
+      },
+    });
+    await completeProfile(cReqA, cResA);
+    assert.equal(getCStatusA(), 200);
+    assert.equal(getCJsonA().success, true);
+
+    // Verify User A does not have email stored as ""
+    const savedUserA = inMemoryUsers.find((u) => String(u._id) === String(userA._id));
+    assert.notEqual(savedUserA.email, "");
+
+    // 3. Verify OTP and complete profile for User B with email: "   "
+    const { req: sReqB, res: sResB, getJson: getSJsonB } = mockReqRes({ body: { phone: "9222222222" } });
+    await sendOtp(sReqB, sResB);
+    const otpB = getSJsonB().debugOtp;
+
+    const { req: vReqB, res: vResB, getJson: getVJsonB } = mockReqRes({
+      body: { phone: "9222222222", otp: otpB },
+    });
+    await verifyOtp(vReqB, vResB);
+    const userB = getVJsonB();
+
+    const { req: cReqB, res: cResB, getStatus: getCStatusB, getJson: getCJsonB } = mockReqRes({
+      user: { _id: userB._id, id: userB._id },
+      body: {
+        name: "User Beta",
+        companyName: "Beta Corp",
+        role: "Executive",
+        city: "Delhi",
+        email: "   ", // whitespace only
+      },
+    });
+    await completeProfile(cReqB, cResB);
+    assert.equal(getCStatusB(), 200);
+    assert.equal(getCJsonB().success, true);
+
+    const savedUserB = inMemoryUsers.find((u) => String(u._id) === String(userB._id));
+    assert.notEqual(savedUserB.email, "");
+  });
+
   it("should completely block existing CRM (non-guest) accounts from logging in", async () => {
     // Seed an existing CRM organization & user with phone number
     const crmOrg = {

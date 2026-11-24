@@ -38,14 +38,19 @@ export const analyzeVoiceAudio = asyncHandler(async (req, res) => {
     const orgId = req.user?.organizationId?.toString() || req.organization?._id?.toString();
     const organization = orgId ? await Organization.findById(orgId).lean() : null;
     const apiKey = decryptApiKey(organization?.aiSettings?.geminiApiKey) || process.env.GEMINI_API_KEY;
-
     console.info(`[CONTACT_CAPTURE][${requestId}] Audio received`, {
       organizationId: orgId,
       sizeBytes: audioFile.size,
       mimeType: audioFile.mimetype,
     });
 
-    const details = await extractProspectDetailsFromVoice(audioFile.path, audioFile.mimetype, apiKey, requestId);
+    const details = await extractProspectDetailsFromVoice(
+      audioFile.path,
+      audioFile.mimetype,
+      apiKey,
+      requestId,
+      { profileRegistration: req.body?.purpose === "profile_registration" },
+    );
     console.info(`[CONTACT_CAPTURE][${requestId}] Audio analyzed`, { durationMs: Date.now() - startedAt });
 
     const name = details.customerName === "Valued Customer" ? "" : details.customerName;
@@ -57,6 +62,7 @@ export const analyzeVoiceAudio = asyncHandler(async (req, res) => {
         companyName: details.companyName || "",
         designation: details.designation || "",
         summary: details.keyTopic || "",
+        city: details.city || "",
       },
     });
   } catch (error) {

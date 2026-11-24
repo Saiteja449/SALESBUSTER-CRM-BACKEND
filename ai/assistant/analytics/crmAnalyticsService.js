@@ -24,7 +24,6 @@ const canQuery = (model) => {
   }
   return true;
 };
-
 /**
  * CRM 360-degree Overview synthesizing leads, calls, missed calls, follow-ups, and whatsapp activity
  */
@@ -33,7 +32,8 @@ export const getCRMOverview = async ({
   filters = {},
 }) => {
   const { period = "all_time", startDate, endDate } = filters;
-  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate });
+  const timezone = filters.timezone || "Asia/Kolkata";
+  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate, timezone });
 
   const LeadModel = tenantModels.Lead;
   const FollowupModel = tenantModels.Followup;
@@ -41,8 +41,7 @@ export const getCRMOverview = async ({
   const AnalyticsModel = tenantModels.TelecallerAnalytics;
   const MessageModel = tenantModels.Message;
 
-  const boundaries = getISTDateBoundaries();
-  const todayStr = boundaries.todayStr;
+  const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
 
   const anyModelAvailable = canQuery(LeadModel) || canQuery(CallRecordModel) || canQuery(FollowupModel) || canQuery(MessageModel);
   if (!anyModelAvailable) {
@@ -53,7 +52,7 @@ export const getCRMOverview = async ({
       errorCode: "ALL_MODELS_UNAVAILABLE",
       message: "Database models unavailable in tenant context.",
       periodEvaluated: dateRange.label,
-      timezone: "Asia/Kolkata",
+      timezone,
       coverageWarnings: ["No CRM database models were available to query."],
     };
   }
@@ -68,9 +67,14 @@ export const getCRMOverview = async ({
     convertedLeads: 0,
     lostLeads: 0,
     unassignedLeads: 0,
-    convertedRevenue: "₹0",
-    activePipelineValue: "₹0",
-    totalDealValue: "₹0",
+    statusBreakdown: {},
+    oldLeads: 0,
+    newTabLeads: 0,
+    todayFollowupLeads: 0,
+    upcomingFollowupLeads: 0,
+    convertedRevenue: "â‚¹0",
+    activePipelineValue: "â‚¹0",
+    totalDealValue: "â‚¹0",
   };
 
   if (canQuery(LeadModel)) {
@@ -78,19 +82,32 @@ export const getCRMOverview = async ({
       const matchStage = dateRange.isAllTime ? {} : { createdAt: { $gte: dateRange.start, $lte: dateRange.end } };
       const [lRes] = await LeadModel.aggregate([
         { $match: matchStage },
+        { $set: { _biStatus: { $toLower: { $ifNull: ["$status", ""] } } } },
         {
           $facet: {
+            byStatus: [
+              { $group: { _id: { $ifNull: ["$status", "Unknown"] }, count: { $sum: 1 } } },
+              { $sort: { count: -1 } },
+            ],
+            oldTab: [
+              { $match: { isOldLead: true, status: { $regex: /^new$/i } } },
+              { $count: "count" },
+            ],
+            newTab: [
+              { $match: { isOldLead: { $ne: true }, status: { $regex: /^new$/i } } },
+              { $count: "count" },
+            ],
             totals: [
               {
                 $group: {
                   _id: null,
                   total: { $sum: 1 },
-                  converted: { $sum: { $cond: [{ $eq: ["$status", "Converted"] }, 1, 0] } },
-                  new: { $sum: { $cond: [{ $eq: ["$status", "New"] }, 1, 0] } },
+                  converted: { $sum: { $cond: [{ $eq: ["$_biStatus", "converted"] }, 1, 0] } },
+                  new: { $sum: { $cond: [{ $eq: ["$_biStatus", "new"] }, 1, 0] } },
                   active: {
                     $sum: {
                       $cond: [
-                        { $in: ["$status", ["New", "Follow Up", "Missed Call"]] },
+                        { $in: ["$_biStatus", ["new", "follow up", "missed call"]] },
                         1,
                         0,
                       ],
@@ -129,13 +146,13 @@ export const getCRMOverview = async ({
                   },
                   convRev: {
                     $sum: {
-                      $cond: [{ $eq: ["$status", "Converted"] }, { $ifNull: ["$dealValue", 0] }, 0],
+                      $cond: [{ $eq: ["$_biStatus", "converted"] }, { $ifNull: ["$dealValue", 0] }, 0],
                     },
                   },
                   pipeVal: {
                     $sum: {
                       $cond: [
-                        { $in: ["$status", ["New", "Follow Up", "Missed Call"]] },
+                        { $in: ["$_biStatus", ["new", "follow up", "missed call"]] },
                         { $ifNull: ["$dealValue", 0] },
                         0,
                       ],
@@ -149,11 +166,50 @@ export const getCRMOverview = async ({
         },
       ]);
 
+      // Follow-up tab counts are lead due-date segments, independent of lead creation period.
+      let todayFollowupLeads = 0;
+      let upcomingFollowupLeads = 0;
+      try {
+        const [todayFollowupResult, upcomingFollowupResult] = await Promise.all([
+          LeadModel.aggregate([
+            {
+              $match: {
+                status: { $regex: /^follow up$/i },
+                $or: [
+                  { nextFollowUp: null },
+                  { nextFollowUp: "" },
+                  { nextFollowUp: { $lte: todayStr } },
+                ],
+              },
+            },
+            { $count: "count" },
+          ]),
+          LeadModel.aggregate([
+            {
+              $match: {
+                status: { $regex: /^follow up$/i },
+                nextFollowUp: { $gt: todayStr },
+              },
+            },
+            { $count: "count" },
+          ]),
+        ]);
+        todayFollowupLeads = todayFollowupResult?.[0]?.count || 0;
+        upcomingFollowupLeads = upcomingFollowupResult?.[0]?.count || 0;
+      } catch (followupLeadErr) {
+        coverageWarnings.push(`Follow-up lead tab count error: ${followupLeadErr.message}`);
+      }
+
       const t = lRes?.totals[0];
       if (t) {
         leadStats = {
           totalLeads: t.total || 0,
           newLeads: t.new || 0,
+          statusBreakdown: Object.fromEntries((lRes?.byStatus || []).map(({ _id, count }) => [_id, count])),
+          oldLeads: lRes?.oldTab?.[0]?.count || 0,
+          newTabLeads: lRes?.newTab?.[0]?.count || 0,
+          todayFollowupLeads,
+          upcomingFollowupLeads,
           activeLeads: t.active || 0,
           convertedLeads: t.converted || 0,
           lostLeads: t.lost || 0,
@@ -395,7 +451,7 @@ export const getCRMOverview = async ({
     coverage: coverageWarnings.length > 0 ? "partial" : "complete",
     dataCoverage: coverageWarnings.length > 0 ? "partial" : "complete",
     periodEvaluated: dateRange.label,
-    timezone: "Asia/Kolkata",
+    timezone,
     ownershipAttribution: {
       leadAttribution: "Current Lead Assignment (Lead.assignedTo)",
       callAttribution: "Historical Event Activity (CallRecord.salespersonId / CallRecord.salespersonName)",
@@ -431,6 +487,8 @@ export const getSalespersonAnalytics = async ({
   const FollowupModel = tenantModels.Followup;
   const AnalyticsModel = tenantModels.TelecallerAnalytics;
   const CallRecordModel = tenantModels.CallRecord;
+  const timezone = filters.timezone || "Asia/Kolkata";
+  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate, timezone });
 
   if (!canQuery(LeadModel) || !canQuery(UserModel)) {
     return {
@@ -440,12 +498,10 @@ export const getSalespersonAnalytics = async ({
       errorCode: "MODELS_UNAVAILABLE",
       message: "Required models (Lead, User) are not available in tenant database.",
       periodEvaluated: dateRange.label,
-      timezone: "Asia/Kolkata",
+      timezone,
       teamLeaderboard: [],
     };
   }
-
-  const dateRange = resolveAnalyticsDateRange({ period, startDate, endDate });
 
   // 1. Fetch all users directory (active and inactive, all roles)
   const ownerDir = await buildOwnerDirectory({ tenantModels });
@@ -455,12 +511,13 @@ export const getSalespersonAnalytics = async ({
   const leadMatch = dateRange.isAllTime ? {} : { createdAt: { $gte: dateRange.start, $lte: dateRange.end } };
   const leadAgg = await LeadModel.aggregate([
     { $match: leadMatch },
+    { $set: { _biStatus: { $toLower: { $ifNull: ["$status", ""] } } } },
     {
       $group: {
         _id: "$assignedTo",
         totalLeads: { $sum: 1 },
-        newLeads: { $sum: { $cond: [{ $eq: ["$status", "New"] }, 1, 0] } },
-        convertedLeads: { $sum: { $cond: [{ $eq: ["$status", "Converted"] }, 1, 0] } },
+        newLeads: { $sum: { $cond: [{ $eq: ["$_biStatus", "new"] }, 1, 0] } },
+        convertedLeads: { $sum: { $cond: [{ $eq: ["$_biStatus", "converted"] }, 1, 0] } },
         lostLeads: {
           $sum: {
             $cond: [
@@ -721,7 +778,7 @@ export const getSalespersonAnalytics = async ({
         coverage: "complete",
         dataCoverage: "complete",
         periodEvaluated: dateRange.label,
-        timezone: "Asia/Kolkata",
+        timezone,
         totalMatchingCount: 0,
         returnedCount: 0,
         topPerformerByLeads: null,
@@ -747,7 +804,7 @@ export const getSalespersonAnalytics = async ({
     coverage: "complete",
     dataCoverage: "complete",
     periodEvaluated: dateRange.label,
-    timezone: "Asia/Kolkata",
+    timezone,
     ownershipAttribution: {
       leadAttribution: "Current Lead Assignment (Lead.assignedTo)",
       callAttribution: "Historical Event Activity (CallRecord.salespersonId / CallRecord.salespersonName)",
@@ -783,4 +840,3 @@ export {
   getConversationMessages,
   summarizeWhatsAppConversation,
 };
-

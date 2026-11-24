@@ -5,7 +5,7 @@ import { searchCallRecords } from "../analytics/crmAnalyticsService.js";
 /**
  * Creates Individual Call Record Search tool bound to authenticated tenant context
  */
-export const createCallRecordsTool = ({ tenantModels }) => {
+export const createCallRecordsTool = ({ tenantModels, organization }) => {
   return tool(
     async ({
       salespersonNameOrId,
@@ -37,6 +37,7 @@ export const createCallRecordsTool = ({ tenantModels }) => {
             leadId,
             recordingAvailable,
             source,
+            timezone: organization?.timezone || "Asia/Kolkata",
           },
           pagination: { page, limit },
         });

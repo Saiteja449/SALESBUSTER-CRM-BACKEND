@@ -107,6 +107,11 @@ const leadSchema = new mongoose.Schema(
       ],
       default: "New",
     },
+    convertedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
     leadType: {
       type: String,
       default: "Client",
@@ -359,6 +364,25 @@ const normalizeLeadPhone = function () {
     this.phoneNormalized = toInternationalPhone(this.phone);
   }
 };
+
+leadSchema.pre("save", function setConversionTimestamp() {
+  if (this.isModified("status")) {
+    this.convertedAt = String(this.status || "").toLowerCase() === "converted" ? new Date() : null;
+  }
+});
+
+const syncConversionTimestampOnQueryUpdate = function () {
+  const update = this.getUpdate();
+  if (!update || Array.isArray(update)) return;
+  const nextStatus = update.$set?.status ?? update.status;
+  if (nextStatus === undefined) return;
+  update.$set = update.$set || {};
+  update.$set.convertedAt = String(nextStatus).toLowerCase() === "converted" ? new Date() : null;
+  this.setUpdate(update);
+};
+leadSchema.pre("findOneAndUpdate", syncConversionTimestampOnQueryUpdate);
+leadSchema.pre("updateOne", syncConversionTimestampOnQueryUpdate);
+leadSchema.pre("updateMany", syncConversionTimestampOnQueryUpdate);
 leadSchema.pre("validate", normalizeLeadPhone);
 leadSchema.pre("save", normalizeLeadPhone);
 
