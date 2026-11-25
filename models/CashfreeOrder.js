@@ -33,6 +33,18 @@ export const cashfreeOrderSchema = new mongoose.Schema(
       required: true,
       min: 1,
     },
+    baseAmount: {
+      type: Number,
+      default: null,
+    },
+    gstAmount: {
+      type: Number,
+      default: 0,
+    },
+    gstRate: {
+      type: Number,
+      default: 0.18,
+    },
     orderCurrency: {
       type: String,
       default: "INR",
@@ -55,6 +67,15 @@ export const cashfreeOrderSchema = new mongoose.Schema(
     addonType: {
       type: String,
       default: "",
+    },
+    additionalReps: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    totalSeats: {
+      type: Number,
+      default: 5,
     },
     customerDetails: {
       customerId: {

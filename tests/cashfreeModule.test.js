@@ -45,7 +45,9 @@ describe("Cashfree Module - Zod Schemas & Pricing Catalog", () => {
       clientAmount: 10,
     });
 
-    assert.equal(resolved.amount, 2999);
+    assert.equal(resolved.baseAmount, 2999);
+    assert.equal(resolved.gstAmount, 539.82);
+    assert.equal(resolved.amount, 3538.82); // ₹2,999 + 18% GST (₹539.82)
     assert.equal(resolved.currency, "INR");
     assert.equal(resolved.title, CASHFREE_PRICING_CATALOG.subscription.growth.title);
 
@@ -55,7 +57,9 @@ describe("Cashfree Module - Zod Schemas & Pricing Catalog", () => {
       addonType: "whatsapp_campaigns",
       clientAmount: 1,
     });
-    assert.equal(addonResolved.amount, 999);
+    assert.equal(addonResolved.baseAmount, 999);
+    assert.equal(addonResolved.gstAmount, 179.82);
+    assert.equal(addonResolved.amount, 1178.82); // ₹999 + 18% GST (₹179.82)
 
     // Yearly & Quarterly plan resolutions
     const yearlyResolved = resolveAuthoritativePrice({
@@ -63,14 +67,18 @@ describe("Cashfree Module - Zod Schemas & Pricing Catalog", () => {
       planId: "yearly",
       clientAmount: 100,
     });
-    assert.equal(yearlyResolved.amount, 53940);
+    assert.equal(yearlyResolved.baseAmount, 53940);
+    assert.equal(yearlyResolved.gstAmount, 9709.2);
+    assert.equal(yearlyResolved.amount, 63649.2); // ₹53,940 + 18% GST (₹9,709.20)
 
     const quarterlyResolved = resolveAuthoritativePrice({
       purpose: "subscription",
       planId: "quarterly",
       clientAmount: 50,
     });
-    assert.equal(quarterlyResolved.amount, 17985);
+    assert.equal(quarterlyResolved.baseAmount, 17985);
+    assert.equal(quarterlyResolved.gstAmount, 3237.3);
+    assert.equal(quarterlyResolved.amount, 21222.3); // ₹17,985 + 18% GST (₹3,237.30)
 
     // Rejects invalid plan
     assert.throws(() => {

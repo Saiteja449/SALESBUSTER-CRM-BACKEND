@@ -5,9 +5,10 @@ import { z } from "zod";
  */
 export const createCashfreeOrderSchema = z.object({
   body: z.object({
-    purpose: z.enum(["subscription", "addon", "wallet_credits", "service"]).optional().default("addon"),
+    purpose: z.enum(["subscription", "addon", "extra_reps", "wallet_credits", "service"]).optional().default("addon"),
     planId: z.string().trim().optional().default(""),
     addonType: z.string().trim().optional().default(""),
+    additionalReps: z.union([z.number(), z.string()]).optional().default(0),
     orderAmount: z.union([z.number(), z.string()]).optional(),
     orderNote: z.string().trim().optional().default(""),
     customerDetails: z

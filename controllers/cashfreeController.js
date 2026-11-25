@@ -19,12 +19,25 @@ import {
 /**
  * Authoritative Server-Side Pricing Catalog (Prevents Client-Side Parameter Tampering)
  */
+export const DEFAULT_GST_PERCENT = 18;
+export const GST_RATE = 0.18; // Statutory 18% Goods & Services Tax (GST) fallback
+
 export const CASHFREE_PRICING_CATALOG = {
   addon: {
     whatsapp_campaigns: {
       amount: 999,
       currency: "INR",
       title: "WhatsApp Campaigns Monthly Addon",
+    },
+    target_intelligence: {
+      amount: 1499,
+      currency: "INR",
+      title: "AI Target Intelligence Monthly Addon",
+    },
+    bi_analyst: {
+      amount: 999,
+      currency: "INR",
+      title: "AI BI Analyst Monthly Addon",
     },
     instagram_automation: {
       amount: 499,
@@ -62,46 +75,110 @@ export const CASHFREE_PRICING_CATALOG = {
 };
 
 /**
- * Validates and resolves the authoritative price server-side
+ * Validates and resolves the authoritative price server-side,
+ * including configurable GST and additional sales representatives
  */
-export const resolveAuthoritativePrice = ({ purpose, planId, addonType, clientAmount }) => {
-  if (purpose === "addon") {
+export const resolveAuthoritativePrice = ({
+  purpose,
+  planId,
+  addonType,
+  clientAmount,
+  additionalReps = 0,
+  dynamicGstRate,
+  extraRepPriceYearly = 899,
+  extraRepPriceQuarterly = 1199,
+}) => {
+  const normalizedPurpose = purpose === "plan" ? "subscription" : purpose;
+  let basePlanAmount = 0;
+  let currency = "INR";
+  let title = "";
+
+  // Calculate additional sales representatives cost
+  let additionalRepsCost = 0;
+  const parsedAdditionalReps = Math.max(0, parseInt(additionalReps, 10) || 0);
+
+  if (normalizedPurpose === "extra_reps") {
+    const repsToAdd = Math.max(1, parsedAdditionalReps);
+    if (planId === "yearly" || planId === "annual") {
+      additionalRepsCost = repsToAdd * extraRepPriceYearly * 12;
+      title = `${repsToAdd} Additional Sales Rep${repsToAdd > 1 ? "s" : ""} (Annual)`;
+    } else if (planId === "quarterly") {
+      additionalRepsCost = repsToAdd * extraRepPriceQuarterly * 3;
+      title = `${repsToAdd} Additional Sales Rep${repsToAdd > 1 ? "s" : ""} (Quarterly)`;
+    } else {
+      additionalRepsCost = repsToAdd * extraRepPriceQuarterly;
+      title = `${repsToAdd} Additional Sales Rep${repsToAdd > 1 ? "s" : ""} (Monthly)`;
+    }
+    basePlanAmount = 0;
+    currency = "INR";
+  } else if (normalizedPurpose === "addon") {
     const addonConfig = CASHFREE_PRICING_CATALOG.addon[addonType];
     if (!addonConfig) {
       throw new Error(`Invalid or unsupported addon type: '${addonType}'`);
     }
-    return {
-      amount: addonConfig.amount,
-      currency: addonConfig.currency,
-      title: addonConfig.title,
-    };
-  }
-
-  if (purpose === "subscription") {
+    basePlanAmount = addonConfig.amount;
+    currency = addonConfig.currency;
+    title = addonConfig.title;
+  } else if (normalizedPurpose === "subscription") {
     const planConfig = CASHFREE_PRICING_CATALOG.subscription[planId];
     if (!planConfig) {
       throw new Error(`Invalid or unsupported subscription plan: '${planId}'`);
     }
-    return {
-      amount: planConfig.amount,
-      currency: planConfig.currency,
-      title: planConfig.title,
-    };
-  }
-
-  if (purpose === "wallet_credits" || purpose === "service") {
+    basePlanAmount = planConfig.amount;
+    currency = planConfig.currency;
+    title = planConfig.title;
+  } else if (normalizedPurpose === "wallet_credits" || normalizedPurpose === "service") {
     const parsedAmount = Number(clientAmount);
     if (!parsedAmount || isNaN(parsedAmount) || parsedAmount < 100) {
       throw new Error("Wallet recharge requires a minimum amount of ₹100.");
     }
-    return {
-      amount: Math.round(parsedAmount),
-      currency: "INR",
-      title: `Wallet Credit Recharge - ₹${Math.round(parsedAmount)}`,
-    };
+    basePlanAmount = Math.round(parsedAmount);
+    currency = "INR";
+    title = `Wallet Credit Recharge - ₹${Math.round(parsedAmount)}`;
+  } else {
+    throw new Error(`Unsupported order purpose: '${purpose}'`);
   }
 
-  throw new Error(`Unsupported order purpose: '${purpose}'`);
+  // Calculate additional sales representatives cost for subscription bundles
+  if (normalizedPurpose === "subscription" && parsedAdditionalReps > 0) {
+    if (planId === "yearly" || planId === "annual") {
+      const repYearlyCost = extraRepPriceYearly * 12; // 899 * 12 = 10,788
+      additionalRepsCost = parsedAdditionalReps * repYearlyCost;
+      title += ` + ${parsedAdditionalReps} Extra Sales Reps`;
+    } else if (planId === "quarterly") {
+      const repQuarterlyCost = extraRepPriceQuarterly * 3; // 1,199 * 3 = 3,597
+      additionalRepsCost = parsedAdditionalReps * repQuarterlyCost;
+      title += ` + ${parsedAdditionalReps} Extra Sales Reps`;
+    }
+  }
+
+  const finalAdditionalReps =
+    normalizedPurpose === "extra_reps" ? Math.max(1, parsedAdditionalReps) : parsedAdditionalReps;
+
+  const subtotal = basePlanAmount + additionalRepsCost;
+
+  // Resolve configurable GST rate (support percentage e.g. 18 or decimal e.g. 0.18)
+  let gstPercent = DEFAULT_GST_PERCENT;
+  if (typeof dynamicGstRate === "number" && !isNaN(dynamicGstRate)) {
+    gstPercent = dynamicGstRate <= 1 && dynamicGstRate > 0 ? dynamicGstRate * 100 : dynamicGstRate;
+  }
+  const gstFraction = gstPercent / 100;
+
+  const gstAmount = Math.round(subtotal * gstFraction * 100) / 100;
+  const totalAmount = Math.round((subtotal + gstAmount) * 100) / 100;
+
+  return {
+    basePlanAmount,
+    additionalReps: finalAdditionalReps,
+    additionalRepsCost,
+    baseAmount: subtotal,
+    gstRate: gstFraction,
+    gstPercent,
+    gstAmount,
+    amount: totalAmount, // Authoritative total payable amount charged via Cashfree
+    currency,
+    title,
+  };
 };
 
 /**
@@ -154,23 +231,24 @@ export const fulfillOrderBenefits = async (order) => {
           : `${custName}'s Workspace`;
 
       // Determine seats and duration based on plan
-      let seatCount = 5;
+      const extraReps = Number(order.additionalReps) || 0;
+      let seatCount = 5 + extraReps;
       let durationMonths = 1;
       if (order.planId === "yearly" || order.planId === "annual") {
         durationMonths = 12;
-        seatCount = 5;
+        seatCount = 5 + extraReps;
       } else if (order.planId === "quarterly") {
         durationMonths = 3;
-        seatCount = 5;
+        seatCount = 5 + extraReps;
       } else if (order.planId === "enterprise") {
         durationMonths = 1;
-        seatCount = 10;
+        seatCount = 10 + extraReps;
       } else if (order.planId === "growth") {
         durationMonths = 1;
-        seatCount = 5;
+        seatCount = 5 + extraReps;
       } else {
         durationMonths = 1;
-        seatCount = 1;
+        seatCount = 1 + extraReps;
       }
 
       const startDate = new Date();
@@ -240,15 +318,25 @@ export const fulfillOrderBenefits = async (order) => {
       order.organizationId = org._id;
       console.log(`[CashfreeFulfillment] Auto-provisioned new tenant organization: ${org._id} (${org.name})`);
     } else {
-      // Existing Organization: fulfill addon or subscription
+      // Existing Organization: fulfill addon, extra_reps, or subscription
       if (order.purpose === "addon") {
         org.addons = org.addons || {};
         if (order.addonType === "whatsapp_campaigns") {
           org.hasWhatsAppCampaignsAddon = true;
           org.addons.whatsappCampaigns = true;
+        } else if (order.addonType === "target_intelligence") {
+          org.addons.targetIntelligence = true;
+        } else if (order.addonType === "bi_analyst") {
+          org.addons.biAnalyst = true;
         } else if (order.addonType === "instagram_automation") {
           org.hasInstagramAddon = true;
+          org.addons.instagramAutomation = true;
         }
+        org.markModified("addons");
+      } else if (order.purpose === "extra_reps") {
+        const repsAdded = Math.max(1, Number(order.additionalReps) || 1);
+        org.seats = (Number(org.seats) || 1) + repsAdded;
+        org.amountPaid = (org.amountPaid || 0) + (order.orderAmount || 0);
       } else if (order.purpose === "subscription") {
         if (order.planId) {
           const normalizedPlan =
@@ -274,6 +362,10 @@ export const fulfillOrderBenefits = async (order) => {
           newEnd.setMonth(newEnd.getMonth() + extensionMonths);
           org.subscriptionEndDate = newEnd;
           org.amountPaid = (org.amountPaid || 0) + (order.orderAmount || 0);
+          if (order.additionalReps) {
+            const totalSeats = 5 + (Number(order.additionalReps) || 0);
+            org.seats = Math.max(org.seats || 1, totalSeats);
+          }
         }
       }
 
@@ -342,11 +434,22 @@ export const createOrderHandler = async (req, res) => {
       purpose = "addon",
       planId = "",
       addonType = "",
+      additionalReps = 0,
       orderNote = "",
       customerDetails = {},
       returnUrl = "",
       orderAmount: clientAmount,
     } = req.body;
+
+    // Load dynamic pricing and GST settings from SystemSettings if configured
+    const { SystemSettings } = getMasterModels();
+    let sysSettings = null;
+    if (SystemSettings && typeof SystemSettings.findOne === "function") {
+      sysSettings = await SystemSettings.findOne().lean().catch(() => null);
+    }
+    const dynamicGstRate = typeof sysSettings?.gstRate === "number" ? sysSettings.gstRate : undefined;
+    const extraRepPriceYearly = typeof sysSettings?.extraRepMonthlyPriceYearly === "number" ? sysSettings.extraRepMonthlyPriceYearly : 899;
+    const extraRepPriceQuarterly = typeof sysSettings?.extraRepMonthlyPriceQuarterly === "number" ? sysSettings.extraRepMonthlyPriceQuarterly : 1199;
 
     // 1. Authoritative Server-Side Price Resolution (prevents parameter tampering)
     const priceResolution = resolveAuthoritativePrice({
@@ -354,6 +457,10 @@ export const createOrderHandler = async (req, res) => {
       planId,
       addonType,
       clientAmount,
+      additionalReps,
+      dynamicGstRate,
+      extraRepPriceYearly,
+      extraRepPriceQuarterly,
     });
     const finalAmount = priceResolution.amount;
     const finalCurrency = priceResolution.currency;
@@ -441,6 +548,11 @@ export const createOrderHandler = async (req, res) => {
       cfOrderId: cfResult.cfOrderId,
       paymentSessionId: cfResult.paymentSessionId,
       orderAmount: cfResult.orderAmount,
+      baseAmount: priceResolution.baseAmount,
+      gstAmount: priceResolution.gstAmount,
+      gstRate: priceResolution.gstRate,
+      additionalReps: priceResolution.additionalReps,
+      totalSeats: 5 + priceResolution.additionalReps,
       orderCurrency: cfResult.orderCurrency,
       orderStatus: cfResult.orderStatus || "ACTIVE",
       purpose,
@@ -477,6 +589,11 @@ export const createOrderHandler = async (req, res) => {
       paymentSessionId: newOrder.paymentSessionId,
       orderStatus: newOrder.orderStatus,
       orderAmount: newOrder.orderAmount,
+      baseAmount: newOrder.baseAmount,
+      gstAmount: newOrder.gstAmount,
+      gstRate: newOrder.gstRate,
+      additionalReps: newOrder.additionalReps || 0,
+      totalSeats: newOrder.totalSeats || 5,
       orderCurrency: newOrder.orderCurrency,
       isDevMock: Boolean(cfResult.isDevMock),
       environment: process.env.CASHFREE_ENV || "SANDBOX",
@@ -541,13 +658,34 @@ export const getOrderStatusHandler = async (req, res) => {
     }
 
     // Synchronize local order status if changed
+    let effectiveLiveStatus = cfLiveOrder?.orderStatus || localOrder?.orderStatus;
     if (cfLiveOrder) {
       const prevStatus = localOrder.orderStatus;
-      localOrder.orderStatus = cfLiveOrder.orderStatus;
-      if (cfLiveOrder.cfOrderId) localOrder.cfOrderId = cfLiveOrder.cfOrderId;
+      let resolvedStatus = String(cfLiveOrder.orderStatus || "").toUpperCase();
 
       if (cfPayments.length > 0) {
         const latestPayment = cfPayments[0];
+        const latestPayStatus = String(latestPayment.payment_status || "").toUpperCase();
+        const hasSuccessPayment = cfPayments.some(
+          (p) => String(p.payment_status || "").toUpperCase() === "SUCCESS"
+        );
+
+        if (resolvedStatus === "PAID" || hasSuccessPayment) {
+          resolvedStatus = "PAID";
+        } else if (
+          resolvedStatus === "ACTIVE" &&
+          ["FAILED", "USER_DROPPED", "CANCELLED", "VOID", "EXPIRED"].includes(latestPayStatus)
+        ) {
+          resolvedStatus =
+            latestPayStatus === "USER_DROPPED" || latestPayStatus === "CANCELLED"
+              ? "CANCELLED"
+              : latestPayStatus === "EXPIRED"
+              ? "EXPIRED"
+              : "FAILED";
+        } else if (resolvedStatus === "ACTIVE" && latestPayStatus === "PENDING") {
+          resolvedStatus = "PENDING";
+        }
+
         localOrder.paymentDetails = {
           cfPaymentId: String(latestPayment.cf_payment_id || ""),
           paymentMethod: latestPayment.payment_group || latestPayment.payment_method || "",
@@ -559,10 +697,16 @@ export const getOrderStatusHandler = async (req, res) => {
         };
       }
 
+      effectiveLiveStatus = resolvedStatus || cfLiveOrder.orderStatus;
+      if (prevStatus !== "PAID") {
+        localOrder.orderStatus = effectiveLiveStatus;
+      }
+      if (cfLiveOrder.cfOrderId) localOrder.cfOrderId = cfLiveOrder.cfOrderId;
+
       await localOrder.save();
 
-      // Trigger benefit fulfillment if transitioned to PAID
-      if (prevStatus !== "PAID" && cfLiveOrder.orderStatus === "PAID") {
+      // Trigger benefit fulfillment strictly when PAID
+      if (prevStatus !== "PAID" && effectiveLiveStatus === "PAID") {
         await fulfillOrderBenefits(localOrder);
       }
     }
@@ -570,7 +714,7 @@ export const getOrderStatusHandler = async (req, res) => {
     return res.status(200).json({
       success: true,
       order: localOrder,
-      liveStatus: cfLiveOrder?.orderStatus || localOrder?.orderStatus,
+      liveStatus: effectiveLiveStatus || localOrder?.orderStatus,
       payments: cfPayments,
     });
   } catch (error) {
@@ -854,5 +998,142 @@ export const devSimulateSuccessHandler = async (req, res) => {
   } catch (err) {
     console.error("[devSimulateSuccessHandler] Error:", err);
     return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * GET /api/payment/cashfree/public/pricing-config
+ * Public endpoint to fetch configured GST rate and extra rep rates for web checkout
+ */
+export const getPublicPricingConfigHandler = async (req, res) => {
+  try {
+    const { SystemSettings } = getMasterModels();
+    let settings = null;
+    if (SystemSettings && typeof SystemSettings.findOne === "function") {
+      settings = await SystemSettings.findOne().lean().catch(() => null);
+    }
+    const gstRate = typeof settings?.gstRate === "number" ? settings.gstRate : DEFAULT_GST_PERCENT;
+    const extraRepMonthlyPriceYearly =
+      typeof settings?.extraRepMonthlyPriceYearly === "number"
+        ? settings.extraRepMonthlyPriceYearly
+        : 899;
+    const extraRepMonthlyPriceQuarterly =
+      typeof settings?.extraRepMonthlyPriceQuarterly === "number"
+        ? settings.extraRepMonthlyPriceQuarterly
+        : 1199;
+
+    return res.status(200).json({
+      success: true,
+      config: {
+        gstRate, // percentage (e.g. 18)
+        gstFraction: gstRate / 100,
+        extraRepMonthlyPriceYearly,
+        extraRepMonthlyPriceQuarterly,
+        baseRepsIncluded: 5,
+        plans: CASHFREE_PRICING_CATALOG.subscription,
+        addons: CASHFREE_PRICING_CATALOG.addon,
+      },
+    });
+  } catch (error) {
+    console.error("[CashfreePricingConfig] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/payment/cashfree/admin/pricing-settings
+ * Admin endpoint to view live pricing & GST settings
+ */
+export const getAdminPricingSettingsHandler = async (req, res) => {
+  try {
+    const { SystemSettings } = getMasterModels();
+    let settings = null;
+    if (SystemSettings && typeof SystemSettings.findOne === "function") {
+      settings = await SystemSettings.findOne().lean().catch(() => null);
+    }
+    const gstRate = typeof settings?.gstRate === "number" ? settings.gstRate : DEFAULT_GST_PERCENT;
+    const extraRepMonthlyPriceYearly =
+      typeof settings?.extraRepMonthlyPriceYearly === "number"
+        ? settings.extraRepMonthlyPriceYearly
+        : 899;
+    const extraRepMonthlyPriceQuarterly =
+      typeof settings?.extraRepMonthlyPriceQuarterly === "number"
+        ? settings.extraRepMonthlyPriceQuarterly
+        : 1199;
+
+    return res.status(200).json({
+      success: true,
+      settings: {
+        gstRate,
+        extraRepMonthlyPriceYearly,
+        extraRepMonthlyPriceQuarterly,
+        updatedBy: settings?.updatedBy || "System",
+        updatedAt: settings?.updatedAt || null,
+      },
+    });
+  } catch (error) {
+    console.error("[CashfreeGetPricingSettings] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * PUT /api/payment/cashfree/admin/pricing-settings
+ * Admin updates GST rate and extra sales rep pricing in master SystemSettings
+ */
+export const updatePricingSettingsHandler = async (req, res) => {
+  try {
+    const { gstRate, extraRepMonthlyPriceYearly, extraRepMonthlyPriceQuarterly } = req.body;
+    const { SystemSettings } = getMasterModels();
+    if (!SystemSettings) {
+      return res.status(500).json({ success: false, message: "SystemSettings model unavailable." });
+    }
+
+    let settings = await SystemSettings.findOne();
+    if (!settings) {
+      settings = new SystemSettings({});
+    }
+
+    if (gstRate !== undefined && !isNaN(Number(gstRate))) {
+      const parsedGst = Number(gstRate);
+      if (parsedGst < 0 || parsedGst > 100) {
+        return res.status(400).json({ success: false, message: "GST Rate must be between 0 and 100%." });
+      }
+      settings.gstRate = parsedGst;
+    }
+
+    if (extraRepMonthlyPriceYearly !== undefined && !isNaN(Number(extraRepMonthlyPriceYearly))) {
+      const parsedYearly = Number(extraRepMonthlyPriceYearly);
+      if (parsedYearly < 0) {
+        return res.status(400).json({ success: false, message: "Yearly extra rep price cannot be negative." });
+      }
+      settings.extraRepMonthlyPriceYearly = parsedYearly;
+    }
+
+    if (extraRepMonthlyPriceQuarterly !== undefined && !isNaN(Number(extraRepMonthlyPriceQuarterly))) {
+      const parsedQuarterly = Number(extraRepMonthlyPriceQuarterly);
+      if (parsedQuarterly < 0) {
+        return res.status(400).json({ success: false, message: "Quarterly extra rep price cannot be negative." });
+      }
+      settings.extraRepMonthlyPriceQuarterly = parsedQuarterly;
+    }
+
+    settings.updatedBy = req.user?.name || req.user?.email || "Admin";
+    await settings.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Pricing & GST settings saved successfully.",
+      settings: {
+        gstRate: settings.gstRate,
+        extraRepMonthlyPriceYearly: settings.extraRepMonthlyPriceYearly,
+        extraRepMonthlyPriceQuarterly: settings.extraRepMonthlyPriceQuarterly,
+        updatedBy: settings.updatedBy,
+        updatedAt: settings.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error("[CashfreeUpdatePricingSettings] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

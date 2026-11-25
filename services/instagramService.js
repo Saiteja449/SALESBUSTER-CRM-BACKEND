@@ -458,8 +458,12 @@ export const handleIncomingInstagramComment = async ({
   // 1. ALWAYS Upsert Contact
   const contactIgsid = igsid || `commenter_${commentId}`;
   let contact = await InstagramContact.findOne({
-    accountId: account._id,
-    $or: [{ igsid: contactIgsid }, ...(username ? [{ username }] : [])],
+    organizationId,
+    $or: [
+      { igsid: contactIgsid },
+      ...(igsid ? [{ igsid }] : []),
+      ...(username ? [{ username: new RegExp("^" + username.trim() + "$", "i") }] : []),
+    ],
   });
 
   if (!contact) {
@@ -473,6 +477,7 @@ export const handleIncomingInstagramComment = async ({
     });
   } else {
     contact.lastInteractedAt = new Date();
+    contact.accountId = account._id;
     if (username && (!contact.username || contact.username === "instagram_user")) {
       contact.username = username;
       contact.name = contact.name || username;
@@ -527,16 +532,28 @@ export const handleIncomingInstagramComment = async ({
   // 3. ALWAYS Upsert Unified Conversation Record so it appears in the "Instagram comments" tab
   if (Conversation) {
     try {
+      const convFindConditions = [
+        { instagramContactId: contact._id },
+        { instagramIgsid: contact.igsid },
+      ];
+      if (contact.username && contact.username !== "instagram_user") {
+        convFindConditions.push({ instagramUsername: new RegExp("^" + contact.username.trim() + "$", "i") });
+      }
+      if (contact.name && contact.name !== "Instagram User" && contact.name !== "Instagram Commenter" && contact.name !== "unknown") {
+        convFindConditions.push({ customerName: new RegExp("^" + contact.name.trim() + "$", "i") });
+      }
+      if (contact.leadId) {
+        convFindConditions.push({ leadId: contact.leadId });
+      }
+
       await Conversation.findOneAndUpdate(
         {
-          $or: [
-            { instagramContactId: contact._id },
-            { instagramIgsid: contact.igsid },
-            ...(contact.leadId ? [{ leadId: contact.leadId }] : []),
-          ],
+          organizationId,
+          $or: convFindConditions,
         },
         {
           $set: {
+            organizationId,
             channel: "instagram_comment",
             subChannel: "comment",
             triggerSource: "comment_to_dm",
@@ -843,11 +860,33 @@ export const handleIncomingInstagramMessage = async ({
   });
 
   if (!contact) {
-    const profile = await fetchInstagramUserProfile({
-      pageAccessToken: account.pageAccessTokenEncrypted,
-      igsid,
-    });
+    contact = await InstagramContact.findOne({ organizationId, igsid });
+  }
 
+  const profile = !contact || !contact.username || !contact.name
+    ? await fetchInstagramUserProfile({
+        pageAccessToken: account.pageAccessTokenEncrypted,
+        igsid,
+      })
+    : null;
+
+  if (!contact && profile) {
+    const matchConditions = [];
+    if (profile.username) {
+      matchConditions.push({ username: new RegExp("^" + profile.username.trim() + "$", "i") });
+    }
+    if (profile.name && profile.name !== "Instagram User" && profile.name !== "unknown") {
+      matchConditions.push({ name: new RegExp("^" + profile.name.trim() + "$", "i") });
+    }
+    if (matchConditions.length > 0) {
+      contact = await InstagramContact.findOne({
+        organizationId,
+        $or: matchConditions,
+      });
+    }
+  }
+
+  if (!contact) {
     contact = await InstagramContact.create({
       organizationId,
       accountId: account._id,
@@ -858,6 +897,17 @@ export const handleIncomingInstagramMessage = async ({
       lastInteractedAt: new Date(),
     });
   } else {
+    contact.accountId = account._id;
+    contact.igsid = igsid;
+    if (profile?.username && (!contact.username || contact.username === "instagram_user")) {
+      contact.username = profile.username;
+    }
+    if (profile?.name && (!contact.name || contact.name === "Instagram User")) {
+      contact.name = profile.name;
+    }
+    if (profile?.profile_pic && !contact.profilePic) {
+      contact.profilePic = profile.profile_pic;
+    }
     contact.lastInteractedAt = new Date();
     await contact.save();
   }
@@ -894,16 +944,28 @@ export const handleIncomingInstagramMessage = async ({
 
   if (Conversation) {
     try {
+      const convFindConditions = [
+        { instagramContactId: contact._id },
+        { instagramIgsid: igsid },
+      ];
+      if (contact.username) {
+        convFindConditions.push({ instagramUsername: new RegExp("^" + contact.username.trim() + "$", "i") });
+      }
+      if (contact.name && contact.name !== "Instagram User" && contact.name !== "unknown") {
+        convFindConditions.push({ customerName: new RegExp("^" + contact.name.trim() + "$", "i") });
+      }
+      if (contact.leadId) {
+        convFindConditions.push({ leadId: contact.leadId });
+      }
+
       await Conversation.findOneAndUpdate(
         {
-          $or: [
-            { instagramContactId: contact._id },
-            { instagramIgsid: igsid },
-            ...(contact.leadId ? [{ leadId: contact.leadId }] : []),
-          ],
+          organizationId,
+          $or: convFindConditions,
         },
         {
           $set: {
+            organizationId,
             channel: "instagram",
             instagramIgsid: igsid,
             instagramUsername: contact.username,

@@ -10,22 +10,55 @@ describe("Instagram Conversation Grouping & Deduplication", () => {
 
     const isAIg = a.channel?.startsWith("instagram");
     const isBIg = b.channel?.startsWith("instagram");
-    if (isAIg && isBIg) {
+    if (isAIg || isBIg) {
       const aIgsid = a.instagramIgsid || a.igsid;
       const bIgsid = b.instagramIgsid || b.igsid;
-      if (aIgsid && bIgsid && String(aIgsid) === String(bIgsid)) return true;
+      if (
+        aIgsid &&
+        bIgsid &&
+        !String(aIgsid).startsWith("commenter_") &&
+        !String(bIgsid).startsWith("commenter_") &&
+        String(aIgsid) === String(bIgsid)
+      ) {
+        return true;
+      }
 
-      const aContactId = String(a.instagramContactId || a.contactId || (a.id?.length === 24 ? a.id : a._id || ""));
-      const bContactId = String(b.instagramContactId || b.contactId || (b.id?.length === 24 ? b.id : b._id || ""));
+      const aContactId = String(a.instagramContactId || a.contactId || "");
+      const bContactId = String(b.instagramContactId || b.contactId || "");
       if (aContactId && bContactId && aContactId === bContactId) return true;
+
+      // Check allContactIds array if present from backend
+      if (Array.isArray(a.allContactIds) && bContactId && a.allContactIds.includes(bContactId)) return true;
+      if (Array.isArray(b.allContactIds) && aContactId && b.allContactIds.includes(aContactId)) return true;
+      if (Array.isArray(a.allContactIds) && b.id && a.allContactIds.includes(String(b.id))) return true;
+      if (Array.isArray(b.allContactIds) && a.id && b.allContactIds.includes(String(a.id))) return true;
 
       const aUname = (a.instagramUsername || a.username)?.toLowerCase()?.trim();
       const bUname = (b.instagramUsername || b.username)?.toLowerCase()?.trim();
-      if (aUname && bUname && aUname === bUname) return true;
+      if (
+        aUname &&
+        bUname &&
+        aUname !== "instagram_user" &&
+        aUname !== "instagram user" &&
+        aUname !== "unknown" &&
+        aUname === bUname
+      ) {
+        return true;
+      }
 
-      const aName = a.customerName?.toLowerCase()?.trim();
-      const bName = b.customerName?.toLowerCase()?.trim();
-      if (aName && bName && aName !== "instagram user" && bName !== "instagram user" && aName === bName) return true;
+      const aName = (a.customerName || a.name)?.toLowerCase()?.trim();
+      const bName = (b.customerName || b.name)?.toLowerCase()?.trim();
+      if (
+        aName &&
+        bName &&
+        aName !== "instagram user" &&
+        bName !== "instagram user" &&
+        aName !== "unknown" &&
+        bName !== "unknown" &&
+        aName === bName
+      ) {
+        return true;
+      }
 
       return false;
     }
@@ -44,14 +77,26 @@ describe("Instagram Conversation Grouping & Deduplication", () => {
   const getCanonicalKey = (conv) => {
     if (!conv) return "unknown";
     if (conv.channel?.startsWith("instagram")) {
-      const igsid = conv.instagramIgsid || conv.igsid;
-      if (igsid) return `ig_igsid_${igsid}`;
-      const contactId = conv.instagramContactId || conv.contactId || (conv.id?.length === 24 ? conv.id : conv._id);
-      if (contactId) return `ig_contact_${contactId}`;
+      const cname = (conv.customerName || conv.name)?.toLowerCase()?.trim();
+      if (cname && cname !== "instagram user" && cname !== "unknown") {
+        return `ig_name_${cname}`;
+      }
+
       const uname = (conv.instagramUsername || conv.username)?.toLowerCase()?.trim();
-      if (uname && uname !== "instagram user") return `ig_user_${uname}`;
-      const cname = conv.customerName?.toLowerCase()?.trim();
-      if (cname && cname !== "instagram user" && cname !== "unknown") return `ig_name_${cname}`;
+      if (uname && uname !== "instagram user" && uname !== "instagram_user" && uname !== "unknown") {
+        return `ig_user_${uname}`;
+      }
+
+      const igsid = conv.instagramIgsid || conv.igsid;
+      if (igsid && !String(igsid).startsWith("commenter_")) {
+        return `ig_igsid_${igsid}`;
+      }
+
+      const contactId = conv.instagramContactId || conv.contactId;
+      if (contactId) {
+        return `ig_contact_${contactId}`;
+      }
+
       return `ig_id_${conv.id || conv._id}`;
     }
     const leadId = conv.leadId?._id || conv.leadId?.id || (typeof conv.leadId === "string" ? conv.leadId : null);
@@ -155,5 +200,75 @@ describe("Instagram Conversation Grouping & Deduplication", () => {
     const markUnreadPayload = { unread: true };
     unreadCount = markUnreadPayload.unread ? 1 : 0;
     assert.strictEqual(unreadCount, 1);
+  });
+
+  test("4. Same account messaged 2 times with different contact IDs or IGSIDs merges into exactly 1 conversation", () => {
+    // First message: "Hi" from a comment or earlier session
+    const firstMessageConv = {
+      _id: "67448b111111111111111111",
+      id: "67448b111111111111111111",
+      customerName: "Vijay Pallapu",
+      username: "vijay_pallapu",
+      channel: "instagram",
+      igsid: "commenter_17849999",
+      instagramIgsid: "commenter_17849999",
+      instagramContactId: "67448b111111111111111111",
+      unreadCount: 0,
+      lastMessage: "Hi",
+      lastMessageTime: new Date("2026-11-20T10:00:00Z"),
+    };
+
+    // Second message: "Hii" from DM with different IGSID and contact ID
+    const secondMessageConv = {
+      _id: "67448b222222222222222222",
+      id: "67448b222222222222222222",
+      customerName: "Vijay Pallapu",
+      username: "vijay_pallapu",
+      channel: "instagram",
+      igsid: "84291029482019",
+      instagramIgsid: "84291029482019",
+      instagramContactId: "67448b222222222222222222",
+      unreadCount: 1,
+      lastMessage: "Hii",
+      lastMessageTime: new Date("2026-11-20T11:00:00Z"),
+    };
+
+    // They must match as the same conversation
+    assert.strictEqual(isSameConversation(firstMessageConv, secondMessageConv), true);
+    // They must yield the same canonical key (ig_name_vijay pallapu)
+    assert.strictEqual(getCanonicalKey(firstMessageConv), getCanonicalKey(secondMessageConv));
+    assert.strictEqual(getCanonicalKey(firstMessageConv), "ig_name_vijay pallapu");
+
+    // Unified map merging
+    const rawCombined = [firstMessageConv, secondMessageConv];
+    const conversationMap = new Map();
+
+    for (const item of rawCombined) {
+      let matchKey = null;
+      for (const [key, existing] of conversationMap.entries()) {
+        if (isSameConversation(existing, item) || getCanonicalKey(existing) === getCanonicalKey(item)) {
+          matchKey = key;
+          break;
+        }
+      }
+      const canonicalKey = matchKey || getCanonicalKey(item);
+
+      if (!conversationMap.has(canonicalKey)) {
+        conversationMap.set(canonicalKey, { ...item });
+      } else {
+        const existing = conversationMap.get(canonicalKey);
+        existing.unreadCount = Math.max(existing.unreadCount || 0, item.unreadCount || 0);
+        if (new Date(item.lastMessageTime || 0) > new Date(existing.lastMessageTime || 0)) {
+          existing.lastMessage = item.lastMessage;
+          existing.lastMessageTime = item.lastMessageTime;
+        }
+      }
+    }
+
+    const uniqueList = Array.from(conversationMap.values());
+    assert.strictEqual(uniqueList.length, 1, "Must show only 1 conversation, not 2");
+    assert.strictEqual(uniqueList[0].customerName, "Vijay Pallapu");
+    assert.strictEqual(uniqueList[0].lastMessage, "Hii", "Latest message must be 'Hii'");
+    assert.strictEqual(uniqueList[0].unreadCount, 1, "Unread count must be preserved as 1");
   });
 });

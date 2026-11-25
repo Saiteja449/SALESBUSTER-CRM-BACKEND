@@ -116,22 +116,26 @@ describe("Cashfree Payment Gateway Backend Tests", () => {
   });
 
   it("should enforce authoritative server-side pricing to prevent parameter tampering", () => {
-    // 1. WhatsApp Campaigns Addon should resolve to ₹999 regardless of client input
+    // 1. WhatsApp Campaigns Addon should resolve to base ₹999 + 18% GST (₹1,178.82 total) regardless of client input
     const addonPrice = resolveAuthoritativePrice({
       purpose: "addon",
       addonType: "whatsapp_campaigns",
       clientAmount: 1, // Tampered ₹1 input from client
     });
-    assert.equal(addonPrice.amount, 999, "Server catalog must override tampered client amount");
+    assert.equal(addonPrice.baseAmount, 999, "Server catalog must override tampered client amount");
+    assert.equal(addonPrice.gstAmount, 179.82, "Must calculate 18% GST");
+    assert.equal(addonPrice.amount, 1178.82, "Total payable must include 18% GST");
     assert.equal(addonPrice.currency, "INR");
 
-    // 2. Growth Subscription Plan should resolve to ₹2999
+    // 2. Growth Subscription Plan should resolve to ₹2999 + 18% GST (₹3,538.82)
     const planPrice = resolveAuthoritativePrice({
       purpose: "subscription",
       planId: "growth",
       clientAmount: 50, // Tampered input
     });
-    assert.equal(planPrice.amount, 2999, "Server catalog must enforce growth plan price");
+    assert.equal(planPrice.baseAmount, 2999, "Server catalog must enforce growth plan price");
+    assert.equal(planPrice.gstAmount, 539.82, "Must calculate 18% GST");
+    assert.equal(planPrice.amount, 3538.82, "Total payable must include 18% GST");
 
     // 3. Reject invalid addon or plan
     assert.throws(() => {
@@ -143,7 +147,9 @@ describe("Cashfree Payment Gateway Backend Tests", () => {
       resolveAuthoritativePrice({ purpose: "wallet_credits", clientAmount: 20 });
     });
     const validWallet = resolveAuthoritativePrice({ purpose: "wallet_credits", clientAmount: 500 });
-    assert.equal(validWallet.amount, 500);
+    assert.equal(validWallet.baseAmount, 500);
+    assert.equal(validWallet.gstAmount, 90);
+    assert.equal(validWallet.amount, 590);
   });
 
   it("should have correct schema definitions for CashfreeOrder and CashfreeWebhookEvent", () => {

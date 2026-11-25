@@ -502,8 +502,24 @@ export const sendPaymentReceiptEmail = async ({
   const formattedAmount = Number(order.orderAmount || 0).toLocaleString("en-IN", {
     style: "currency",
     currency: order.orderCurrency || "INR",
-    maximumFractionDigits: 0,
+    maximumFractionDigits: 2,
   });
+
+  const formattedBaseAmount = order.baseAmount
+    ? Number(order.baseAmount).toLocaleString("en-IN", {
+        style: "currency",
+        currency: order.orderCurrency || "INR",
+        maximumFractionDigits: 2,
+      })
+    : null;
+
+  const formattedGstAmount = order.gstAmount
+    ? Number(order.gstAmount).toLocaleString("en-IN", {
+        style: "currency",
+        currency: order.orderCurrency || "INR",
+        maximumFractionDigits: 2,
+      })
+    : null;
 
   const paymentDate = order.paymentDetails?.paymentTime
     ? new Date(order.paymentDetails.paymentTime).toLocaleString("en-IN", {
@@ -582,6 +598,30 @@ export const sendPaymentReceiptEmail = async ({
             <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Plan / Service:</td>
             <td style="padding: 6px 0; color: #0f172a; font-weight: 700; text-align: right;">${planTitle}</td>
           </tr>
+          ${
+            order.additionalReps
+              ? `
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Sales Rep Seats:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 600; text-align: right;">${5 + Number(order.additionalReps)} Reps (5 Base + ${order.additionalReps} Additional)</td>
+          </tr>
+          `
+              : ""
+          }
+          ${
+            formattedBaseAmount
+              ? `
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Subtotal (Base Price):</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 600; text-align: right;">${formattedBaseAmount}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Goods &amp; Services Tax (18% GST):</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 600; text-align: right;">${formattedGstAmount || "₹0.00"}</td>
+          </tr>
+          `
+              : ""
+          }
           <tr>
             <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Payment Reference:</td>
             <td style="padding: 6px 0; color: #0f172a; font-weight: 600; text-align: right; font-family: monospace;">${paymentId}</td>

@@ -57,8 +57,9 @@ export const login = async (req, res) => {
 
     // 3. Organization and Subscription status check
     let organizationData = null;
+    let org = null;
     if (user.organizationId) {
-      const org = await Organization.findById(user.organizationId);
+      org = await Organization.findById(user.organizationId);
       if (org) {
         if (org.status === "inactive" || org.status === "suspended") {
           return res.status(403).json({

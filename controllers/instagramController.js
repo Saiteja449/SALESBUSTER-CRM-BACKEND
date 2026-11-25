@@ -663,10 +663,70 @@ export const getInstagramConversations = async (req, res) => {
       .sort({ lastInteractedAt: -1 })
       .lean();
 
-    const formatted = [];
+    // Deduplicate contacts by user identity (username, customerName, or igsid)
+    const groupedMap = new Map();
+
     for (const c of contacts) {
+      const uname = (c.username || "").toLowerCase().trim();
+      const cname = (c.name || "").toLowerCase().trim();
+      const igsid = (c.igsid || "").trim();
+
+      let groupKey = "";
+      if (uname && uname !== "instagram_user" && uname !== "instagram user") {
+        groupKey = `ig_user_${uname}`;
+      } else if (cname && cname !== "instagram user" && cname !== "unknown") {
+        groupKey = `ig_name_${cname}`;
+      } else if (igsid && !igsid.startsWith("commenter_")) {
+        groupKey = `ig_igsid_${igsid}`;
+      } else {
+        groupKey = `ig_contact_${c._id.toString()}`;
+      }
+
+      if (!groupedMap.has(groupKey)) {
+        groupedMap.set(groupKey, {
+          primaryContact: c,
+          allContacts: [c],
+          allContactIds: [c._id.toString()],
+          allIgsids: igsid ? [igsid] : [],
+        });
+      } else {
+        const group = groupedMap.get(groupKey);
+        group.allContacts.push(c);
+        group.allContactIds.push(c._id.toString());
+        if (igsid && !group.allIgsids.includes(igsid)) {
+          group.allIgsids.push(igsid);
+        }
+        // Prefer contact with richer details or latest interaction
+        if (
+          (!group.primaryContact.profilePic && c.profilePic) ||
+          (!group.primaryContact.leadId && c.leadId) ||
+          (new Date(c.lastInteractedAt || 0) > new Date(group.primaryContact.lastInteractedAt || 0))
+        ) {
+          group.primaryContact = {
+            ...group.primaryContact,
+            ...c,
+            name: c.name || group.primaryContact.name,
+            username: c.username || group.primaryContact.username,
+            profilePic: c.profilePic || group.primaryContact.profilePic,
+            leadId: c.leadId || group.primaryContact.leadId,
+          };
+        }
+      }
+    }
+
+    const formatted = [];
+    for (const [groupKey, group] of groupedMap.entries()) {
+      const c = group.primaryContact;
+      const contactObjectIds = group.allContactIds
+        .filter((id) => mongoose.isValidObjectId(id))
+        .map((id) => new mongoose.Types.ObjectId(id));
+
       const lastMsg = await tenantModels.InstagramMessage.findOne({
-        $or: [{ contactId: c._id }, { igsid: c.igsid }],
+        organizationId,
+        $or: [
+          { contactId: { $in: contactObjectIds } },
+          { igsid: { $in: group.allIgsids } },
+        ],
       })
         .sort({ timestamp: -1 })
         .lean();
@@ -675,7 +735,11 @@ export const getInstagramConversations = async (req, res) => {
       let convo = null;
       if (tenantModels.Conversation) {
         convo = await tenantModels.Conversation.findOne({
-          $or: [{ instagramContactId: c._id }, { instagramIgsid: c.igsid }],
+          $or: [
+            { instagramContactId: { $in: contactObjectIds } },
+            { instagramIgsid: { $in: group.allIgsids } },
+            ...(c.leadId ? [{ leadId: c.leadId }] : []),
+          ],
         }).lean();
       }
 
@@ -698,9 +762,11 @@ export const getInstagramConversations = async (req, res) => {
         _id: c._id,
         id: c._id.toString(),
         conversationId: convo?._id?.toString() || null,
-        igsid: c.igsid,
-        instagramIgsid: c.igsid,
+        igsid: c.igsid || group.allIgsids[0] || "",
+        instagramIgsid: c.igsid || group.allIgsids[0] || "",
         instagramContactId: c._id.toString(),
+        allContactIds: group.allContactIds,
+        allIgsids: group.allIgsids,
         channel,
         subChannel: isComment ? "comment" : "dm",
         triggerSource: lastMsg?.triggerSource || (isComment ? "comment_to_dm" : "direct_message"),
@@ -733,10 +799,11 @@ export const getInstagramMessages = async (req, res) => {
   const tenantModels = req.tenantModels || getTenantModels(req.organization?.tenantDbName);
 
   try {
-    let resolvedContactId = contactId;
+    let resolvedContactId = mongoose.isValidObjectId(contactId) ? contactId : null;
     let resolvedIgsid = contactId;
+    let contactDoc = null;
 
-    if (tenantModels.Conversation && typeof tenantModels.Conversation.findById === "function") {
+    if (tenantModels.Conversation && resolvedContactId && typeof tenantModels.Conversation.findById === "function") {
       const convQuery = tenantModels.Conversation.findById(contactId);
       const convo = convQuery && typeof convQuery.lean === "function"
         ? await convQuery.lean().catch(() => null)
@@ -749,37 +816,85 @@ export const getInstagramMessages = async (req, res) => {
       }
     }
 
-    if (tenantModels.InstagramContact && (!resolvedIgsid || resolvedIgsid === contactId) && typeof tenantModels.InstagramContact.findById === "function") {
-      const contactQuery = tenantModels.InstagramContact.findById(contactId);
-      const igContact = contactQuery && typeof contactQuery.lean === "function"
-        ? await contactQuery.lean().catch(() => null)
-        : await Promise.resolve(contactQuery).catch(() => null);
-      if (igContact?.igsid) {
-        resolvedIgsid = igContact.igsid;
-        resolvedContactId = igContact._id.toString();
+    // Lookup contact
+    if (tenantModels.InstagramContact) {
+      if (resolvedContactId) {
+        contactDoc = await tenantModels.InstagramContact.findById(resolvedContactId).lean().catch(() => null);
+      }
+      if (!contactDoc && resolvedIgsid) {
+        contactDoc = await tenantModels.InstagramContact.findOne({
+          $or: [{ igsid: resolvedIgsid }, { username: resolvedIgsid }],
+        }).lean().catch(() => null);
+      }
+      if (contactDoc) {
+        resolvedContactId = contactDoc._id.toString();
+        resolvedIgsid = contactDoc.igsid || resolvedIgsid;
       }
     }
 
+    // Find ALL related contact IDs and IGSIDs for this customer
+    const contactOrConditions = [];
+    if (resolvedContactId && mongoose.isValidObjectId(resolvedContactId)) {
+      contactOrConditions.push({ _id: new mongoose.Types.ObjectId(resolvedContactId) });
+    }
+    if (resolvedIgsid) {
+      contactOrConditions.push({ igsid: resolvedIgsid });
+    }
+    if (contactDoc?.username && contactDoc.username !== "instagram_user") {
+      contactOrConditions.push({ username: new RegExp("^" + contactDoc.username.trim() + "$", "i") });
+    }
+    if (contactDoc?.name && contactDoc.name !== "Instagram User" && contactDoc.name !== "unknown") {
+      contactOrConditions.push({ name: new RegExp("^" + contactDoc.name.trim() + "$", "i") });
+    }
+
+    let allRelatedContacts = [];
+    if (tenantModels.InstagramContact && contactOrConditions.length > 0) {
+      allRelatedContacts = await tenantModels.InstagramContact.find({
+        organizationId,
+        $or: contactOrConditions,
+      }).lean().catch(() => []);
+    }
+
+    const allContactObjectIds = [
+      ...(resolvedContactId && mongoose.isValidObjectId(resolvedContactId) ? [new mongoose.Types.ObjectId(resolvedContactId)] : []),
+      ...allRelatedContacts.map((c) => c._id),
+    ];
+    const allIgsids = Array.from(
+      new Set([
+        ...(resolvedIgsid ? [resolvedIgsid] : []),
+        ...allRelatedContacts.map((c) => c.igsid).filter(Boolean),
+      ])
+    );
+
     const queryFilter = {
       $or: [
-        { contactId },
-        { contactId: resolvedContactId },
-        { igsid: contactId },
-        { igsid: resolvedIgsid },
+        { contactId: { $in: allContactObjectIds } },
+        { igsid: { $in: allIgsids } },
       ],
     };
     if (organizationId) {
       queryFilter.organizationId = organizationId;
     }
 
-    const messages = await tenantModels.InstagramMessage.find(queryFilter).sort({ timestamp: 1 });
+    const messages = await tenantModels.InstagramMessage.find(queryFilter).sort({ timestamp: 1 }).lean();
+
+    // Deduplicate messages by mid
+    const seenMids = new Set();
+    const uniqueMessages = [];
+    for (const m of messages) {
+      const key = m.mid || m._id.toString();
+      if (!seenMids.has(key)) {
+        seenMids.add(key);
+        uniqueMessages.push(m);
+      }
+    }
 
     // Mark as read automatically in Conversation and InstagramContact
     try {
       const convOrConditions = [];
-      if (mongoose.isValidObjectId(contactId)) convOrConditions.push({ _id: contactId });
-      if (mongoose.isValidObjectId(resolvedContactId)) convOrConditions.push({ instagramContactId: resolvedContactId });
-      if (resolvedIgsid) convOrConditions.push({ instagramIgsid: resolvedIgsid });
+      if (mongoose.isValidObjectId(contactId)) convOrConditions.push({ _id: new mongoose.Types.ObjectId(contactId) });
+      if (allContactObjectIds.length > 0) convOrConditions.push({ instagramContactId: { $in: allContactObjectIds } });
+      if (allIgsids.length > 0) convOrConditions.push({ instagramIgsid: { $in: allIgsids } });
 
       if (tenantModels.Conversation && convOrConditions.length > 0) {
         await tenantModels.Conversation.updateMany(
@@ -789,8 +904,8 @@ export const getInstagramMessages = async (req, res) => {
       }
       if (tenantModels.InstagramContact) {
         const contactConditions = [];
-        if (mongoose.isValidObjectId(resolvedContactId)) contactConditions.push({ _id: resolvedContactId });
-        if (resolvedIgsid) contactConditions.push({ igsid: resolvedIgsid });
+        if (allContactObjectIds.length > 0) contactConditions.push({ _id: { $in: allContactObjectIds } });
+        if (allIgsids.length > 0) contactConditions.push({ igsid: { $in: allIgsids } });
         if (contactConditions.length > 0) {
           await tenantModels.InstagramContact.updateMany(
             { $or: contactConditions },
@@ -805,17 +920,22 @@ export const getInstagramMessages = async (req, res) => {
           contactId: resolvedContactId,
           igsid: resolvedIgsid,
         });
+        io.to(`org_${organizationId}`).emit("conversation_read_status", {
+          contactId: resolvedContactId,
+          igsid: resolvedIgsid,
+          unreadCount: 0,
+        });
       }
     } catch (readErr) {
       console.warn("[getInstagramMessages] Mark as read warning:", readErr.message);
     }
 
-    const formatted = messages.map((m) => ({
+    const formatted = uniqueMessages.map((m) => ({
       _id: m._id,
       id: m._id.toString(),
       messageId: m.mid,
       sender: m.direction === "outgoing" ? "You" : m.igsid,
-      senderName: m.direction === "outgoing" ? "Agent" : "Instagram User",
+      senderName: m.direction === "outgoing" ? "Agent" : (contactDoc?.name || "Instagram User"),
       direction: m.direction,
       messageType: m.mediaType !== "none" ? m.mediaType : "text",
       text: m.text,
@@ -841,10 +961,11 @@ export const markInstagramConversationRead = async (req, res) => {
   const tenantModels = req.tenantModels || getTenantModels(req.organization?.tenantDbName);
 
   try {
-    let resolvedContactId = contactId;
+    let resolvedContactId = mongoose.isValidObjectId(contactId) ? contactId : null;
     let resolvedIgsid = contactId;
+    let contactDoc = null;
 
-    if (tenantModels.Conversation && typeof tenantModels.Conversation.findById === "function") {
+    if (tenantModels.Conversation && resolvedContactId && typeof tenantModels.Conversation.findById === "function") {
       const convQuery = tenantModels.Conversation.findById(contactId);
       const convo = convQuery && typeof convQuery.lean === "function"
         ? await convQuery.lean().catch(() => null)
@@ -853,22 +974,59 @@ export const markInstagramConversationRead = async (req, res) => {
       if (convo?.instagramIgsid) resolvedIgsid = convo.instagramIgsid;
     }
 
-    if (tenantModels.InstagramContact && (!resolvedIgsid || resolvedIgsid === contactId) && typeof tenantModels.InstagramContact.findById === "function") {
-      const contactQuery = tenantModels.InstagramContact.findById(contactId);
-      const igContact = contactQuery && typeof contactQuery.lean === "function"
-        ? await contactQuery.lean().catch(() => null)
-        : await Promise.resolve(contactQuery).catch(() => null);
-      if (igContact?.igsid) {
-        resolvedIgsid = igContact.igsid;
-        resolvedContactId = igContact._id.toString();
+    if (tenantModels.InstagramContact) {
+      if (resolvedContactId) {
+        contactDoc = await tenantModels.InstagramContact.findById(resolvedContactId).lean().catch(() => null);
+      }
+      if (!contactDoc && resolvedIgsid) {
+        contactDoc = await tenantModels.InstagramContact.findOne({
+          $or: [{ igsid: resolvedIgsid }, { username: resolvedIgsid }],
+        }).lean().catch(() => null);
+      }
+      if (contactDoc) {
+        resolvedContactId = contactDoc._id.toString();
+        resolvedIgsid = contactDoc.igsid || resolvedIgsid;
       }
     }
 
+    const contactOrConditions = [];
+    if (resolvedContactId && mongoose.isValidObjectId(resolvedContactId)) {
+      contactOrConditions.push({ _id: new mongoose.Types.ObjectId(resolvedContactId) });
+    }
+    if (resolvedIgsid) {
+      contactOrConditions.push({ igsid: resolvedIgsid });
+    }
+    if (contactDoc?.username && contactDoc.username !== "instagram_user") {
+      contactOrConditions.push({ username: new RegExp("^" + contactDoc.username.trim() + "$", "i") });
+    }
+    if (contactDoc?.name && contactDoc.name !== "Instagram User" && contactDoc.name !== "unknown") {
+      contactOrConditions.push({ name: new RegExp("^" + contactDoc.name.trim() + "$", "i") });
+    }
+
+    let allRelatedContacts = [];
+    if (tenantModels.InstagramContact && contactOrConditions.length > 0) {
+      allRelatedContacts = await tenantModels.InstagramContact.find({
+        organizationId,
+        $or: contactOrConditions,
+      }).lean().catch(() => []);
+    }
+
+    const allContactObjectIds = [
+      ...(resolvedContactId && mongoose.isValidObjectId(resolvedContactId) ? [new mongoose.Types.ObjectId(resolvedContactId)] : []),
+      ...allRelatedContacts.map((c) => c._id),
+    ];
+    const allIgsids = Array.from(
+      new Set([
+        ...(resolvedIgsid ? [resolvedIgsid] : []),
+        ...allRelatedContacts.map((c) => c.igsid).filter(Boolean),
+      ])
+    );
+
     const newUnreadCount = unread ? 1 : 0;
     const convOrConditions = [];
-    if (mongoose.isValidObjectId(contactId)) convOrConditions.push({ _id: contactId });
-    if (mongoose.isValidObjectId(resolvedContactId)) convOrConditions.push({ instagramContactId: resolvedContactId });
-    if (resolvedIgsid) convOrConditions.push({ instagramIgsid: resolvedIgsid });
+    if (mongoose.isValidObjectId(contactId)) convOrConditions.push({ _id: new mongoose.Types.ObjectId(contactId) });
+    if (allContactObjectIds.length > 0) convOrConditions.push({ instagramContactId: { $in: allContactObjectIds } });
+    if (allIgsids.length > 0) convOrConditions.push({ instagramIgsid: { $in: allIgsids } });
 
     if (tenantModels.Conversation && convOrConditions.length > 0) {
       await tenantModels.Conversation.updateMany(
@@ -879,8 +1037,8 @@ export const markInstagramConversationRead = async (req, res) => {
 
     if (tenantModels.InstagramContact) {
       const contactConditions = [];
-      if (mongoose.isValidObjectId(resolvedContactId)) contactConditions.push({ _id: resolvedContactId });
-      if (resolvedIgsid) contactConditions.push({ igsid: resolvedIgsid });
+      if (allContactObjectIds.length > 0) contactConditions.push({ _id: { $in: allContactObjectIds } });
+      if (allIgsids.length > 0) contactConditions.push({ igsid: { $in: allIgsids } });
       if (contactConditions.length > 0) {
         await tenantModels.InstagramContact.updateMany(
           { $or: contactConditions },
@@ -896,6 +1054,12 @@ export const markInstagramConversationRead = async (req, res) => {
         igsid: resolvedIgsid,
         unreadCount: newUnreadCount,
       });
+      if (!unread) {
+        io.to(`org_${organizationId}`).emit("conversation_read", {
+          contactId: resolvedContactId,
+          igsid: resolvedIgsid,
+        });
+      }
     }
 
     return res.status(200).json({
@@ -936,19 +1100,30 @@ export const sendInstagramAgentMessage = async (req, res) => {
     let contact = null;
 
     if (contactId) {
-      contact = await tenantModels.InstagramContact.findById(contactId).catch(() => null);
-      if (!contact && tenantModels.Conversation) {
-        const convo = await tenantModels.Conversation.findById(contactId).catch(() => null);
-        if (convo?.instagramContactId) {
-          contact = await tenantModels.InstagramContact.findById(convo.instagramContactId).catch(() => null);
-        }
-        if (!targetIgsid && convo?.instagramIgsid) {
-          targetIgsid = convo.instagramIgsid;
+      if (mongoose.isValidObjectId(contactId)) {
+        contact = await tenantModels.InstagramContact.findById(contactId).catch(() => null);
+        if (!contact && tenantModels.Conversation) {
+          const convo = await tenantModels.Conversation.findById(contactId).catch(() => null);
+          if (convo?.instagramContactId && mongoose.isValidObjectId(convo.instagramContactId)) {
+            contact = await tenantModels.InstagramContact.findById(convo.instagramContactId).catch(() => null);
+          }
+          if (!targetIgsid && convo?.instagramIgsid) {
+            targetIgsid = convo.instagramIgsid;
+          }
         }
       }
-      if (contact) targetIgsid = contact.igsid;
+      if (!contact) {
+        contact = await tenantModels.InstagramContact.findOne({
+          organizationId,
+          $or: [{ igsid: contactId }, { username: contactId }],
+        }).catch(() => null);
+      }
+      if (contact) targetIgsid = contact.igsid || targetIgsid;
+      if (!targetIgsid && contactId && !mongoose.isValidObjectId(contactId)) {
+        targetIgsid = contactId;
+      }
     } else if (igsid) {
-      contact = await tenantModels.InstagramContact.findOne({ accountId: account._id, igsid });
+      contact = await tenantModels.InstagramContact.findOne({ organizationId, igsid }).catch(() => null);
     }
 
     if (!targetIgsid) {
@@ -962,6 +1137,13 @@ export const sendInstagramAgentMessage = async (req, res) => {
     });
 
     const mid = sendRes?.message_id || `ig_out_${Date.now()}`;
+
+    // Mark contact read
+    if (contact) {
+      contact.lastReadAt = new Date();
+      contact.lastInteractedAt = new Date();
+      await contact.save().catch(() => {});
+    }
 
     // 1. Save in InstagramMessage
     const igMsg = await tenantModels.InstagramMessage.create({
@@ -1013,6 +1195,7 @@ export const sendInstagramAgentMessage = async (req, res) => {
             customerName: contact?.name || contact?.username || "Instagram User",
             lastMessage: text,
             lastMessageTime: new Date(),
+            unreadCount: 0,
           },
         },
         { upsert: true }
