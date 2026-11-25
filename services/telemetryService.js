@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import mongoose from "mongoose";
 import { getMasterModels } from "./tenantManager.js";
+import { getIO } from "../socket/socket.js";
 
 const MOBILE_UA_REGEX = /(okhttp|dart|flutter|reactnative|expo|cfnetwork|dalvik|android|iphone|ipad|salesbuster-mobile)/i;
 
@@ -144,6 +145,25 @@ export const createUserSession = async ({ user, organization, req, platform }) =
         platform: resolvedPlatform,
         ip: getClientIp(req),
       });
+
+      try {
+        const io = getIO();
+        if (io) {
+          const payload = {
+            userId: userIdStr,
+            platform: resolvedPlatform,
+            activeSessionId: sessionId,
+            reason: `New ${resolvedPlatform} login detected. Previous ${resolvedPlatform} session was automatically logged out.`,
+          };
+          if (user.organizationId) {
+            io.to(`org_${String(user.organizationId)}`).emit("force_logout", payload);
+          } else {
+            io.emit("force_logout", payload);
+          }
+        }
+      } catch {
+        // Socket.IO may not be initialized in unit tests
+      }
     }
 
     await UserSession.create({
