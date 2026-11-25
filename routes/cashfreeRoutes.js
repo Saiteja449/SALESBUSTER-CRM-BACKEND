@@ -15,6 +15,9 @@ import {
   getPublicPricingConfigHandler,
   getAdminPricingSettingsHandler,
   updatePricingSettingsHandler,
+  createAdminAddonHandler,
+  updateAdminAddonHandler,
+  deleteAdminAddonHandler,
 } from "../controllers/cashfreeController.js";
 
 const router = express.Router();
@@ -41,9 +44,12 @@ router.post("/public/dev-simulate-success", devSimulateSuccessHandler);
 // 1d. Pricing & GST Config (Public for web checkout)
 router.get("/public/pricing-config", getPublicPricingConfigHandler);
 
-// 1e. Admin Pricing & GST Configuration (Auth required)
+// 1e. Admin Pricing, GST & Addon Catalog Configuration (Auth required)
 router.get("/admin/pricing-settings", protect, requireCrmAccount, getAdminPricingSettingsHandler);
 router.put("/admin/pricing-settings", protect, requireCrmAccount, updatePricingSettingsHandler);
+router.post("/admin/addons", protect, requireCrmAccount, createAdminAddonHandler);
+router.put("/admin/addons/:addonId", protect, requireCrmAccount, updateAdminAddonHandler);
+router.delete("/admin/addons/:addonId", protect, requireCrmAccount, deleteAdminAddonHandler);
 
 // 2. Fetch / Verify Order Status (Auth required or public order inquiry)
 router.get("/order/:orderId", protect, getOrderStatusHandler);

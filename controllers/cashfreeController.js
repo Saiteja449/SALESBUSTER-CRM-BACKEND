@@ -74,9 +74,82 @@ export const CASHFREE_PRICING_CATALOG = {
   },
 };
 
+export const DEFAULT_ADDON_CATALOG = [
+  {
+    id: "whatsapp_campaigns",
+    title: "WhatsApp Campaigns",
+    price: 999,
+    period: "monthly",
+    description: "Bulk broadcast marketing, official template creation, and delivery analytics.",
+    icon: "Send",
+    features: [
+      "Bulk Campaign Broadcasts",
+      "Template Manager & Variables",
+      "Delivery & Read Rate Analytics",
+      "Opt-out & Unsubscribe Handlers",
+    ],
+    isActive: true,
+  },
+  {
+    id: "target_intelligence",
+    title: "AI Target Intelligence",
+    price: 1499,
+    period: "monthly",
+    description: "AI-powered web crawling, company dossier research, and executive decision maker mapping.",
+    icon: "Brain",
+    features: [
+      "Domain Dossier Extraction",
+      "Executive Decision Maker Finder",
+      "Automated Pitch Deck Briefings",
+      "Firmographic Enrichment",
+    ],
+    isActive: true,
+  },
+  {
+    id: "bi_analyst",
+    title: "AI BI Analyst",
+    price: 999,
+    period: "monthly",
+    description: "Conversational natural language SQL & revenue intelligence charts on demand.",
+    icon: "Bot",
+    features: [
+      "Natural Language Data Queries",
+      "Instant Trend Charts & Exports",
+      "Anomaly Detection Alerts",
+      "Custom Executive Summaries",
+    ],
+    isActive: true,
+  },
+  {
+    id: "instagram_automation",
+    title: "Instagram Automation",
+    price: 499,
+    period: "monthly",
+    description: "Auto-respond to post comments, DM keyword triggers, and capture high-intent buyers.",
+    icon: "Instagram",
+    features: [
+      "Comment-to-DM Auto Triggers",
+      "Story Mention Responder",
+      "Lead Capture directly to CRM",
+      "Keywords Filter & Safe Limits",
+    ],
+    isActive: true,
+  },
+];
+
+export const getEffectiveAddonCatalog = (sysSettings) => {
+  if (sysSettings?.addonCatalogConfigured && Array.isArray(sysSettings.addonCatalog)) {
+    return sysSettings.addonCatalog;
+  }
+  if (Array.isArray(sysSettings?.addonCatalog) && sysSettings.addonCatalog.length > 0) {
+    return sysSettings.addonCatalog;
+  }
+  return DEFAULT_ADDON_CATALOG;
+};
+
 /**
  * Validates and resolves the authoritative price server-side,
- * including configurable GST and additional sales representatives
+ * including configurable GST, addons catalog, and additional sales representatives
  */
 export const resolveAuthoritativePrice = ({
   purpose,
@@ -87,6 +160,7 @@ export const resolveAuthoritativePrice = ({
   dynamicGstRate,
   extraRepPriceYearly = 899,
   extraRepPriceQuarterly = 1199,
+  dynamicAddons = null,
 }) => {
   const normalizedPurpose = purpose === "plan" ? "subscription" : purpose;
   let basePlanAmount = 0;
@@ -112,7 +186,12 @@ export const resolveAuthoritativePrice = ({
     basePlanAmount = 0;
     currency = "INR";
   } else if (normalizedPurpose === "addon") {
-    const addonConfig = CASHFREE_PRICING_CATALOG.addon[addonType];
+    const dynamicMatch = Array.isArray(dynamicAddons)
+      ? dynamicAddons.find((a) => a.id === addonType && a.isActive !== false)
+      : null;
+    const addonConfig = dynamicMatch
+      ? { amount: Number(dynamicMatch.price), currency: "INR", title: dynamicMatch.title }
+      : CASHFREE_PRICING_CATALOG.addon[addonType];
     if (!addonConfig) {
       throw new Error(`Invalid or unsupported addon type: '${addonType}'`);
     }
@@ -331,6 +410,8 @@ export const fulfillOrderBenefits = async (order) => {
         } else if (order.addonType === "instagram_automation") {
           org.hasInstagramAddon = true;
           org.addons.instagramAutomation = true;
+        } else if (order.addonType) {
+          org.addons[order.addonType] = true;
         }
         org.markModified("addons");
       } else if (order.purpose === "extra_reps") {
@@ -461,6 +542,7 @@ export const createOrderHandler = async (req, res) => {
       dynamicGstRate,
       extraRepPriceYearly,
       extraRepPriceQuarterly,
+      dynamicAddons: getEffectiveAddonCatalog(sysSettings),
     });
     const finalAmount = priceResolution.amount;
     const finalCurrency = priceResolution.currency;
@@ -1022,6 +1104,8 @@ export const getPublicPricingConfigHandler = async (req, res) => {
         ? settings.extraRepMonthlyPriceQuarterly
         : 1199;
 
+    const effectiveAddons = getEffectiveAddonCatalog(settings).filter((a) => a.isActive !== false);
+
     return res.status(200).json({
       success: true,
       config: {
@@ -1031,7 +1115,7 @@ export const getPublicPricingConfigHandler = async (req, res) => {
         extraRepMonthlyPriceQuarterly,
         baseRepsIncluded: 5,
         plans: CASHFREE_PRICING_CATALOG.subscription,
-        addons: CASHFREE_PRICING_CATALOG.addon,
+        addons: effectiveAddons,
       },
     });
   } catch (error) {
@@ -1042,7 +1126,7 @@ export const getPublicPricingConfigHandler = async (req, res) => {
 
 /**
  * GET /api/payment/cashfree/admin/pricing-settings
- * Admin endpoint to view live pricing & GST settings
+ * Admin endpoint to view live pricing, GST & addons catalog settings
  */
 export const getAdminPricingSettingsHandler = async (req, res) => {
   try {
@@ -1060,6 +1144,7 @@ export const getAdminPricingSettingsHandler = async (req, res) => {
       typeof settings?.extraRepMonthlyPriceQuarterly === "number"
         ? settings.extraRepMonthlyPriceQuarterly
         : 1199;
+    const addons = getEffectiveAddonCatalog(settings);
 
     return res.status(200).json({
       success: true,
@@ -1067,6 +1152,7 @@ export const getAdminPricingSettingsHandler = async (req, res) => {
         gstRate,
         extraRepMonthlyPriceYearly,
         extraRepMonthlyPriceQuarterly,
+        addons,
         updatedBy: settings?.updatedBy || "System",
         updatedAt: settings?.updatedAt || null,
       },
@@ -1128,12 +1214,170 @@ export const updatePricingSettingsHandler = async (req, res) => {
         gstRate: settings.gstRate,
         extraRepMonthlyPriceYearly: settings.extraRepMonthlyPriceYearly,
         extraRepMonthlyPriceQuarterly: settings.extraRepMonthlyPriceQuarterly,
+        addons: getEffectiveAddonCatalog(settings),
         updatedBy: settings.updatedBy,
         updatedAt: settings.updatedAt,
       },
     });
   } catch (error) {
     console.error("[CashfreeUpdatePricingSettings] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Helper to ensure SystemSettings has an initialized mutable addonCatalog array
+ */
+const loadOrInitAddonSettings = async (SystemSettings, user) => {
+  let settings = await SystemSettings.findOne();
+  if (!settings) {
+    settings = new SystemSettings({});
+  }
+  if (!settings.addonCatalogConfigured && (!settings.addonCatalog || settings.addonCatalog.length === 0)) {
+    settings.addonCatalog = DEFAULT_ADDON_CATALOG.map((a) => ({ ...a }));
+    settings.addonCatalogConfigured = true;
+  }
+  settings.updatedBy = user?.name || user?.email || "Admin";
+  return settings;
+};
+
+/**
+ * POST /api/payment/cashfree/admin/addons
+ * Create a new configurable addon/feature in SystemSettings
+ */
+export const createAdminAddonHandler = async (req, res) => {
+  try {
+    const { id, title, price, period = "monthly", description = "", icon = "Sparkles", features = [], isActive = true } = req.body;
+    if (!title || price === undefined || isNaN(Number(price)) || Number(price) < 0) {
+      return res.status(400).json({ success: false, message: "Valid title and non-negative price are required." });
+    }
+
+    const { SystemSettings } = getMasterModels();
+    const settings = await loadOrInitAddonSettings(SystemSettings, req.user);
+
+    const normalizedId = String(
+      id ||
+        title
+          .toLowerCase()
+          .trim()
+          .replace(/[^a-z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+    ).trim();
+
+    if (!normalizedId) {
+      return res.status(400).json({ success: false, message: "Valid addon ID slug is required." });
+    }
+
+    if (settings.addonCatalog.some((a) => a.id === normalizedId)) {
+      return res.status(409).json({ success: false, message: `Addon with ID '${normalizedId}' already exists.` });
+    }
+
+    const parsedFeatures = Array.isArray(features)
+      ? features.map((f) => String(f).trim()).filter(Boolean)
+      : String(features || "")
+          .split(/[\n,]+/)
+          .map((f) => f.trim())
+          .filter(Boolean);
+
+    settings.addonCatalog.push({
+      id: normalizedId,
+      title: String(title).trim(),
+      price: Number(price),
+      period: String(period || "monthly").trim(),
+      description: String(description || "").trim(),
+      icon: String(icon || "Sparkles").trim(),
+      features: parsedFeatures,
+      isActive: Boolean(isActive),
+    });
+
+    await settings.save();
+
+    return res.status(201).json({
+      success: true,
+      message: "Addon/feature created successfully.",
+      addons: settings.addonCatalog,
+    });
+  } catch (error) {
+    console.error("[CreateAdminAddon] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * PUT /api/payment/cashfree/admin/addons/:addonId
+ * Update an existing addon/feature in SystemSettings
+ */
+export const updateAdminAddonHandler = async (req, res) => {
+  try {
+    const { addonId } = req.params;
+    const { title, price, period, description, icon, features, isActive } = req.body;
+
+    const { SystemSettings } = getMasterModels();
+    const settings = await loadOrInitAddonSettings(SystemSettings, req.user);
+
+    const target = settings.addonCatalog.find((a) => a.id === addonId);
+    if (!target) {
+      return res.status(404).json({ success: false, message: `Addon '${addonId}' not found.` });
+    }
+
+    if (title !== undefined) target.title = String(title).trim();
+    if (price !== undefined && !isNaN(Number(price)) && Number(price) >= 0) {
+      target.price = Number(price);
+    }
+    if (period !== undefined) target.period = String(period).trim();
+    if (description !== undefined) target.description = String(description).trim();
+    if (icon !== undefined) target.icon = String(icon).trim();
+    if (isActive !== undefined) target.isActive = Boolean(isActive);
+    if (features !== undefined) {
+      target.features = Array.isArray(features)
+        ? features.map((f) => String(f).trim()).filter(Boolean)
+        : String(features || "")
+            .split(/[\n,]+/)
+            .map((f) => f.trim())
+            .filter(Boolean);
+    }
+
+    settings.markModified("addonCatalog");
+    await settings.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Addon/feature updated successfully.",
+      addons: settings.addonCatalog,
+    });
+  } catch (error) {
+    console.error("[UpdateAdminAddon] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * DELETE /api/payment/cashfree/admin/addons/:addonId
+ * Delete an addon/feature from SystemSettings
+ */
+export const deleteAdminAddonHandler = async (req, res) => {
+  try {
+    const { addonId } = req.params;
+    const { SystemSettings } = getMasterModels();
+    const settings = await loadOrInitAddonSettings(SystemSettings, req.user);
+
+    const prevLen = settings.addonCatalog.length;
+    settings.addonCatalog = settings.addonCatalog.filter((a) => a.id !== addonId);
+    if (settings.addonCatalog.length === prevLen) {
+      return res.status(404).json({ success: false, message: `Addon '${addonId}' not found.` });
+    }
+
+    settings.addonCatalogConfigured = true;
+    settings.markModified("addonCatalog");
+    await settings.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Addon/feature deleted successfully.",
+      addons: settings.addonCatalog,
+    });
+  } catch (error) {
+    console.error("[DeleteAdminAddon] Error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };

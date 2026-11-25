@@ -46,6 +46,22 @@ const systemSettingsSchema = new mongoose.Schema(
       default: 1199, // ₹1,199/month for quarterly plan (₹3,597/quarter)
       min: 0,
     },
+    addonCatalogConfigured: {
+      type: Boolean,
+      default: false,
+    },
+    addonCatalog: [
+      {
+        id: { type: String, required: true, trim: true },
+        title: { type: String, required: true, trim: true },
+        price: { type: Number, required: true, min: 0 },
+        period: { type: String, default: "monthly", trim: true },
+        description: { type: String, default: "", trim: true },
+        icon: { type: String, default: "Sparkles", trim: true },
+        features: [{ type: String, trim: true }],
+        isActive: { type: Boolean, default: true },
+      },
+    ],
     updatedBy: {
       type: String,
       default: "System",
