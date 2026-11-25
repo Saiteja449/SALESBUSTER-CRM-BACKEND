@@ -1,6 +1,10 @@
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import { getTenantModels, getMasterModels } from "../services/tenantManager.js";
+import { verifyUserSessionActive } from "../services/telemetryService.js";
+
+export const isElevatedAdminRole = (role) =>
+  role === "super_admin" || role === "developer";
 
 export const protect = async (req, res, next) => {
   let token;
@@ -26,6 +30,16 @@ export const protect = async (req, res, next) => {
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+      const sessionCheck = await verifyUserSessionActive(decoded);
+      if (!sessionCheck.active) {
+        return res.status(401).json({
+          success: false,
+          forceLoggedOut: true,
+          code: "SESSION_REVOKED",
+          message: sessionCheck.reason || "Your session was logged out by an administrator.",
+        });
+      }
+
       // Ensure tenant scope comes from verified user token, never unauthenticated headers
       let tenantDbName = decoded.tenantDbName;
       if (decoded.organizationId) {
@@ -43,10 +57,10 @@ export const protect = async (req, res, next) => {
       req.tenantDbName = tenantDbName || null;
       req.tenantModels = tenantDbName ? getTenantModels(tenantDbName) : null;
 
-      // Look up user: if super_admin, check Master AuthUser first
+      // Look up user: if super_admin or developer, check Master AuthUser first
       let user = null;
 
-      if (decoded.role === "super_admin") {
+      if (isElevatedAdminRole(decoded.role)) {
         const { AuthUser } = getMasterModels();
         user = await AuthUser.findById(decoded.id).select("-password");
         if (!user) {
@@ -85,8 +99,8 @@ export const protect = async (req, res, next) => {
       req.user.isOrgOwner = decoded.isOrgOwner || user.isOrgOwner;
       req.user.accountType = req.organization?.accountType || decoded.accountType || "crm";
 
-      // Super admin is exempt from tenant organization suspension checks
-      if (req.user.role !== "super_admin") {
+      // Super admin & developer are exempt from tenant organization suspension checks
+      if (!isElevatedAdminRole(req.user.role)) {
         // Ensure organization is loaded
         if (!req.organization && req.user.organizationId) {
           try {
@@ -176,8 +190,18 @@ export const verifySuperAdmin = async (req, res, next) => {
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+      const sessionCheck = await verifyUserSessionActive(decoded);
+      if (!sessionCheck.active) {
+        return res.status(401).json({
+          success: false,
+          forceLoggedOut: true,
+          code: "SESSION_REVOKED",
+          message: sessionCheck.reason || "Your session was logged out by an administrator.",
+        });
+      }
+
       // Verify role in token payload
-      if (decoded.role !== "super_admin") {
+      if (!isElevatedAdminRole(decoded.role)) {
         return res.status(403).json({
           success: false,
           message: "Access forbidden: Super Administrator privileges required",
@@ -202,7 +226,7 @@ export const verifySuperAdmin = async (req, res, next) => {
         });
       }
 
-      if (user.role !== "super_admin") {
+      if (!isElevatedAdminRole(user.role)) {
         return res.status(403).json({
           success: false,
           message: "Access forbidden: Super Administrator privileges required",
@@ -217,7 +241,7 @@ export const verifySuperAdmin = async (req, res, next) => {
       }
 
       req.user = user;
-      req.user.role = "super_admin";
+      req.user.role = user.role;
       return next();
     } catch (error) {
       if (error.name === "TokenExpiredError") {
@@ -255,7 +279,7 @@ export const verifySuperAdmin = async (req, res, next) => {
  * If protect was not run before this, it delegates to verifySuperAdmin.
  */
 export const requireSuperAdmin = (req, res, next) => {
-  if (req.user && req.user.role === "super_admin") {
+  if (req.user && isElevatedAdminRole(req.user.role)) {
     return next();
   }
 

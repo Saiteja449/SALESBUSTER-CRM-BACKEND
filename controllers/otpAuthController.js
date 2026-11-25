@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import Otp from "../models/Otp.js";
 import { getMasterModels, getTenantModels, generateTenantDbName } from "../services/tenantManager.js";
 import { sendDltOtp } from "../services/fast2SmsService.js";
+import { createUserSession } from "../services/telemetryService.js";
 
 const generateToken = (payload) => {
   return jwt.sign(payload, process.env.JWT_SECRET, {
@@ -440,6 +441,13 @@ export const verifyOtp = async (req, res) => {
         }
       : null;
 
+    const { sessionId, platform } = await createUserSession({
+      user,
+      organization,
+      req,
+      platform: "mobile",
+    });
+
     const token = generateToken({
       id: user._id,
       phone: user.phone,
@@ -448,6 +456,8 @@ export const verifyOtp = async (req, res) => {
       organizationId: user.organizationId,
       isOrgOwner: true,
       accountType: "guest",
+      sessionId,
+      platform,
     });
 
     return res.status(200).json({
@@ -592,6 +602,13 @@ export const completeProfile = async (req, res) => {
     }
 
     // Generate updated JWT token
+    const { sessionId, platform } = await createUserSession({
+      user,
+      organization,
+      req,
+      platform: "mobile",
+    });
+
     const token = generateToken({
       id: user._id,
       phone: user.phone,
@@ -601,6 +618,8 @@ export const completeProfile = async (req, res) => {
       organizationId: user.organizationId,
       isOrgOwner: true,
       accountType: "guest",
+      sessionId,
+      platform,
     });
 
     const orgData = organization

@@ -42,6 +42,9 @@ import appGuideVideoRoutes from "./routes/appGuideVideoRoutes.js";
 import instagramRoutes from "./routes/instagramRoutes.js";
 import marketingRoiRoutes from "./routes/marketingRoiRoutes.js";
 import cashfreeRoutes from "./routes/cashfreeRoutes.js";
+import developerRoutes from "./routes/developerRoutes.js";
+import apiActivityLogger from "./middleware/apiActivityLogger.js";
+import { recordApiActivityLog } from "./services/telemetryService.js";
 
 // Socket & WhatsApp Cloud Imports
 import { initSocket, getIO } from "./socket/socket.js";
@@ -97,6 +100,9 @@ app.use(
 );
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
+// Record API requests, latency, user failures, and server errors
+app.use(apiActivityLogger);
+
 // Attach tenant-scoped database models and organization metadata
 app.use(tenantMiddleware);
 app.use(checkSubscriptionActive);
@@ -134,6 +140,7 @@ app.use("/api/marketing-roi", marketingRoiRoutes);
 app.use("/api/payment/cashfree", cashfreeRoutes);
 app.use("/api/s", shortUrlRoutes);
 app.use("/api/app-guide-video", appGuideVideoRoutes);
+app.use("/api/developer", developerRoutes);
 
 // Top-level public short link redirect
 app.get("/s/:code", redirectShortUrl);
@@ -186,6 +193,37 @@ const gracefulShutdown = (signal) => {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+process.on("uncaughtException", async (err) => {
+  console.error("[CRASH] Uncaught Exception:", err);
+  await recordApiActivityLog({
+    method: "SYSTEM",
+    path: "process/uncaughtException",
+    statusCode: 500,
+    level: "crash",
+    category: "server_crash",
+    message: err?.message || "Uncaught Exception",
+    errorName: err?.name || "UncaughtException",
+    stack: err?.stack || "",
+    platform: "admin",
+  }).catch(() => {});
+});
+
+process.on("unhandledRejection", async (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  console.error("[CRASH] Unhandled Rejection:", err);
+  await recordApiActivityLog({
+    method: "SYSTEM",
+    path: "process/unhandledRejection",
+    statusCode: 500,
+    level: "crash",
+    category: "server_crash",
+    message: err?.message || "Unhandled Rejection",
+    errorName: err?.name || "UnhandledRejection",
+    stack: err?.stack || "",
+    platform: "admin",
+  }).catch(() => {});
+});
 
 const startServer = async () => {
   await connectDB();

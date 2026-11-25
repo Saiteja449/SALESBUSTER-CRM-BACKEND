@@ -18,6 +18,8 @@ import {
   createAdminAddonHandler,
   updateAdminAddonHandler,
   deleteAdminAddonHandler,
+  downloadInvoiceHandler,
+  resendInvoiceHandler,
 } from "../controllers/cashfreeController.js";
 
 const router = express.Router();
@@ -51,9 +53,12 @@ router.post("/admin/addons", protect, requireCrmAccount, createAdminAddonHandler
 router.put("/admin/addons/:addonId", protect, requireCrmAccount, updateAdminAddonHandler);
 router.delete("/admin/addons/:addonId", protect, requireCrmAccount, deleteAdminAddonHandler);
 
-// 2. Fetch / Verify Order Status (Auth required or public order inquiry)
+// 2. Fetch / Verify Order Status & Download Tax Invoice
 router.get("/order/:orderId", protect, getOrderStatusHandler);
 router.get("/public/order/:orderId", getOrderStatusHandler);
+router.get("/order/:orderId/invoice", protect, downloadInvoiceHandler);
+router.get("/public/order/:orderId/invoice", downloadInvoiceHandler);
+router.post("/admin/orders/:orderId/resend-invoice", protect, requireCrmAccount, resendInvoiceHandler);
 
 // 3. Webhook Ingestion (Public S2S callback, verified via HMAC-SHA256 signature)
 router.post("/webhook", handleCashfreeWebhook);

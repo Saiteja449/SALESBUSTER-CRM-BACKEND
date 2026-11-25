@@ -19,7 +19,7 @@ const authUserSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["super_admin", "sales manager", "sales person"],
+      enum: ["super_admin", "developer", "sales manager", "sales person"],
       default: "sales person",
       index: true,
     },

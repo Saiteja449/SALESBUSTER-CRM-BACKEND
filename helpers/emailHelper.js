@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { generateInvoicePdfBuffer } from "./invoicePdfHelper.js";
 
 let transporter = null;
 
@@ -64,6 +65,9 @@ export const sendEmail = async (options) => {
       subject: options.subject,
       text: options.message,
       html: options.htmlMessage,
+      ...(Array.isArray(options.attachments) && options.attachments.length > 0
+        ? { attachments: options.attachments }
+        : {}),
     };
 
     const info = await transport.sendMail(mailOptions);
@@ -490,6 +494,13 @@ export const sendPaymentReceiptEmail = async ({
     "https://salesbuster.ai/beta";
 
   const orderId = order.orderId || "N/A";
+  const invoiceNumber = `INV-${orderId}`;
+  const gstPercentLabel =
+    typeof order.gstRate === "number"
+      ? `${order.gstRate <= 1 && order.gstRate > 0 ? Math.round(order.gstRate * 10000) / 100 : order.gstRate}%`
+      : "18%";
+
+  const invoicePdfBuffer = generateInvoicePdfBuffer({ order, organization });
   const paymentId =
     order.paymentDetails?.cfPaymentId ||
     order.paymentDetails?.bankReference ||
@@ -591,6 +602,10 @@ export const sendPaymentReceiptEmail = async ({
         
         <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
           <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Invoice Number:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 700; text-align: right; font-family: monospace;">${invoiceNumber}</td>
+          </tr>
+          <tr>
             <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Order ID:</td>
             <td style="padding: 6px 0; color: #0f172a; font-weight: 600; text-align: right; font-family: monospace;">${orderId}</td>
           </tr>
@@ -616,7 +631,7 @@ export const sendPaymentReceiptEmail = async ({
             <td style="padding: 6px 0; color: #0f172a; font-weight: 600; text-align: right;">${formattedBaseAmount}</td>
           </tr>
           <tr>
-            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Goods &amp; Services Tax (18% GST):</td>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Goods &amp; Services Tax (${gstPercentLabel} GST):</td>
             <td style="padding: 6px 0; color: #0f172a; font-weight: 600; text-align: right;">${formattedGstAmount || "₹0.00"}</td>
           </tr>
           `
@@ -690,12 +705,19 @@ export const sendPaymentReceiptEmail = async ({
 
   return await sendEmail({
     email: customerEmail,
-    subject: `Payment Receipt: ${planTitle} - Order #${orderId}`,
-    message: `Thank you for your payment!\n\nOrder ID: ${orderId}\nPlan: ${planTitle}\nAmount Paid: ${formattedAmount}\nPayment Method: ${paymentMethod}\nPayment Reference: ${paymentId}\nValid Until: ${validityDate}\n\n${
+    subject: `Tax Invoice (${invoiceNumber}) & Payment Receipt: ${planTitle}`,
+    message: `Thank you for your payment!\n\nInvoice Number: ${invoiceNumber}\nOrder ID: ${orderId}\nPlan: ${planTitle}\nAmount Paid: ${formattedAmount}\nPayment Method: ${paymentMethod}\nPayment Reference: ${paymentId}\nValid Until: ${validityDate}\n\nYour PDF Tax Invoice (${invoiceNumber}.pdf) is attached to this email.\n\n${
       isNewAccount && temporaryPassword
         ? `Your Login Credentials:\nLogin URL: ${appLoginUrl}\nEmail: ${customerEmail}\nPassword: ${temporaryPassword}\n\nPlease change your password upon logging in.\n\n`
         : `Login URL: ${appLoginUrl}\n\n`
     }SalesBuster CRM Support: info@salesbuster.ai`,
     htmlMessage,
+    attachments: [
+      {
+        filename: `${invoiceNumber}.pdf`,
+        content: invoicePdfBuffer,
+        contentType: "application/pdf",
+      },
+    ],
   });
 };

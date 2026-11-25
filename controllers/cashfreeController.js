@@ -9,6 +9,7 @@ import {
 } from "../services/tenantManager.js";
 import { getDefaultAISettings } from "../models/Organization.js";
 import { sendPaymentReceiptEmail } from "../helpers/emailHelper.js";
+import { generateInvoicePdfBuffer } from "../helpers/invoicePdfHelper.js";
 import {
   createCashfreePgOrder,
   fetchCashfreePgOrder,
@@ -972,7 +973,14 @@ export const getAdminOrdersHandler = async (req, res) => {
     }
 
     if (status && status !== "all") {
-      query.orderStatus = status.toUpperCase();
+      const upperStatus = status.toUpperCase();
+      if (upperStatus === "FAILED") {
+        query.orderStatus = { $in: ["FAILED", "CANCELLED", "USER_DROPPED", "EXPIRED", "TERMINATED"] };
+      } else if (upperStatus === "ACTIVE") {
+        query.orderStatus = { $in: ["ACTIVE", "PENDING"] };
+      } else {
+        query.orderStatus = upperStatus;
+      }
     }
 
     if (search && search.trim()) {
@@ -1010,7 +1018,13 @@ export const getAdminOrdersHandler = async (req, res) => {
               $sum: { $cond: [{ $in: ["$orderStatus", ["ACTIVE", "PENDING"]] }, 1, 0] },
             },
             failedCount: {
-              $sum: { $cond: [{ $in: ["$orderStatus", ["FAILED", "EXPIRED", "TERMINATED"]] }, 1, 0] },
+              $sum: {
+                $cond: [
+                  { $in: ["$orderStatus", ["FAILED", "CANCELLED", "USER_DROPPED", "EXPIRED", "TERMINATED"]] },
+                  1,
+                  0,
+                ],
+              },
             },
             totalOrders: { $sum: 1 },
           },
@@ -1378,6 +1392,86 @@ export const deleteAdminAddonHandler = async (req, res) => {
     });
   } catch (error) {
     console.error("[DeleteAdminAddon] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/payment/cashfree/order/:orderId/invoice
+ * GET /api/payment/cashfree/public/order/:orderId/invoice
+ * Streams a generated PDF Tax Invoice for a PAID order
+ */
+export const downloadInvoiceHandler = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { CashfreeOrder, Organization } = getMasterModels();
+    const order = await CashfreeOrder.findOne({ orderId }).lean();
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found." });
+    }
+    if (String(order.orderStatus || "").toUpperCase() !== "PAID") {
+      return res.status(400).json({ success: false, message: "Invoice is available only for PAID orders." });
+    }
+
+    const org = order.organizationId
+      ? await Organization.findById(order.organizationId).lean().catch(() => null)
+      : null;
+
+    const pdfBuffer = generateInvoicePdfBuffer({ order, organization: org || {} });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="INV-${order.orderId}.pdf"`);
+    return res.status(200).send(pdfBuffer);
+  } catch (error) {
+    console.error("[CashfreeDownloadInvoice] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * POST /api/payment/cashfree/admin/orders/:orderId/resend-invoice
+ * Admin endpoint to generate & send the Tax Invoice PDF to the client's email
+ */
+export const resendInvoiceHandler = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { CashfreeOrder, Organization } = getMasterModels();
+    const order = await CashfreeOrder.findOne({ orderId });
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found." });
+    }
+    if (String(order.orderStatus || "").toUpperCase() !== "PAID") {
+      return res.status(400).json({ success: false, message: "Tax Invoice can only be sent for PAID orders." });
+    }
+
+    const org = order.organizationId
+      ? await Organization.findById(order.organizationId).lean().catch(() => null)
+      : null;
+
+    const targetEmail = order.customerDetails?.customerEmail || org?.email;
+    if (!targetEmail) {
+      return res.status(400).json({ success: false, message: "No customer email found on this order." });
+    }
+
+    const sent = await sendPaymentReceiptEmail({
+      order,
+      organization: org || {},
+      isNewAccount: false,
+      loginUrl: process.env.APP_URL || process.env.FRONTEND_URL || "https://salesbuster.ai/beta",
+    });
+
+    if (!sent) {
+      return res.status(500).json({ success: false, message: `Failed to deliver invoice email to ${targetEmail}.` });
+    }
+
+    order.receiptEmailSent = true;
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `Tax Invoice (INV-${order.orderId}.pdf) sent to ${targetEmail}.`,
+    });
+  } catch (error) {
+    console.error("[CashfreeResendInvoice] Error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };

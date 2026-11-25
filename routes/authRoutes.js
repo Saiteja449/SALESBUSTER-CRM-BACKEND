@@ -1,5 +1,5 @@
 import express from 'express';
-import { login, guestRegister } from '../controllers/authController.js';
+import { login, logout, guestRegister } from '../controllers/authController.js';
 import {
   sendOtp,
   verifyOtp,
@@ -11,6 +11,7 @@ const router = express.Router();
 
 // Existing Auth routes (Preserved strictly for Website and other apps)
 router.post('/login', login);
+router.post('/logout', protect, logout);
 router.post('/guest-register', guestRegister);
 
 // Phone Number & Fast2SMS 4-Digit OTP routes

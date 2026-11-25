@@ -46,6 +46,8 @@ import InstagramMessage, { instagramMessageSchema } from "../models/InstagramMes
 import MarketingCampaign, { marketingCampaignSchema } from "../models/MarketingCampaign.js";
 import CashfreeOrder, { cashfreeOrderSchema } from "../models/CashfreeOrder.js";
 import CashfreeWebhookEvent, { cashfreeWebhookEventSchema } from "../models/CashfreeWebhookEvent.js";
+import ApiActivityLog, { apiActivityLogSchema } from "../models/ApiActivityLog.js";
+import UserSession, { userSessionSchema } from "../models/UserSession.js";
 
 let _masterModelsOverride = null;
 let _tenantModelsOverride = null;
@@ -116,6 +118,12 @@ export const getMasterModels = () => {
     CashfreeWebhookEvent:
       masterDb.models.CashfreeWebhookEvent ||
       masterDb.model("CashfreeWebhookEvent", cashfreeWebhookEventSchema),
+    ApiActivityLog:
+      masterDb.models.ApiActivityLog ||
+      masterDb.model("ApiActivityLog", apiActivityLogSchema),
+    UserSession:
+      masterDb.models.UserSession ||
+      masterDb.model("UserSession", userSessionSchema),
     masterDb,
   };
 };

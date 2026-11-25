@@ -74,4 +74,48 @@ describe("Payment GST Calculation & Order Status Gating Tests", () => {
     await fulfillOrderBenefits(alreadyFulfilled);
     assert.strictEqual(saveCalled, false);
   });
+
+  it("5. Generates valid PDF Tax Invoice buffer and attaches it in client receipt email", async () => {
+    const { generateInvoicePdfBuffer } = await import("../helpers/invoicePdfHelper.js");
+    const { sendPaymentReceiptEmail } = await import("../helpers/emailHelper.js");
+
+    const sampleOrder = {
+      orderId: "sb_ord_inv_999",
+      orderAmount: 63649.2,
+      baseAmount: 53940,
+      gstAmount: 9709.2,
+      gstRate: 0.18,
+      planId: "yearly",
+      purpose: "subscription",
+      orderStatus: "PAID",
+      customerDetails: {
+        customerName: "Acme Corp",
+        customerEmail: "billing@acmecorp.in",
+        customerPhone: "9876543210",
+      },
+      paymentDetails: {
+        cfPaymentId: "cf_pay_12345",
+        paymentMethod: "upi",
+        paymentTime: new Date("2026-11-25T10:00:00Z"),
+      },
+    };
+
+    const pdfBuf = generateInvoicePdfBuffer({
+      order: sampleOrder,
+      organization: { name: "Acme Corp", email: "billing@acmecorp.in" },
+    });
+
+    assert.ok(Buffer.isBuffer(pdfBuf), "Invoice should be a Buffer");
+    const pdfStr = pdfBuf.toString("utf8");
+    assert.ok(pdfStr.startsWith("%PDF-1.4"), "Buffer must be a valid PDF-1.4 document");
+    assert.ok(pdfStr.includes("INV-sb_ord_inv_999"), "PDF must include invoice number");
+    assert.ok(pdfStr.includes("%%EOF"), "PDF must end with %%EOF");
+
+    const emailSent = await sendPaymentReceiptEmail({
+      order: sampleOrder,
+      organization: { name: "Acme Corp", email: "billing@acmecorp.in" },
+      isNewAccount: false,
+    });
+    assert.strictEqual(emailSent, true);
+  });
 });

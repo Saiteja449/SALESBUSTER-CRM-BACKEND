@@ -57,6 +57,14 @@ export const errorHandler = (err, req, res, next) => {
     console.warn(`[CLIENT_WARN] [${req.method} ${req.originalUrl}] (${statusCode} ${code}):`, message);
   }
 
+  if (res.locals) {
+    res.locals.errorMeta = {
+      message,
+      errorName: err.name || "Error",
+      stack: statusCode >= 500 ? err.stack || "" : "",
+    };
+  }
+
   res.status(statusCode).json({
     success: false,
     message,

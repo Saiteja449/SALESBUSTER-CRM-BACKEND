@@ -3,6 +3,10 @@ import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import { getMasterModels, getTenantModels, generateTenantDbName } from "../services/tenantManager.js";
 import { sendLoginAlertEmail } from "../helpers/emailHelper.js";
+import {
+  createUserSession,
+  normalizeSessionPlatform,
+} from "../services/telemetryService.js";
 
 const generateToken = (payload) => {
   return jwt.sign(payload, process.env.JWT_SECRET, {
@@ -150,6 +154,11 @@ export const login = async (req, res) => {
 
     // 4. Generate JWT with tenant database & organization metadata
     const effectiveTenantDb = user.tenantDbName || org?.tenantDbName || null;
+    const { sessionId, platform } = await createUserSession({
+      user,
+      organization: organizationData,
+      req,
+    });
     const token = generateToken({
       id: user._id,
       email: user.email,
@@ -158,6 +167,8 @@ export const login = async (req, res) => {
       organizationId: user.organizationId || null,
       isOrgOwner: !!user.isOrgOwner,
       accountType: organizationData?.accountType || "crm",
+      sessionId,
+      platform,
     });
 
     // 5. Optional Login Security Alert notification email
@@ -420,6 +431,12 @@ export const guestRegister = async (req, res) => {
     }
 
     // 10. Generate token
+    const { sessionId, platform } = await createUserSession({
+      user: masterAuthUser,
+      organization,
+      req,
+      platform: normalizeSessionPlatform(req),
+    });
     const token = generateToken({
       id: masterAuthUser._id,
       email: masterAuthUser.email,
@@ -428,6 +445,8 @@ export const guestRegister = async (req, res) => {
       organizationId: organization._id,
       isOrgOwner: true,
       accountType: "guest",
+      sessionId,
+      platform,
     });
 
     const organizationData = {
@@ -460,6 +479,45 @@ export const guestRegister = async (req, res) => {
       success: false,
       code: "SERVER_ERROR",
       message: "Server error while creating guest account.",
+    });
+  }
+};
+
+export const logout = async (req, res) => {
+  try {
+    let sessionId = req.userTokenData?.sessionId || null;
+    if (!sessionId && req.headers.authorization?.startsWith("Bearer ")) {
+      const rawToken = req.headers.authorization.split(" ")[1];
+      const decoded = jwt.decode(rawToken);
+      sessionId = decoded?.sessionId || null;
+    }
+
+    if (sessionId) {
+      const { UserSession } = getMasterModels();
+      if (UserSession) {
+        await UserSession.updateOne(
+          { sessionId },
+          {
+            $set: {
+              isActive: false,
+              revokedAt: new Date(),
+              revokedBy: req.user?.email || "self",
+              revokeReason: "User signed out",
+            },
+          }
+        );
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Logged out successfully.",
+    });
+  } catch (error) {
+    console.error("Logout error:", error);
+    return res.status(200).json({
+      success: true,
+      message: "Logged out.",
     });
   }
 };
