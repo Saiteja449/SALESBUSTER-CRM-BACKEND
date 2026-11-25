@@ -1694,3 +1694,47 @@ export const sendTemplateToLead = async (req, res) => {
     });
   }
 };
+
+/**
+ * Marks a WhatsApp conversation as read or unread
+ * PATCH /api/whatsapp/conversation/:leadId/read
+ */
+export const markWhatsappConversationRead = async (req, res) => {
+  try {
+    const { leadId } = req.params;
+    const { unread } = req.body || {};
+    const { ConversationModel } = getModels(req);
+
+    if (!ConversationModel) {
+      return res.status(500).json({ success: false, message: "Conversation model not available" });
+    }
+
+    const newUnreadCount = unread ? 1 : 0;
+    const queryConditions = [];
+    if (mongoose.Types.ObjectId.isValid(leadId)) {
+      queryConditions.push({ leadId });
+      queryConditions.push({ _id: leadId });
+    } else {
+      queryConditions.push({ leadId });
+    }
+
+    await ConversationModel.updateMany({ $or: queryConditions }, { $set: { unreadCount: newUnreadCount } });
+
+    const io = req.app.get("io") || getIO();
+    const organizationId = req.user?.organizationId || req.organization?._id;
+    if (io && organizationId) {
+      io.to(`org_${organizationId}`).emit("conversation_read_status", {
+        leadId,
+        unreadCount: newUnreadCount,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      unreadCount: newUnreadCount,
+      message: unread ? "Conversation marked as unread" : "Conversation marked as read",
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

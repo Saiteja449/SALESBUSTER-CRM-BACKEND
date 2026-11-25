@@ -13,6 +13,7 @@ import {
   deleteAutomationRule,
   getInstagramConversations,
   getInstagramMessages,
+  markInstagramConversationRead,
   sendInstagramAgentMessage,
 } from "../controllers/instagramController.js";
 import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
@@ -39,6 +40,7 @@ router.delete("/rules/:id", protect, requireCrmAccount, deleteAutomationRule);
 // Protected Unified Inbox Conversation & Message endpoints
 router.get("/conversations", protect, requireCrmAccount, getInstagramConversations);
 router.get("/conversation/:contactId/messages", protect, requireCrmAccount, getInstagramMessages);
+router.patch("/conversation/:contactId/read", protect, requireCrmAccount, markInstagramConversationRead);
 router.post("/message/send", protect, requireCrmAccount, sendInstagramAgentMessage);
 
 export default router;

@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import mongoose from "mongoose";
 import { encryptApiKey, decryptApiKey } from "../utils/encryption.js";
 import { getMasterModels, getTenantModels } from "../services/tenantManager.js";
 import {
@@ -664,29 +665,55 @@ export const getInstagramConversations = async (req, res) => {
 
     const formatted = [];
     for (const c of contacts) {
-      const lastMsg = await tenantModels.InstagramMessage.findOne({ contactId: c._id })
+      const lastMsg = await tenantModels.InstagramMessage.findOne({
+        $or: [{ contactId: c._id }, { igsid: c.igsid }],
+      })
         .sort({ timestamp: -1 })
         .lean();
 
+      // Look up existing unified Conversation record if present
+      let convo = null;
+      if (tenantModels.Conversation) {
+        convo = await tenantModels.Conversation.findOne({
+          $or: [{ instagramContactId: c._id }, { instagramIgsid: c.igsid }],
+        }).lean();
+      }
+
       const isComment =
+        convo?.channel === "instagram_comment" ||
         lastMsg?.triggerSource === "comment_to_dm" ||
         (lastMsg?.text && lastMsg.text.startsWith("[Comment"));
+
+      const channel = isComment ? "instagram_comment" : (convo?.channel || "instagram");
+
+      // Compute unread count: prioritize Conversation unreadCount, fallback to contact lastReadAt
+      let unreadCount = 0;
+      if (typeof convo?.unreadCount === "number") {
+        unreadCount = convo.unreadCount;
+      } else if (lastMsg && lastMsg.direction === "incoming") {
+        unreadCount = (!c.lastReadAt || new Date(c.lastReadAt) < new Date(lastMsg.timestamp)) ? 1 : 0;
+      }
 
       formatted.push({
         _id: c._id,
         id: c._id.toString(),
-        channel: isComment ? "instagram_comment" : "instagram",
+        conversationId: convo?._id?.toString() || null,
+        igsid: c.igsid,
+        instagramIgsid: c.igsid,
+        instagramContactId: c._id.toString(),
+        channel,
         subChannel: isComment ? "comment" : "dm",
-        triggerSource: lastMsg?.triggerSource || "direct_message",
+        triggerSource: lastMsg?.triggerSource || (isComment ? "comment_to_dm" : "direct_message"),
         customerName: c.name || c.username || "Instagram User",
-        username: c.username,
+        username: c.username || "",
+        instagramUsername: c.username || "",
         phone: c.phone || "",
         profilePic: c.profilePic || "",
         leadId: c.leadId,
         isLead: Boolean(c.leadId),
-        unreadCount: 0,
-        lastMessage: lastMsg?.text || "Conversation started",
-        lastMessageTime: lastMsg?.timestamp || c.lastInteractedAt,
+        unreadCount,
+        lastMessage: convo?.lastMessage || lastMsg?.text || "Conversation started",
+        lastMessageTime: convo?.lastMessageTime || lastMsg?.timestamp || c.lastInteractedAt,
       });
     }
 
@@ -709,13 +736,27 @@ export const getInstagramMessages = async (req, res) => {
     let resolvedContactId = contactId;
     let resolvedIgsid = contactId;
 
-    if (tenantModels.Conversation) {
-      const convo = await tenantModels.Conversation.findById(contactId).lean().catch(() => null);
+    if (tenantModels.Conversation && typeof tenantModels.Conversation.findById === "function") {
+      const convQuery = tenantModels.Conversation.findById(contactId);
+      const convo = convQuery && typeof convQuery.lean === "function"
+        ? await convQuery.lean().catch(() => null)
+        : await Promise.resolve(convQuery).catch(() => null);
       if (convo?.instagramContactId) {
-        resolvedContactId = convo.instagramContactId;
+        resolvedContactId = convo.instagramContactId.toString();
       }
       if (convo?.instagramIgsid) {
         resolvedIgsid = convo.instagramIgsid;
+      }
+    }
+
+    if (tenantModels.InstagramContact && (!resolvedIgsid || resolvedIgsid === contactId) && typeof tenantModels.InstagramContact.findById === "function") {
+      const contactQuery = tenantModels.InstagramContact.findById(contactId);
+      const igContact = contactQuery && typeof contactQuery.lean === "function"
+        ? await contactQuery.lean().catch(() => null)
+        : await Promise.resolve(contactQuery).catch(() => null);
+      if (igContact?.igsid) {
+        resolvedIgsid = igContact.igsid;
+        resolvedContactId = igContact._id.toString();
       }
     }
 
@@ -733,6 +774,42 @@ export const getInstagramMessages = async (req, res) => {
 
     const messages = await tenantModels.InstagramMessage.find(queryFilter).sort({ timestamp: 1 });
 
+    // Mark as read automatically in Conversation and InstagramContact
+    try {
+      const convOrConditions = [];
+      if (mongoose.isValidObjectId(contactId)) convOrConditions.push({ _id: contactId });
+      if (mongoose.isValidObjectId(resolvedContactId)) convOrConditions.push({ instagramContactId: resolvedContactId });
+      if (resolvedIgsid) convOrConditions.push({ instagramIgsid: resolvedIgsid });
+
+      if (tenantModels.Conversation && convOrConditions.length > 0) {
+        await tenantModels.Conversation.updateMany(
+          { $or: convOrConditions },
+          { $set: { unreadCount: 0 } }
+        );
+      }
+      if (tenantModels.InstagramContact) {
+        const contactConditions = [];
+        if (mongoose.isValidObjectId(resolvedContactId)) contactConditions.push({ _id: resolvedContactId });
+        if (resolvedIgsid) contactConditions.push({ igsid: resolvedIgsid });
+        if (contactConditions.length > 0) {
+          await tenantModels.InstagramContact.updateMany(
+            { $or: contactConditions },
+            { $set: { lastReadAt: new Date() } }
+          );
+        }
+      }
+
+      const io = req.app.get("io");
+      if (io && organizationId) {
+        io.to(`org_${organizationId}`).emit("conversation_read", {
+          contactId: resolvedContactId,
+          igsid: resolvedIgsid,
+        });
+      }
+    } catch (readErr) {
+      console.warn("[getInstagramMessages] Mark as read warning:", readErr.message);
+    }
+
     const formatted = messages.map((m) => ({
       _id: m._id,
       id: m._id.toString(),
@@ -748,6 +825,84 @@ export const getInstagramMessages = async (req, res) => {
     }));
 
     return res.status(200).json(formatted);
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * Marks an Instagram conversation as read or unread
+ * PATCH /api/instagram/conversation/:contactId/read
+ */
+export const markInstagramConversationRead = async (req, res) => {
+  const { contactId } = req.params;
+  const { unread } = req.body || {};
+  const organizationId = req.user?.organizationId || req.organization?._id;
+  const tenantModels = req.tenantModels || getTenantModels(req.organization?.tenantDbName);
+
+  try {
+    let resolvedContactId = contactId;
+    let resolvedIgsid = contactId;
+
+    if (tenantModels.Conversation && typeof tenantModels.Conversation.findById === "function") {
+      const convQuery = tenantModels.Conversation.findById(contactId);
+      const convo = convQuery && typeof convQuery.lean === "function"
+        ? await convQuery.lean().catch(() => null)
+        : await Promise.resolve(convQuery).catch(() => null);
+      if (convo?.instagramContactId) resolvedContactId = convo.instagramContactId.toString();
+      if (convo?.instagramIgsid) resolvedIgsid = convo.instagramIgsid;
+    }
+
+    if (tenantModels.InstagramContact && (!resolvedIgsid || resolvedIgsid === contactId) && typeof tenantModels.InstagramContact.findById === "function") {
+      const contactQuery = tenantModels.InstagramContact.findById(contactId);
+      const igContact = contactQuery && typeof contactQuery.lean === "function"
+        ? await contactQuery.lean().catch(() => null)
+        : await Promise.resolve(contactQuery).catch(() => null);
+      if (igContact?.igsid) {
+        resolvedIgsid = igContact.igsid;
+        resolvedContactId = igContact._id.toString();
+      }
+    }
+
+    const newUnreadCount = unread ? 1 : 0;
+    const convOrConditions = [];
+    if (mongoose.isValidObjectId(contactId)) convOrConditions.push({ _id: contactId });
+    if (mongoose.isValidObjectId(resolvedContactId)) convOrConditions.push({ instagramContactId: resolvedContactId });
+    if (resolvedIgsid) convOrConditions.push({ instagramIgsid: resolvedIgsid });
+
+    if (tenantModels.Conversation && convOrConditions.length > 0) {
+      await tenantModels.Conversation.updateMany(
+        { $or: convOrConditions },
+        { $set: { unreadCount: newUnreadCount } }
+      );
+    }
+
+    if (tenantModels.InstagramContact) {
+      const contactConditions = [];
+      if (mongoose.isValidObjectId(resolvedContactId)) contactConditions.push({ _id: resolvedContactId });
+      if (resolvedIgsid) contactConditions.push({ igsid: resolvedIgsid });
+      if (contactConditions.length > 0) {
+        await tenantModels.InstagramContact.updateMany(
+          { $or: contactConditions },
+          { $set: { lastReadAt: unread ? new Date(0) : new Date() } }
+        );
+      }
+    }
+
+    const io = req.app.get("io");
+    if (io && organizationId) {
+      io.to(`org_${organizationId}`).emit("conversation_read_status", {
+        contactId: resolvedContactId,
+        igsid: resolvedIgsid,
+        unreadCount: newUnreadCount,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      unreadCount: newUnreadCount,
+      message: unread ? "Conversation marked as unread" : "Conversation marked as read",
+    });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }

@@ -63,6 +63,10 @@ export const instagramContactSchema = new mongoose.Schema(
       default: Date.now,
       index: true,
     },
+    lastReadAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );

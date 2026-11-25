@@ -19,6 +19,7 @@ import {
   getTeamWhatsAppStatuses,
   getApprovedTemplatesForChat,
   sendTemplateToLead,
+  markWhatsappConversationRead,
 } from "../controllers/whatsappController.js";
 import {
   onboardCoexistenceAccount,
@@ -210,6 +211,7 @@ router.post("/logout", logoutClient);
 // Chats and Messages
 router.get("/conversations", getConversations);
 router.get("/conversation/:leadId", getMessages);
+router.patch("/conversation/:leadId/read", markWhatsappConversationRead);
 router.post("/message/send", sendMessage);
 router.get("/templates", getApprovedTemplatesForChat);
 router.post("/template/send", sendTemplateToLead);
