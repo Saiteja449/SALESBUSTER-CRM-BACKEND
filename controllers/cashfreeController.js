@@ -461,9 +461,10 @@ export const fulfillOrderBenefits = async (order) => {
     if (targetEmail) {
       try {
         const appLoginUrl =
+          process.env.CRM_APP_URL ||
           process.env.APP_URL ||
           process.env.FRONTEND_URL ||
-          "https://salesbuster.ai/beta";
+          "https://betaapp.salesbuster.ai/";
 
         const emailResult = await sendPaymentReceiptEmail({
           order,

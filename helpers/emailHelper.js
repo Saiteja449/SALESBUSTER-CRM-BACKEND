@@ -489,9 +489,10 @@ export const sendPaymentReceiptEmail = async ({
   const orgName = organization?.name || "SalesBuster Workspace";
   const appLoginUrl =
     loginUrl ||
+    process.env.CRM_APP_URL ||
     process.env.APP_URL ||
     process.env.FRONTEND_URL ||
-    "https://salesbuster.ai/beta";
+    "https://betaapp.salesbuster.ai/";
 
   const orderId = order.orderId || "N/A";
   const invoiceNumber = `INV-${orderId}`;
@@ -656,29 +657,31 @@ export const sendPaymentReceiptEmail = async ({
         </table>
       </div>
 
-      ${
-        isNewAccount && temporaryPassword
-          ? `
       <!-- Workspace Login Credentials Box -->
       <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px; padding: 20px; margin-bottom: 24px;">
-        <h3 style="margin: 0 0 8px 0; color: #15803d; font-size: 14px; font-weight: 700;">🔐 Your Administrator Access Credentials</h3>
-        <p style="margin: 0 0 14px 0; color: #166534; font-size: 13px;">Your workspace <strong>${orgName}</strong> is ready. Log in to get started:</p>
+        <h3 style="margin: 0 0 8px 0; color: #15803d; font-size: 14px; font-weight: 700;">🔐 CRM Access Credentials</h3>
+        <p style="margin: 0 0 14px 0; color: #166534; font-size: 13px;">Your workspace <strong>${orgName}</strong> is active. Use these details to access your CRM:</p>
         
         <div style="background: #ffffff; border: 1px dashed #86efac; border-radius: 8px; padding: 14px 18px; margin-bottom: 12px;">
+          <div style="margin-bottom: 8px;">
+            <span style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">CRM URL:</span>
+            <div style="font-size: 14px; font-weight: 700; color: #0284c7; font-family: monospace;">${appLoginUrl}</div>
+          </div>
           <div style="margin-bottom: 8px;">
             <span style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">Login Email:</span>
             <div style="font-size: 15px; font-weight: 700; color: #0f172a; font-family: monospace;">${customerEmail}</div>
           </div>
           <div>
-            <span style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">Temporary Password:</span>
-            <div style="font-size: 16px; font-weight: 800; color: #0284c7; font-family: monospace; letter-spacing: 0.5px;">${temporaryPassword}</div>
+            <span style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">${temporaryPassword ? "Temporary Password:" : "Password:"}</span>
+            <div style="font-size: 15px; font-weight: 700; color: #0284c7; font-family: monospace; letter-spacing: 0.5px;">${temporaryPassword || "Your existing CRM password (use Forgot Password if needed)"}</div>
           </div>
         </div>
-        <p style="margin: 0; color: #64748b; font-size: 12px;">* For security reasons, please change your password after logging in.</p>
+        ${
+          temporaryPassword
+            ? `<p style="margin: 0; color: #64748b; font-size: 12px;">* For security reasons, please change your password after logging in.</p>`
+            : ""
+        }
       </div>
-      `
-          : ""
-      }
 
       <!-- Action Button -->
       <div style="text-align: center; margin-bottom: 28px;">
