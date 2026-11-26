@@ -10,7 +10,10 @@ const leadSchema = new mongoose.Schema(
     },
     phone: {
       type: String,
-      required: true,
+      required: function () {
+        return this.source !== "Instagram";
+      },
+      default: "",
       index: true,
       set: function (val) {
         if (val) {
@@ -22,6 +25,15 @@ const leadSchema = new mongoose.Schema(
     phoneNormalized: {
       type: String,
       index: true,
+      default: "",
+    },
+    instagramIgsid: {
+      type: String,
+      index: true,
+      default: "",
+    },
+    instagramUsername: {
+      type: String,
       default: "",
     },
     email: {

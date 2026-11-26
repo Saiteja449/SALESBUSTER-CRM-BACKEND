@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { decryptApiKey } from "../utils/encryption.js";
 import { getMasterModels, getTenantModels } from "./tenantManager.js";
 import { toInternationalPhone } from "../utils/phoneUtils.js";
+import { generateAIResponse } from "../ai/aiService.js";
 
 const getGraphApiVersion = () => process.env.META_GRAPH_API_VERSION || "v21.0";
 const getGraphApiBaseUrl = () => `https://graph.facebook.com/${getGraphApiVersion()}`;
@@ -253,16 +254,21 @@ export const createOrLinkInstagramLead = async ({
   if (!phone || !Lead) return null;
 
   try {
-    const normalizedPhone = toInternationalPhone(phone);
+    const normalizedPhone = phone ? toInternationalPhone(phone) : "";
+    const igsid = contact?.igsid || "";
 
-    // 1. Check for existing lead by phone
-    let lead = await Lead.findOne({
-      $or: [
-        { phone: normalizedPhone },
-        { phoneNormalized: normalizedPhone },
-        { phone: phone },
-      ],
-    });
+    // 1. Check for existing lead by phone or Instagram IGSID
+    const lookupOr = [];
+    if (normalizedPhone) {
+      lookupOr.push({ phone: normalizedPhone }, { phoneNormalized: normalizedPhone });
+    }
+    if (phone) {
+      lookupOr.push({ phone });
+    }
+    if (igsid) {
+      lookupOr.push({ instagramIgsid: igsid });
+    }
+    let lead = lookupOr.length > 0 ? await Lead.findOne({ $or: lookupOr }) : null;
 
     let isNewLead = false;
     let assignedRepName = "Sales Representative";
@@ -277,7 +283,9 @@ export const createOrLinkInstagramLead = async ({
 
       lead = await Lead.create({
         name: name || contact?.name || contact?.username || "Instagram Prospect",
-        phone: normalizedPhone,
+        phone: normalizedPhone || "",
+        instagramIgsid: igsid,
+        instagramUsername: contact?.username || "",
         source: "Instagram",
         service: service || "General Enquiry",
         status: "New",
@@ -286,10 +294,23 @@ export const createOrLinkInstagramLead = async ({
       });
       isNewLead = true;
       console.log(
-        `[InstagramLead] Created new lead ${lead._id} (${lead.phone}) assigned to ${assignedRepName} (${lead.assignedTo})`
+        `[InstagramLead] Created new lead ${lead._id} (${lead.phone || igsid}) assigned to ${assignedRepName} (${lead.assignedTo})`
       );
     } else {
-      console.log(`[InstagramLead] Found existing lead ${lead._id} (${lead.phone})`);
+      let dirty = false;
+      if (normalizedPhone && !lead.phone) {
+        lead.phone = normalizedPhone;
+        dirty = true;
+      }
+      if (igsid && !lead.instagramIgsid) {
+        lead.instagramIgsid = igsid;
+        dirty = true;
+      }
+      if (contact?.username && !lead.instagramUsername) {
+        lead.instagramUsername = contact.username;
+        dirty = true;
+      }
+      console.log(`[InstagramLead] Found existing lead ${lead._id} (${lead.phone || igsid})`);
       if (!lead.assignedTo || lead.assignedTo === "Unassigned") {
         const assignResult = await autoAssignLead({
           tenantModels,
@@ -297,12 +318,15 @@ export const createOrLinkInstagramLead = async ({
         });
         lead.assignedTo = assignResult.assignedTo;
         assignedRepName = assignResult.assignedRepName;
-        await lead.save();
+        dirty = true;
       } else if (lead.assignedTo && User) {
         try {
           const user = await User.findById(lead.assignedTo).select("name").lean();
           if (user) assignedRepName = user.name;
         } catch (_) {}
+      }
+      if (dirty) {
+        await lead.save();
       }
     }
 
@@ -983,40 +1007,38 @@ export const handleIncomingInstagramMessage = async ({
     } catch (_) {}
   }
 
-  // 3. Lead Detection: Check if user shared phone number
+  // 3. Always create/link Instagram Lead (with detected phone if shared, or by IGSID)
   const detectedPhone = extractPhoneNumber(text);
   let dmLeadResult = null;
-  if (detectedPhone) {
-    try {
-      dmLeadResult = await createOrLinkInstagramLead({
-        phone: detectedPhone,
-        name: contact.name || contact.username || "Instagram Prospect",
-        source: "Instagram",
-        service: "General Enquiry",
-        contact,
-        tenantModels,
-        organizationId,
-        account,
-        io,
-      });
+  try {
+    dmLeadResult = await createOrLinkInstagramLead({
+      phone: detectedPhone || "",
+      name: contact.name || contact.username || "Instagram Prospect",
+      source: "Instagram",
+      service: "General Enquiry",
+      contact,
+      tenantModels,
+      organizationId,
+      account,
+      io,
+    });
 
-      if (dmLeadResult && dmLeadResult.isNewLead) {
-        // Send confirmation DM
-        const confirmText =
-          "Thank you! We've received your contact number and our team will get in touch shortly.";
-        await sendInstagramMessage({
-          pageAccessToken: account.pageAccessTokenEncrypted,
-          pageId: account.facebookPageId,
-          igsid,
-          text: confirmText,
-        });
-      }
-    } catch (leadErr) {
-      console.error("[InstagramLead] Failed to process DM lead:", leadErr.message);
+    if (detectedPhone && dmLeadResult && dmLeadResult.isNewLead) {
+      const confirmText =
+        "Thank you! We've received your contact number and our team will get in touch shortly.";
+      await sendInstagramMessage({
+        pageAccessToken: account.pageAccessTokenEncrypted,
+        pageId: account.facebookPageId,
+        igsid,
+        text: confirmText,
+      });
     }
+  } catch (leadErr) {
+    console.error("[InstagramLead] Failed to process DM lead:", leadErr.message);
   }
 
   // 4. Keyword Auto-DM trigger check
+  let ruleMatched = false;
   if (!detectedPhone || !dmLeadResult?.isNewLead) {
     const normalizedText = text.toLowerCase().trim();
     const rules = await InstagramAutomationRule.find({
@@ -1049,6 +1071,7 @@ export const handleIncomingInstagramMessage = async ({
     }
 
     if (matchedRule && matchedRule.dmMessageTemplate) {
+      ruleMatched = true;
       try {
         const dmResult = await sendInstagramMessage({
           pageAccessToken: account.pageAccessTokenEncrypted,
@@ -1127,6 +1150,98 @@ export const handleIncomingInstagramMessage = async ({
       } catch (err) {
         console.warn("[InstagramService] DM Keyword response failed:", err.message);
       }
+    }
+  }
+
+  // 5. WhatsApp-style AI Auto-Reply for Instagram DMs (when no keyword rule matched)
+  if (!ruleMatched && text && dmLeadResult?.lead?._id) {
+    try {
+      const { Organization } = getMasterModels();
+      const org = organizationId
+        ? await Organization.findById(organizationId).lean().catch(() => null)
+        : null;
+      const leadDoc = dmLeadResult.lead;
+      const isAiPaused =
+        leadDoc.aiPausedUntil && new Date(leadDoc.aiPausedUntil) > new Date();
+      const aiEnabled = org?.aiSettings?.aiAutoReplyEnabled !== false;
+
+      if (aiEnabled && !isAiPaused) {
+        const aiReply = await generateAIResponse(
+          leadDoc._id,
+          text,
+          tenantModels,
+          org
+        );
+        const replyText =
+          typeof aiReply === "string"
+            ? aiReply.trim()
+            : (aiReply?.reply || aiReply?.text || "").trim();
+
+        if (replyText) {
+          const dmResult = await sendInstagramMessage({
+            pageAccessToken: account.pageAccessTokenEncrypted,
+            pageId: account.facebookPageId,
+            igsid,
+            text: replyText,
+          });
+          const replyMid = dmResult?.message_id || `mid_ai_${Date.now()}`;
+
+          const aiMsg = await InstagramMessage.create({
+            organizationId,
+            accountId: account._id,
+            contactId: contact._id,
+            igsid,
+            mid: replyMid,
+            direction: "outgoing",
+            senderType: "ai",
+            text: replyText,
+            triggerSource: "direct_message",
+            timestamp: new Date(),
+          });
+
+          if (Message) {
+            await Message.create({
+              messageId: replyMid,
+              leadId: leadDoc._id,
+              contactPhone: contact.phone || "",
+              sender: "AI",
+              senderName: "SalesBuster AI",
+              direction: "outgoing",
+              messageType: "text",
+              text: replyText,
+              timestamp: new Date(),
+              rawPayload: { igsid, channel: "instagram" },
+            }).catch(() => {});
+          }
+
+          if (Conversation) {
+            await Conversation.findOneAndUpdate(
+              {
+                $or: [
+                  { instagramContactId: contact._id },
+                  { instagramIgsid: igsid },
+                  { leadId: leadDoc._id },
+                ],
+              },
+              {
+                $set: {
+                  lastMessage: replyText,
+                  lastMessageTime: new Date(),
+                },
+              }
+            ).catch(() => {});
+          }
+
+          if (io) {
+            io.to(`org_${organizationId}`).emit("instagram_new_message", {
+              contact,
+              message: aiMsg,
+            });
+          }
+        }
+      }
+    } catch (aiErr) {
+      console.warn("[InstagramService] AI auto-reply warning:", aiErr.message);
     }
   }
 

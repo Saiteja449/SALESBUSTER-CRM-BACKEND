@@ -665,6 +665,15 @@ organizationSchema.set("toJSON", {
   },
 });
 
+organizationSchema.index(
+  { email: 1 },
+  { unique: true, partialFilterExpression: { email: { $type: "string", $gt: "" } } }
+);
+organizationSchema.index(
+  { mobile: 1 },
+  { unique: true, partialFilterExpression: { mobile: { $type: "string", $gt: "" } } }
+);
+
 export { organizationSchema };
 const Organization = mongoose.model("Organization", organizationSchema);
 export default Organization;
