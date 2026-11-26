@@ -174,6 +174,43 @@ const organizationSchema = new mongoose.Schema(
       },
       index: true,
     },
+    isTrial: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    trialStartDate: {
+      type: Date,
+      default: null,
+    },
+    trialEndsAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    trialConverted: {
+      type: Boolean,
+      default: false,
+    },
+    autopayEnabled: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    cashfreeSubscriptionId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    autopayStatus: {
+      type: String,
+      enum: ["none", "initialized", "active", "paused", "cancelled", "completed"],
+      default: "none",
+    },
+    nextBillingDate: {
+      type: Date,
+      default: null,
+    },
     status: {
       type: String,
       enum: ["active", "inactive", "suspended"],

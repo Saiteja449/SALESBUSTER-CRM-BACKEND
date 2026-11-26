@@ -21,6 +21,12 @@ import {
   downloadInvoiceHandler,
   resendInvoiceHandler,
 } from "../controllers/cashfreeController.js";
+import {
+  startFreeTrialHandler,
+  createAutopaySubscriptionHandler,
+  getAutopayStatusHandler,
+  cancelAutopaySubscriptionHandler,
+} from "../controllers/trialAutopayController.js";
 
 const router = express.Router();
 
@@ -62,6 +68,12 @@ router.post("/admin/orders/:orderId/resend-invoice", protect, requireCrmAccount,
 
 // 3. Webhook Ingestion (Public S2S callback, verified via HMAC-SHA256 signature)
 router.post("/webhook", handleCashfreeWebhook);
+
+// 3b. 3-Day Free Trial & Cashfree Autopay Subscriptions
+router.post("/trial/start", protect, startFreeTrialHandler);
+router.post("/autopay/create", protect, createAutopaySubscriptionHandler);
+router.get("/autopay/status", protect, getAutopayStatusHandler);
+router.post("/autopay/cancel", protect, cancelAutopaySubscriptionHandler);
 
 // 4. Payment History for Tenant Organization (Auth required)
 router.get("/history", protect, requireCrmAccount, getOrderHistoryHandler);
