@@ -394,35 +394,92 @@ export const getPaginatedLeads = async (req, res) => {
       if (tab === "OldLeads") {
         q.isOldLead = true;
         q.status = { $regex: new RegExp("^new$", "i") };
-      } else {
-        if (tab === "New") {
-          q.isOldLead = { $ne: true };
-          q.status = { $regex: new RegExp("^new$", "i") };
-        } else if (tab === "TodayFollowup") {
-          q.status = { $regex: new RegExp("^follow up$", "i") };
-          q.$or = [
-            ...(q.$or || []),
-            { nextFollowUp: null },
-            { nextFollowUp: "" },
-            { nextFollowUp: { $lte: todayStr } },
-          ];
-        } else if (tab === "UpcomingFollowup") {
-          q.status = { $regex: new RegExp("^follow up$", "i") };
-          q.nextFollowUp = { $gt: todayStr };
-        } else if (tab === "Converted") {
-          q.status = { $regex: new RegExp("^converted$", "i") };
-        } else if (tab === "Lost") {
-          q.status = {
-            $in: [
-              new RegExp("^price issue$", "i"),
-              new RegExp("^not interested$", "i"),
-            ],
-          };
-        } else if (tab === "NotAttended") {
-          q.status = { $regex: new RegExp("^not attended$", "i") };
-        } else if (tab === "MissedCalls") {
-          q.status = { $regex: new RegExp("^missed call$", "i") };
-        }
+      } else if (tab === "New") {
+        q.isOldLead = { $ne: true };
+        q.$or = [
+          { status: { $regex: new RegExp("^new$", "i") } },
+          { folder: "New Leads" },
+        ];
+      } else if (tab === "TodayFollowup") {
+        q.status = { $regex: new RegExp("^follow up$", "i") };
+        q.$or = [
+          ...(q.$or || []),
+          { nextFollowUp: null },
+          { nextFollowUp: "" },
+          { nextFollowUp: { $lte: todayStr } },
+        ];
+      } else if (tab === "UpcomingFollowup") {
+        q.status = { $regex: new RegExp("^follow up$", "i") };
+        q.nextFollowUp = { $gt: todayStr };
+      } else if (tab === "NotAttended") {
+        q.$or = [
+          { status: { $regex: new RegExp("^not attended$", "i") } },
+          { folder: "Not Attended" },
+          { "sla.slaBreached": true },
+        ];
+      } else if (tab === "NotResponding") {
+        q.$or = [
+          { status: { $regex: new RegExp("^not responding$", "i") } },
+          { folder: "Not Responding" },
+          { "cadence.type": "Active_NotResponding" },
+        ];
+      } else if (tab === "PriceIssue") {
+        q.$or = [
+          { status: { $regex: new RegExp("^price issue$", "i") } },
+          { folder: "Price Issue" },
+        ];
+      } else if (tab === "NotInterested") {
+        q.$or = [
+          { status: { $regex: new RegExp("^not interested$", "i") } },
+          { folder: "Not Interested" },
+        ];
+      } else if (tab === "Jobs") {
+        q.$or = [
+          { status: { $in: [new RegExp("^job seeker$", "i"), new RegExp("^jobs?$", "i")] } },
+          { folder: "Jobs" },
+        ];
+      } else if (tab === "FutureLeads") {
+        q.$or = [
+          { status: { $regex: new RegExp("^future leads?$", "i") } },
+          { folder: "Future Leads" },
+        ];
+      } else if (tab === "Irrelevant") {
+        q.$or = [
+          { status: { $regex: new RegExp("^irrelevant", "i") } },
+          { folder: "Irrelevant" },
+        ];
+      } else if (tab === "Collab") {
+        q.$or = [
+          { status: { $regex: new RegExp("^collab", "i") } },
+          { folder: "Collab Opportunity" },
+        ];
+      } else if (tab === "InstalledApp") {
+        q.$or = [
+          { status: { $regex: new RegExp("^installed app$", "i") } },
+          { folder: "Installed App" },
+        ];
+      } else if (tab === "JobPosted") {
+        q.$or = [
+          { status: { $regex: new RegExp("^job posted$", "i") } },
+          { folder: "Job Posted" },
+        ];
+      } else if (tab === "DND") {
+        q.$or = [
+          { status: { $regex: new RegExp("^dnd$", "i") } },
+          { folder: "DND" },
+          { isOptedOut: true },
+        ];
+      } else if (tab === "Converted") {
+        q.status = { $regex: new RegExp("^converted$", "i") };
+      } else if (tab === "Lost") {
+        q.status = {
+          $in: [
+            new RegExp("^price issue$", "i"),
+            new RegExp("^not interested$", "i"),
+          ],
+        };
+      } else if (tab === "MissedCalls") {
+        q.status = { $regex: new RegExp("^missed call$", "i") };
       }
     };
 
@@ -556,6 +613,118 @@ export const getPaginatedLeads = async (req, res) => {
             },
             { $count: "count" },
           ],
+          NotResponding: [
+            {
+              $match: {
+                $or: [
+                  { status: { $regex: new RegExp("^not responding$", "i") } },
+                  { folder: "Not Responding" },
+                  { "cadence.type": "Active_NotResponding" },
+                ],
+              },
+            },
+            { $count: "count" },
+          ],
+          PriceIssue: [
+            {
+              $match: {
+                $or: [
+                  { status: { $regex: new RegExp("^price issue$", "i") } },
+                  { folder: "Price Issue" },
+                ],
+              },
+            },
+            { $count: "count" },
+          ],
+          NotInterested: [
+            {
+              $match: {
+                $or: [
+                  { status: { $regex: new RegExp("^not interested$", "i") } },
+                  { folder: "Not Interested" },
+                ],
+              },
+            },
+            { $count: "count" },
+          ],
+          Jobs: [
+            {
+              $match: {
+                $or: [
+                  { status: { $in: [new RegExp("^job seeker$", "i"), new RegExp("^jobs?$", "i")] } },
+                  { folder: "Jobs" },
+                ],
+              },
+            },
+            { $count: "count" },
+          ],
+          FutureLeads: [
+            {
+              $match: {
+                $or: [
+                  { status: { $regex: new RegExp("^future leads?$", "i") } },
+                  { folder: "Future Leads" },
+                ],
+              },
+            },
+            { $count: "count" },
+          ],
+          Irrelevant: [
+            {
+              $match: {
+                $or: [
+                  { status: { $regex: new RegExp("^irrelevant", "i") } },
+                  { folder: "Irrelevant" },
+                ],
+              },
+            },
+            { $count: "count" },
+          ],
+          Collab: [
+            {
+              $match: {
+                $or: [
+                  { status: { $regex: new RegExp("^collab", "i") } },
+                  { folder: "Collab Opportunity" },
+                ],
+              },
+            },
+            { $count: "count" },
+          ],
+          InstalledApp: [
+            {
+              $match: {
+                $or: [
+                  { status: { $regex: new RegExp("^installed app$", "i") } },
+                  { folder: "Installed App" },
+                ],
+              },
+            },
+            { $count: "count" },
+          ],
+          JobPosted: [
+            {
+              $match: {
+                $or: [
+                  { status: { $regex: new RegExp("^job posted$", "i") } },
+                  { folder: "Job Posted" },
+                ],
+              },
+            },
+            { $count: "count" },
+          ],
+          DND: [
+            {
+              $match: {
+                $or: [
+                  { status: { $regex: new RegExp("^dnd$", "i") } },
+                  { folder: "DND" },
+                  { isOptedOut: true },
+                ],
+              },
+            },
+            { $count: "count" },
+          ],
         },
       },
     ]);
@@ -572,6 +741,16 @@ export const getPaginatedLeads = async (req, res) => {
       NotAttended: leadResults.NotAttended?.[0]?.count || 0,
       Lost: leadResults.Lost?.[0]?.count || 0,
       MissedCalls: leadResults.MissedCalls?.[0]?.count || 0,
+      NotResponding: leadResults.NotResponding?.[0]?.count || 0,
+      PriceIssue: leadResults.PriceIssue?.[0]?.count || 0,
+      NotInterested: leadResults.NotInterested?.[0]?.count || 0,
+      Jobs: leadResults.Jobs?.[0]?.count || 0,
+      FutureLeads: leadResults.FutureLeads?.[0]?.count || 0,
+      Irrelevant: leadResults.Irrelevant?.[0]?.count || 0,
+      Collab: leadResults.Collab?.[0]?.count || 0,
+      InstalledApp: leadResults.InstalledApp?.[0]?.count || 0,
+      JobPosted: leadResults.JobPosted?.[0]?.count || 0,
+      DND: leadResults.DND?.[0]?.count || 0,
     };
 
     res.json({
@@ -815,6 +994,15 @@ export const createLead = async (req, res) => {
 
     // Save lead document
     console.log("[createLead] [Step 8] Saving new lead to database...");
+    leadData.folder = leadData.folder || "New Leads";
+    leadData.status = leadData.status || "New";
+    if (!leadData.sla) {
+      leadData.sla = {
+        enteredNewAt: new Date(),
+        firstActionAt: null,
+        slaBreached: false,
+      };
+    }
     const lead = await LeadModel.create(leadData);
     console.log(`[createLead] [Step 8] Lead saved successfully. ID: ${lead._id}, Name: "${lead.name}", Status: "${lead.status}"`);
 
@@ -1071,6 +1259,53 @@ export const updateLead = async (req, res) => {
       console.log("[updateLead] [Step 5] Prepared atomic recording object:", recordingObj);
     } else {
       console.log("[updateLead] [Step 5] No recording file to process.");
+    }
+
+    // Update first action SLA tracking
+    if (!lead.sla) {
+      lead.sla = { enteredNewAt: lead.createdAt || new Date() };
+    }
+    if (!lead.sla.firstActionAt) {
+      lead.sla.firstActionAt = new Date();
+    }
+
+    // Auto-folder mapping and cadence trigger on status changes
+    if (updateData.status) {
+      const s = String(updateData.status).trim().toLowerCase();
+      if (s === "not responding") {
+        lead.folder = "Not Responding";
+        const orgSettings = req.organization?.workflowSettings || {};
+        const maxFollowups = orgSettings.notRespondingMaxFollowups || 5;
+        const intervals = orgSettings.notRespondingIntervalDays || [1, 3, 6, 10, 15];
+        const firstInterval = intervals[0] || 1;
+        lead.cadence = {
+          type: "Active_NotResponding",
+          followupCount: 0,
+          maxFollowups,
+          cadenceStartDate: new Date(),
+          lastCadenceSentAt: null,
+          nextCadenceScheduledAt: new Date(Date.now() + firstInterval * 24 * 60 * 60 * 1000),
+        };
+      } else if (s === "job seeker" || s === "jobs") {
+        lead.folder = "Jobs";
+      } else if (s === "collab opportunity") {
+        lead.folder = "Collab Opportunity";
+      } else if (s === "not interested") {
+        lead.folder = "Not Interested";
+      } else if (s === "price issue") {
+        lead.folder = "Price Issue";
+      } else if (s === "irrelevant") {
+        lead.folder = "Irrelevant";
+      } else if (s === "dnd") {
+        lead.folder = "DND";
+        lead.isOptedOut = true;
+      } else if (s === "future leads") {
+        lead.folder = "Future Leads";
+      } else if (s === "priority") {
+        lead.priorityLevel = "High";
+      } else if (s === "follow up") {
+        lead.folder = "Upcoming Followup";
+      }
     }
 
     const previousStatus = lead.status;

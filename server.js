@@ -57,6 +57,7 @@ import {
   getWebhookSecurityDiagnostics,
   logStartupDiagnostics,
 } from "./utils/securityDiagnostics.js";
+import { startLeadWorkflowScheduler } from "./services/leadWorkflowWorker.js";
 export { getWebhookSecurityDiagnostics, logStartupDiagnostics };
 
 dotenv.config();
@@ -233,6 +234,7 @@ const startServer = async () => {
 
     // Start all periodic background workers and scheduled tasks
     startBackgroundWorkers(getIO());
+    startLeadWorkflowScheduler();
   });
 };
 

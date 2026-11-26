@@ -267,6 +267,759 @@ export const isRepAIAutoReplyEnabled = async (lead, sessionId, models) => {
   }
 };
 
+export const classifyMessageIntentAndRoute = (lead, textContent, org) => {
+  if (!textContent || typeof textContent !== "string") return false;
+  const normalizedText = textContent.toLowerCase().trim();
+  let changed = false;
+
+  if (/job|job seeker|hiring|vacancy|career/i.test(normalizedText)) {
+    lead.folder = "Jobs";
+    lead.status = "Job Seeker";
+    if (lead.cadence) lead.cadence.type = "None";
+    lead.aiEnabled = false;
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} classified as Job Seeker -> Jobs folder`);
+    changed = true;
+  } else if (/collab|collaboration|partnership|tie up|partner/i.test(normalizedText)) {
+    lead.folder = "Collab Opportunity";
+    lead.status = "Collab Opportunity";
+    if (lead.cadence) lead.cadence.type = "None";
+    lead.aiEnabled = false;
+    const targetPhone = org?.workflowSettings?.collabNotificationPhone;
+    if (targetPhone) {
+      lead.collabDetails = {
+        notifiedPhone: targetPhone,
+        notifiedAt: new Date(),
+        notificationStatus: "sent",
+      };
+      console.log(`[WhatsApp] Alerting collab phone: ${targetPhone} for lead ${lead.phone}`);
+    }
+    changed = true;
+  } else if (/not interested|not required|dont need|no thanks/i.test(normalizedText)) {
+    lead.folder = "Not Interested";
+    lead.status = "Not Interested";
+    if (lead.cadence) lead.cadence.type = "None";
+    lead.aiEnabled = false;
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} classified as Not Interested`);
+    changed = true;
+  } else if (/price issue|too costly|expensive|high price|budget/i.test(normalizedText)) {
+    lead.folder = "Price Issue";
+    lead.status = "Price Issue";
+    if (lead.cadence) lead.cadence.type = "None";
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} classified as Price Issue`);
+    changed = true;
+  } else if (/take up later|call later|later|not now|busy/i.test(normalizedText)) {
+    lead.folder = "Upcoming Followup";
+    lead.status = "Follow Up";
+    if (lead.cadence) lead.cadence.type = "None";
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} classified as Take Up Later -> Upcoming Followup`);
+    changed = true;
+  } else if (/interested|i am interested|yes i am interested/i.test(normalizedText)) {
+    lead.folder = "Priority";
+    lead.status = "Priority";
+    lead.priorityLevel = "High";
+    if (lead.cadence) lead.cadence.type = "None";
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} classified as Interested -> Priority`);
+    changed = true;
+  } else if (
+    (lead.folder === "Future Leads" || lead.folder === "Not Responding") &&
+    /yes|interested|call|tell me/i.test(normalizedText)
+  ) {
+    lead.folder = "Priority";
+    lead.status = "New";
+    lead.priorityLevel = "High";
+    if (lead.cadence) lead.cadence.type = "None";
+    console.log(`[WhatsApp] Lead ${lead._id || lead.phone} reactivated from ${lead.folder}`);
+    changed = true;
+  }
+
+  return changed;
+};
+
+const handleIncomingOrOutgoingMessage = async (msg, sessionId, fromMe) => {
+  try {
+    const models = await getModelsForSession(sessionId);
+    const MessageModel = models?.Message || Message;
+    const LeadModel = models?.Lead || Lead;
+    const ConversationModel = models?.Conversation || Conversation;
+    const UserModel = models?.User || User;
+    const AssignmentStateModel = models?.AssignmentState || AssignmentState;
+    const NotificationModel = models?.Notification || Notification;
+
+    const messageId = msg.key.id;
+
+    // 1. Check if message already exists in DB to avoid duplicate processing
+    const existingMsg = await MessageModel.findOne({ messageId });
+    if (existingMsg) {
+      console.log(
+        `[DEBUG] Message ${messageId} already exists in DB for ${sessionId}. Skipping to avoid duplicates.`,
+      );
+      return;
+    }
+
+    const remoteJid = msg.key.remoteJid;
+    const remoteJidAlt = msg.key.remoteJidAlt;
+
+    const isIndividualChat =
+      (remoteJid && remoteJid.endsWith("@s.whatsapp.net")) ||
+      (remoteJid && remoteJid.endsWith("@lid"));
+
+    if (!isIndividualChat) {
+      console.log(`Skipping non-individual chat: ${remoteJid}`);
+      return;
+    }
+
+    // Resolve phoneJid: Prefer the phone number JID (@s.whatsapp.net) over the LID (@lid)
+    let phoneJid = remoteJid;
+    if (remoteJidAlt && remoteJidAlt.endsWith("@s.whatsapp.net")) {
+      phoneJid = remoteJidAlt;
+    } else if (remoteJid && remoteJid.endsWith("@s.whatsapp.net")) {
+      phoneJid = remoteJid;
+    } else if (remoteJidAlt) {
+      phoneJid = remoteJidAlt;
+    }
+
+    const phone = normalizePhone(phoneJid);
+    const isLid = phoneJid && phoneJid.endsWith("@lid");
+
+    // Skip messages sent to own number
+    const sock = sessions[sessionId]?.sock;
+    if (sock && sock.user && sock.user.id) {
+      const myPhone = sock.user.id
+        .split(":")[0]
+        .split("@")[0]
+        .replace(/\D/g, "");
+      // Direct comparison, ignoring any extra characters
+      if (
+        phone === myPhone ||
+        phone.endsWith(myPhone) ||
+        myPhone.endsWith(phone)
+      ) {
+        console.log(`[DEBUG] Skipping message sent to own number: ${phone}`);
+        return;
+      }
+    }
+
+    const timestamp = new Date(
+      (msg.messageTimestamp || Math.floor(Date.now() / 1000)) * 1000,
+    );
+    const pushName = msg.pushName || "WhatsApp User";
+
+    console.log(
+      `Processing message - Session: ${sessionId}, Phone: ${phone}, Name: ${pushName}, JID: ${remoteJid}, AltJID: ${remoteJidAlt || "none"}, isLid: ${isLid}`,
+    );
+
+    if (msg.messageStubType) {
+      console.log(`[DEBUG] Skipping stub message (${msg.messageStubType}) for ${sessionId}`);
+      return;
+    }
+
+    let messageType = "text";
+    let textContent = "";
+    let mediaUrl = "";
+
+    let msgContent = msg.message;
+    if (!msgContent || Object.keys(msgContent).length === 0) return;
+
+    // Unwrap nested/wrapped messages (e.g. deviceSentMessage, ephemeralMessage, etc.)
+    while (msgContent) {
+      if (msgContent.deviceSentMessage?.message) {
+        msgContent = msgContent.deviceSentMessage.message;
+      } else if (msgContent.ephemeralMessage?.message) {
+        msgContent = msgContent.ephemeralMessage.message;
+      } else if (msgContent.viewOnceMessage?.message) {
+        msgContent = msgContent.viewOnceMessage.message;
+      } else if (msgContent.viewOnceMessageV2?.message) {
+        msgContent = msgContent.viewOnceMessageV2.message;
+      } else if (msgContent.documentWithCaptionMessage?.message) {
+        msgContent = msgContent.documentWithCaptionMessage.message;
+      } else {
+        break;
+      }
+    }
+
+    if (!msgContent || Object.keys(msgContent).length === 0) return;
+
+    // Ignore reactions, disappearing message setting protocols, and non-conversational system events
+    if (
+      msgContent.reactionMessage ||
+      msgContent.protocolMessage ||
+      msgContent.pollUpdateMessage ||
+      msgContent.keepInChatMessage ||
+      msgContent.senderKeyDistributionMessage ||
+      msgContent.peerDataOperationRequestMessage ||
+      msgContent.ephemeralSettingMessage
+    ) {
+      console.log(
+        `[DEBUG] Ignoring non-conversational message event (${Object.keys(msgContent).join(", ")}) for ${sessionId}`,
+      );
+      return;
+    }
+
+    if (msgContent.conversation) {
+      messageType = "text";
+      textContent = msgContent.conversation || "";
+    } else if (msgContent.extendedTextMessage) {
+      messageType = "text";
+      textContent = msgContent.extendedTextMessage.text || "";
+    } else if (msgContent.imageMessage || msgContent.videoMessage) {
+      messageType = "text";
+      const caption =
+        msgContent.imageMessage?.caption || msgContent.videoMessage?.caption;
+      textContent = caption
+        ? `[Media with caption: ${caption}] (Images/Videos are disabled)`
+        : "[Image/Video attachment disabled]";
+      mediaUrl = "";
+    } else if (msgContent.audioMessage) {
+      messageType = "audio";
+      textContent = "Voice message";
+      mediaUrl = await downloadAndSaveMedia(msg, "audio");
+    } else if (msgContent.documentMessage) {
+      messageType = "document";
+      textContent = msgContent.documentMessage.title || "Document";
+      mediaUrl = await downloadAndSaveMedia(msg, "document");
+    } else if (msgContent.locationMessage) {
+      messageType = "location";
+      const loc = msgContent.locationMessage;
+      textContent = `Location Shared - Lat: ${loc.degreesLatitude}, Lng: ${loc.degreesLongitude}`;
+    } else if (msgContent.contactMessage || msgContent.contactsArrayMessage) {
+      messageType = "contact";
+      const contact = msgContent.contactMessage;
+      textContent = `Contact Shared - Name: ${contact?.displayName || "Unknown"}`;
+    } else {
+      console.log(
+        `[DEBUG] Skipping unsupported message structure (${Object.keys(msgContent).join(", ")}) for ${sessionId}`,
+      );
+      return;
+    }
+
+    textContent = textContent || "";
+    console.log(
+      `[DEBUG] Extracted content: ${messageType} - "${textContent.substring(0, 30)}..."`,
+    );
+
+    // Resolve organizationId for this session to ensure strict multi-tenant isolation
+    let orgId = sessions[sessionId]?.organizationId;
+    if (!orgId && sessionId && sessionId.startsWith("org_")) {
+      const match = sessionId.match(/^org_([a-fA-F0-9]{24})/);
+      if (match) {
+        orgId = match[1];
+        if (sessions[sessionId]) sessions[sessionId].organizationId = orgId;
+      }
+    }
+    if (!orgId) {
+      const dbName = models?.Lead?.db?.name;
+      if (dbName && dbName !== "test" && dbName !== "salesbuster_master") {
+        try {
+          const { Organization: MasterOrg } = getMasterModels();
+          const orgDoc = await MasterOrg.findOne({ tenantDbName: dbName }).lean();
+          if (orgDoc) {
+            orgId = orgDoc._id.toString();
+            if (sessions[sessionId]) sessions[sessionId].organizationId = orgId;
+          }
+        } catch (err) {
+          // console.warn(`[WhatsApp] Failed to resolve org by dbName:`, err.message);
+        }
+      }
+    }
+
+    // Dynamic service detection strictly scoped to the organization's own configured catalog
+    let detectedService = null;
+    let orgServices = [];
+    let resolvedOrgDoc = null;
+    if (orgId) {
+      try {
+        const { Organization: MasterOrg } = getMasterModels();
+        const orgDoc = await MasterOrg.findById(orgId).select("aiSettings.services workflowSettings").lean();
+        resolvedOrgDoc = orgDoc;
+        if (Array.isArray(orgDoc?.aiSettings?.services) && orgDoc.aiSettings.services.length > 0) {
+          orgServices = orgDoc.aiSettings.services.filter((s) => s.isActive !== false);
+        }
+      } catch (err) {
+        // console.warn(`[WhatsApp] Could not fetch org services for orgId ${orgId}:`, err.message);
+      }
+    }
+
+    if (textContent && typeof textContent === "string" && orgServices.length > 0) {
+      const cleanText = textContent.trim();
+      const lowerText = cleanText.toLowerCase();
+
+      // 1. Numbered selection match (e.g., "1", "2", "option 1", "#2")
+      const matchNumber =
+        cleanText.match(/^(?:option\s*|#)?([1-9][0-9]?)\.?$/i) ||
+        cleanText.match(/^(?:select\s*|choice\s*|service\s*)?([1-9][0-9]?)$/i);
+      if (matchNumber) {
+        const num = parseInt(matchNumber[1], 10);
+        if (num >= 1 && num <= orgServices.length) {
+          detectedService = orgServices[num - 1].name;
+        }
+      }
+
+      // 2. Direct name match
+      if (!detectedService) {
+        const exactMatch = orgServices.find(
+          (s) => s.name && s.name.trim().toLowerCase() === lowerText
+        );
+        if (exactMatch) {
+          detectedService = exactMatch.name;
+        }
+      }
+
+      // 3. Name or keywords inclusion match
+      if (!detectedService) {
+        for (const s of orgServices) {
+          const sNameLower = s.name ? s.name.trim().toLowerCase() : "";
+          if (sNameLower && lowerText.includes(sNameLower)) {
+            detectedService = s.name;
+            break;
+          }
+          if (Array.isArray(s.keywords) && s.keywords.length > 0) {
+            const matchedKw = s.keywords.some(
+              (kw) => kw && kw.trim() && lowerText.includes(kw.trim().toLowerCase())
+            );
+            if (matchedKw) {
+              detectedService = s.name;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`[DEBUG] Finding lead in DB for phone: ${phone} (session: ${sessionId})`);
+    let lead = await LeadModel.findOne({
+      $or: [{ phone: phone }, { phone: new RegExp(phone.slice(-10) + "$") }],
+    });
+
+    let isNewLead = false;
+    let statusChangedFromMissedCall = false;
+    let intentChanged = false;
+    let assignedRepName = "Sales Representative";
+
+    // Detect if this is a rep's personal session — used for direct assignment and message tagging
+    const repUserMatch = sessionId.match(/_user_([a-fA-F0-9]{24})$/);
+    const isRepSession = !!repUserMatch;
+    const repSessionUserId = repUserMatch ? repUserMatch[1] : null;
+
+    if (!lead) {
+      // Check if this phone number belongs to an existing non-lead prospect conversation
+      const nonLeadConv = await ConversationModel.findOne({
+        $or: [
+          { phone: phone },
+          { phone: cleanPhone },
+          { phone: new RegExp((cleanPhone.slice(-10) || phone) + "$") },
+        ],
+        isLead: false,
+      });
+
+      if (nonLeadConv) {
+        // console.log(
+        //   // `[WhatsApp] Message from non-lead prospect ${phone}. Skipping lead creation and AI auto-response.`
+        // );
+
+        const incomingRecord = await MessageModel.create({
+          leadId: nonLeadConv._id,
+          messageId: msg.key.id,
+          contactPhone: phone,
+          sender: "Customer",
+          senderName: pushName || nonLeadConv.customerName || "Customer",
+          direction: "incoming",
+          messageType: "text",
+          text: textContent || "",
+          timestamp: new Date(),
+          aiGenerated: false,
+          delivered: true,
+          status: "delivered",
+          sessionId,
+        });
+
+        await ConversationModel.findByIdAndUpdate(nonLeadConv._id, {
+          lastMessage: textContent || "",
+          lastMessageTime: new Date(),
+          $inc: { unreadCount: 1 },
+        });
+
+        const io = getIO();
+        if (io) {
+          io.to(sessionId).emit("new_message", incomingRecord);
+          io.to(nonLeadConv._id.toString()).emit("new_message", incomingRecord);
+          if (orgId) {
+            io.to(`org_${orgId}`).emit("conversation_update", {
+              _id: nonLeadConv._id,
+              leadId: nonLeadConv._id,
+              phone,
+              customerName: nonLeadConv.customerName,
+              companyName: nonLeadConv.companyName,
+              isLead: false,
+              lastMessage: textContent || "",
+              lastMessageTime: new Date(),
+            });
+          }
+        }
+        return;
+      }
+
+      // Do NOT create a lead if the identifier is a LID (not a real phone number)
+      // or if the message is outgoing (sent by us/fromMe) to a non-existent lead
+      if (isLid || msg.key.fromMe) {
+        console.log(
+          `[DEBUG] Skipping lead creation for LID or outgoing message. Phone/LID: ${phone}`,
+        );
+        return;
+      }
+
+      console.log(`[DEBUG] Lead not found, creating new lead for ${pushName} in tenant DB`);
+      isNewLead = true;
+      lead = new LeadModel({
+        name: pushName,
+        phone: phone,
+        source: "WhatsApp",
+        service: detectedService || (orgServices[0]?.name) || "General Enquiry",
+        status: "New",
+        folder: "New Leads",
+        sla: {
+          enteredNewAt: new Date(),
+          slaBreached: false,
+        },
+        joinedAt: new Date(),
+        notes: fromMe
+          ? `Created via WhatsApp outgoing message: "${textContent.substring(0, 100)}"`
+          : `Discovered via WhatsApp message: "${textContent.substring(0, 100)}"`,
+      });
+
+      if (!fromMe) {
+        classifyMessageIntentAndRoute(lead, textContent, resolvedOrgDoc);
+      }
+
+      let assignedRep = null;
+
+      if (isRepSession && repSessionUserId) {
+        // =====================================================
+        // DIRECT ASSIGNMENT — bypass round-robin for rep sessions
+        // Inbound messages on a rep's personal line go straight
+        // to that rep without touching the round-robin counter.
+        // =====================================================
+        lead.assignedTo = repSessionUserId;
+        const repUser = await UserModel.findById(repSessionUserId).select("name").lean();
+        assignedRep = repUser;
+        assignedRepName = repUser?.name || "Sales Representative";
+        console.log(
+          `[DEBUG] Rep-session lead: direct assignment to rep ${repSessionUserId} (${assignedRepName})`
+        );
+      } else {
+        // Standard round-robin assignment for admin/org sessions
+        console.log(`[DEBUG] Assigning lead via round-robin...`);
+        const representatives = await UserModel.find({ role: "sales person" }).sort({
+          _id: 1,
+        });
+        if (representatives && representatives.length > 0) {
+          let state = await AssignmentStateModel.findOne({ key: "leadAssignment" });
+          if (!state) {
+            state = await AssignmentStateModel.create({
+              key: "leadAssignment",
+              lastAssignedIndex: -1,
+            });
+          }
+
+          let nextIndex = state.lastAssignedIndex + 1;
+          if (nextIndex >= representatives.length) {
+            nextIndex = 0;
+          }
+
+          assignedRep = representatives[nextIndex];
+          lead.assignedTo = assignedRep._id.toString();
+          state.lastAssignedIndex = nextIndex;
+          await state.save();
+          assignedRepName = assignedRep?.name || "Sales Representative";
+        }
+      }
+
+      await lead.save();
+
+      // Create Lead Notification in tenant DB
+      const targetUsers = assignedRep ? [assignedRep._id] : [];
+      await NotificationModel.create({
+        title: fromMe
+          ? "New WhatsApp Outgoing Lead Capture"
+          : "New WhatsApp Lead Capture",
+        message: fromMe
+          ? `New WhatsApp lead captured from outgoing message to ${lead.phone} and assigned to ${assignedRepName}.`
+          : `New WhatsApp lead captured from ${lead.name} (${lead.phone}) and assigned to ${assignedRepName}.`,
+        type: "new_lead",
+        targetRoles: ["sales manager"],
+        targetUsers: targetUsers,
+      });
+    } else {
+      // Update existing lead timestamps and latest message
+      const updatedFields = {
+        lastMessage: textContent,
+        lastActivity: timestamp,
+      };
+
+      if (detectedService && lead.service !== detectedService) {
+        updatedFields.service = detectedService;
+        lead.service = detectedService; // Sync memory instance
+        console.log(
+          `[DEBUG] Updating lead service to '${detectedService}' based on message content`,
+        );
+      }
+
+      const isPlaceholderName =
+        lead.name === lead.phone ||
+        lead.name === "WhatsApp User" ||
+        lead.name === "WhatsApp Contact" ||
+        !lead.name;
+
+      if (isPlaceholderName) {
+        let betterName = null;
+        if (
+          !fromMe &&
+          pushName &&
+          pushName !== "WhatsApp User" &&
+          pushName !== "WhatsApp Contact"
+        ) {
+          betterName = pushName;
+        }
+        if (betterName) {
+          updatedFields.name = betterName;
+          lead.name = betterName; // Sync memory instance for socket broadcast
+          console.log(
+            `[DEBUG] Updating lead name from placeholder to '${betterName}'`,
+          );
+        }
+      }
+
+      // Detect if customer is replying to a lead currently in "Missed Call" status
+      const currentStatusLower = String(lead.status || "").trim().toLowerCase();
+      if (!fromMe && currentStatusLower === "missed call") {
+        updatedFields.status = "New";
+        lead.status = "New";
+        if (lead.isOldLead) {
+          updatedFields.isOldLead = false;
+          lead.isOldLead = false;
+        }
+        const replySnippet = textContent ? textContent.substring(0, 80) : "Media/Attachment";
+        const replyNote = `[WhatsApp Reply] Customer replied to missed call follow-up message: "${replySnippet}". Moved from Missed Call to New Leads.`;
+        updatedFields.notes = lead.notes ? `${replyNote}\n${lead.notes}` : replyNote;
+        lead.notes = updatedFields.notes;
+        statusChangedFromMissedCall = true;
+
+        console.log(
+          `[Missed Call -> New Lead] Lead ${lead._id} (${lead.phone}) replied on WhatsApp. Transitioned status from 'Missed Call' to 'New'.`
+        );
+      }
+
+      if (!fromMe) {
+        intentChanged = classifyMessageIntentAndRoute(lead, textContent, resolvedOrgDoc);
+        if (intentChanged) {
+          updatedFields.folder = lead.folder;
+          updatedFields.status = lead.status;
+          if (lead.priorityLevel) updatedFields.priorityLevel = lead.priorityLevel;
+          if (lead.cadence) updatedFields.cadence = lead.cadence;
+          if (lead.collabDetails) updatedFields.collabDetails = lead.collabDetails;
+          if (lead.aiEnabled !== undefined) updatedFields.aiEnabled = lead.aiEnabled;
+        }
+      }
+
+      await LeadModel.findByIdAndUpdate(lead._id, {
+        $set: updatedFields,
+      });
+
+      if (statusChangedFromMissedCall) {
+        try {
+          const assignedUserId = lead.assignedTo
+            ? (typeof lead.assignedTo === "object" ? lead.assignedTo._id || lead.assignedTo.id : lead.assignedTo).toString()
+            : null;
+          const targetUsers = [];
+          if (assignedUserId && assignedUserId !== "Unassigned") {
+            targetUsers.push(assignedUserId);
+          }
+
+          await NotificationModel.create({
+            title: "Missed Call Lead Replied on WhatsApp",
+            message: `${lead.name || lead.phone} replied to missed call follow-up message and was moved to New Leads.`,
+            type: "new_lead",
+            targetRoles: ["sales manager"],
+            targetUsers: targetUsers,
+          });
+        } catch (nErr) {
+          console.warn("[WhatsApp] Notification error for missed call reply:", nErr.message);
+        }
+      }
+    }
+
+    // 3. Create message record — include session traceability fields
+    const isFromMe = msg.key.fromMe;
+    const messageRecord = await MessageModel.create({
+      messageId,
+      leadId: lead._id,
+      sender: isFromMe ? "Sales Representative" : phone,
+      direction: isFromMe ? "outgoing" : "incoming",
+      messageType,
+      text: textContent,
+      mediaUrl,
+      timestamp,
+      aiGenerated: false,
+      delivered: true,
+      read: false,
+      status: isFromMe ? "sent" : "received",
+      // Multi-user session traceability
+      sessionId: sessionId || null,
+      salesRepId: isRepSession && repSessionUserId ? repSessionUserId : null,
+    });
+
+    // 4. Update Conversation session meta
+    let conversation = await ConversationModel.findOne({ leadId: lead._id });
+    if (!conversation) {
+      conversation = new ConversationModel({
+        leadId: lead._id,
+      });
+    }
+
+    if (fromMe) {
+      conversation.unreadCount = 0;
+    } else {
+      conversation.unreadCount += 1;
+    }
+    conversation.lastMessage = textContent;
+    conversation.lastMessageTime = timestamp;
+    await conversation.save();
+
+    // 5. Broadcast message to frontend clients with org room isolation
+    const io = getIO();
+    orgId = sessions[sessionId]?.organizationId || orgId;
+    if (io) {
+      // Broadcast to specific lead chat room
+      io.to(lead._id.toString()).emit("new_message", messageRecord);
+
+      // Non-sensitive metadata ONLY to the general organization room (no message text, no contact details)
+      const convMetaPayload = {
+        leadId: lead._id,
+        timestamp: timestamp || new Date(),
+      };
+
+      if (orgId) {
+        io.to(`org_${orgId}`).emit("conversation_updated", convMetaPayload);
+      } else {
+        console.warn(
+          // `[WhatsApp] Skipping un-scoped conversation_updated emit: no orgId for lead ${lead._id}`
+        );
+      }
+
+      const assignedUserId = lead.assignedTo
+        ? (typeof lead.assignedTo === "object" ? lead.assignedTo._id || lead.assignedTo.id : lead.assignedTo).toString()
+        : null;
+
+      // Rich conversation details sent strictly to leadership and assigned representative
+      const convRichPayload = {
+        leadId: lead._id,
+        unreadCount: conversation.unreadCount,
+        lastMessage: textContent,
+        lastMessageTime: timestamp,
+        isNewLead,
+        lead,
+      };
+
+      if (orgId) {
+        io.to(`org_${orgId}_admins`).emit("conversation_updated_rich", convRichPayload);
+      }
+      if (assignedUserId) {
+        io.to(`user_${assignedUserId}`).emit("conversation_updated_rich", convRichPayload);
+      }
+
+      // Broadcast new lead alert toast event (ONLY to leadership and assigned representative)
+      if (isNewLead) {
+        const newLeadAlertPayload = {
+          lead: {
+            _id: lead._id.toString(),
+            id: lead._id.toString(),
+            name: lead.name,
+            phone: lead.phone,
+            service: lead.service,
+            source: lead.source || "WhatsApp",
+            status: lead.status,
+            assignedTo: lead.assignedTo,
+            joinedAt: lead.joinedAt,
+          },
+          message: textContent,
+          assignedRepName: assignedRepName || "Sales Representative",
+          timestamp: timestamp || new Date(),
+        };
+
+        if (orgId) {
+          io.to(`org_${orgId}_admins`).emit("whatsapp_new_lead", newLeadAlertPayload);
+        }
+        if (assignedUserId) {
+          io.to(`user_${assignedUserId}`).emit("whatsapp_new_lead", newLeadAlertPayload);
+        }
+        console.log(`[DEBUG] Emitted whatsapp_new_lead alert for ${lead.phone} (${lead.name})`);
+      }
+
+      if (statusChangedFromMissedCall || intentChanged) {
+        const leadObj = typeof lead.toObject === "function" ? lead.toObject() : { ...lead };
+        if (orgId) {
+          io.to(`org_${orgId}`).emit("lead_updated", { leadId: lead._id, lead: leadObj });
+        }
+        if (assignedUserId) {
+          io.to(`user_${assignedUserId}`).emit("lead_updated", { leadId: lead._id, lead: leadObj });
+        }
+        io.to(lead._id.toString()).emit("lead_updated", { leadId: lead._id, lead: leadObj });
+        console.log(`[DEBUG] Emitted lead_updated for status/intent transition to ${lead.folder} (${lead.status}) for ${lead.phone}`);
+      }
+    }
+
+    console.log(
+      `[DEBUG] Successfully processed and broadcasted message to lead ID: ${lead._id} (Session: ${sessionId})`,
+    );
+
+    // 5b. Detect manual outgoing messages and pause AI for 5 minutes
+    //     Manual = sent from WhatsApp mobile/web by a human, NOT by AI/automation
+    const leadIdStr = lead._id.toString();
+    if (isFromMe && !automatedSendInProgress.has(leadIdStr)) {
+      // Only pause if AI is currently enabled (don't interfere with permanent disable)
+      if (lead.aiEnabled) {
+        const orgId = sessions[sessionId]?.organizationId;
+        await pauseAIForLead(lead._id, models, orgId);
+        console.log(`[AI SNOOZE] Detected manual outgoing message for lead ${leadIdStr}. Pausing AI for 5 minutes.`);
+      }
+    }
+
+    // 6. Asynchronously trigger AI agent response with 4-second debounce
+    const settings = await getSystemSettings(models);
+    const isAiPaused = lead.aiPausedUntil && new Date(lead.aiPausedUntil) > new Date();
+    const repAllowed = await isRepAIAutoReplyEnabled(lead, sessionId, models);
+
+    if (
+      !isFromMe &&
+      lead.aiEnabled &&
+      !isAiPaused &&
+      settings.globalAIEnabled &&
+      repAllowed &&
+      textContent &&
+      textContent.trim()
+    ) {
+      console.log(`[DEBUG] Queueing AI auto-reply for lead ID: ${lead._id} on session ${sessionId}`);
+      triggerAIDebounced(lead, remoteJid, textContent, sessionId, models);
+    } else if (!isFromMe && lead.aiEnabled && isAiPaused) {
+      console.log(
+        `[AI SNOOZE] AI auto-reply skipped for lead ID: ${lead._id}. AI is paused until ${lead.aiPausedUntil}.`,
+      );
+    } else if (!isFromMe && lead.aiEnabled && !settings.globalAIEnabled) {
+      console.log(
+        `[DEBUG] Global AI is paused by Sales Manager. Skipping AI auto-reply for lead ID: ${lead._id}`,
+      );
+    } else if (!isFromMe && lead.aiEnabled && !repAllowed) {
+      console.log(
+        `[DEBUG] Sales Rep personal AI auto-reply is disabled. Skipping AI auto-reply for lead ID: ${lead._id}`,
+      );
+    }
+  } catch (error) {
+    console.error(
+      `Error processing incoming/outgoing WhatsApp message for ${sessionId}:`,
+      error,
+    );
+  }
+};
+
 /**
  * Pause AI automated responses for a lead (e.g. for 5 minutes after manual agent message)
  */

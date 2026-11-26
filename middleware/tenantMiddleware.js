@@ -134,6 +134,10 @@ export const tenantMiddleware = async (req, res, next) => {
  * Middleware to check if organization subscription is active
  */
 export const checkSubscriptionActive = (req, res, next) => {
+  if (req.method === "OPTIONS") {
+    return next();
+  }
+
   // 1. Bypass Super Admin (via role, token data, or admin API key)
   if (req.user?.role === "super_admin" || req.userTokenData?.role === "super_admin") {
     return next();

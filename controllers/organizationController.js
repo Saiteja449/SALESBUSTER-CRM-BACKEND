@@ -2044,8 +2044,6 @@ export const updateQuotaSplit = async (req, res) => {
   }
 };
 
-
-
 // @desc    Upgrade a guest organization to a full CRM subscription
 // @route   POST /api/organizations/:id/upgrade-guest
 // @access  Protected (Super Admin)
@@ -2315,6 +2313,128 @@ export const deleteOrganization = async (req, res) => {
       success: false,
       code: "SERVER_ERROR",
       message: "Server error while deleting organization.",
+    });
+  }
+};
+
+// ==========================================
+// LEAD WORKFLOW & AUTOMATION SETTINGS APIS
+// ==========================================
+
+// @desc    Get current organization's Lead Workflow Settings
+// @route   GET /api/organizations/my-org/workflow-settings
+// @access  Protected
+export const getMyWorkflowSettings = async (req, res) => {
+  try {
+    const orgId = req.user?.organizationId || req.organization?._id;
+    if (!orgId) {
+      return res.status(404).json({
+        success: false,
+        message: "No organization profile associated with this account.",
+      });
+    }
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(orgId);
+    if (!org) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found.",
+      });
+    }
+    res.status(200).json({
+      success: true,
+      data: org.workflowSettings || {},
+    });
+  } catch (error) {
+    console.error("Error in getMyWorkflowSettings:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch workflow settings",
+    });
+  }
+};
+
+// @desc    Update current organization's Lead Workflow Settings
+// @route   PUT /api/organizations/my-org/workflow-settings
+// @access  Protected (Org Owner / Manager)
+export const updateMyWorkflowSettings = async (req, res) => {
+  try {
+    const isAuthorized =
+      req.user?.role === "sales manager" ||
+      req.user?.role === "super_admin" ||
+      req.user?.isOrgOwner;
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        message: "Access forbidden: Manager or Administrator role required.",
+      });
+    }
+
+    const orgId = req.user?.organizationId || req.organization?._id;
+    if (!orgId) {
+      return res.status(404).json({
+        success: false,
+        message: "No organization profile associated with this account.",
+      });
+    }
+
+    const { Organization } = getMasterModels();
+    const org = await Organization.findById(orgId);
+    if (!org) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found.",
+      });
+    }
+
+    if (!org.workflowSettings) {
+      org.workflowSettings = {};
+    }
+
+    const allowedFields = [
+      "leadAttendanceSlaHours",
+      "enableAutoAttendanceEscalation",
+      "retriggerAutoMsgOnBreach",
+      "callerReminderMinutesBefore",
+      "clientReminderMinutesBefore",
+      "callerOverdueThresholdMinutes",
+      "notRespondingMaxFollowups",
+      "notRespondingWindowDays",
+      "notRespondingIntervalDays",
+      "notRespondingFallbackFolder",
+      "futureLeadsDripIntervalDays",
+      "futureLeadsMaxDrips",
+      "collabNotificationPhone",
+      "jobNotificationPhone",
+      "dndKeywords",
+      "reactivationKeywords",
+    ];
+
+    allowedFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        org.workflowSettings[field] = req.body[field];
+      }
+    });
+
+    await org.save();
+
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit("workflow_settings_updated", org.workflowSettings);
+      io.to(`org_${org._id}`).emit("organization_updated", org.toJSON());
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Lead workflow settings updated successfully.",
+      data: org.workflowSettings,
+    });
+  } catch (error) {
+    console.error("Error in updateMyWorkflowSettings:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to update workflow settings",
     });
   }
 };

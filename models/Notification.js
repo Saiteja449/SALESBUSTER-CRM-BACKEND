@@ -28,6 +28,10 @@ const notificationSchema = new mongoose.Schema(
       ref: "User",
       default: [],
     },
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
   },
   {
     timestamps: true,
