@@ -294,6 +294,20 @@ export const fulfillOrderBenefits = async (order) => {
     if (provisionLockKey) _activeOrgProvisionKeys.add(provisionLockKey);
 
     const { Organization, AuthUser, CashfreeOrder } = getMasterModels();
+
+    // Atomic DB claim on isFulfilled so concurrent webhook + status poll never double-provision
+    if (order._id && typeof CashfreeOrder?.findOneAndUpdate === "function") {
+      const claimedFulfill = await CashfreeOrder.findOneAndUpdate(
+        { _id: order._id, isFulfilled: { $ne: true } },
+        { $set: { isFulfilled: true } },
+        { new: true }
+      );
+      if (!claimedFulfill) {
+        console.log(`[CashfreeFulfillment] Order ${order.orderId} already claimed for fulfillment. Skipping.`);
+        return;
+      }
+    }
+
     let org = null;
     let temporaryPassword = null;
     let isNewAccount = false;
@@ -551,6 +565,12 @@ export const fulfillOrderBenefits = async (order) => {
     order.isFulfilled = true;
     await order.save();
   } catch (err) {
+    if (order?._id) {
+      const { CashfreeOrder } = getMasterModels();
+      if (typeof CashfreeOrder?.updateOne === "function") {
+        await CashfreeOrder.updateOne({ _id: order._id }, { $set: { isFulfilled: false } }).catch(() => {});
+      }
+    }
     console.error("[CashfreeFulfillment] Error fulfilling order benefits:", err.message);
   } finally {
     if (lockKey) _activeOrderFulfillments.delete(lockKey);
