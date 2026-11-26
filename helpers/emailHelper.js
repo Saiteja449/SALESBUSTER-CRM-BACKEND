@@ -196,8 +196,10 @@ export const sendSalesPersonWelcomeEmail = async ({
 }) => {
   const appLoginUrl =
     loginUrl ||
+    process.env.CRM_APP_URL ||
+    process.env.APP_URL ||
     process.env.FRONTEND_URL ||
-    "https://holyminicow.com/kranthi-crm";
+    "https://betaapp.salesbuster.ai/";
   const orgDisplayName = organizationName || "Your Organization";
 
   const htmlMessage = `
@@ -393,13 +395,55 @@ export const sendPasswordResetEmail = async ({
   email,
   name,
   temporaryPassword,
+  resetUrl,
   loginUrl,
 }) => {
   const appLoginUrl =
     loginUrl ||
+    process.env.CRM_APP_URL ||
+    process.env.APP_URL ||
     process.env.FRONTEND_URL ||
-    "https://holyminicow.com/kranthi-crm";
+    "https://betaapp.salesbuster.ai/";
   const recipientName = name || email.split("@")[0];
+
+  if (resetUrl && !temporaryPassword) {
+    const htmlMessage = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reset Your SalesBuster CRM Password</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b;">
+  <div style="max-width: 600px; margin: 30px auto; background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
+    <div style="background: linear-gradient(135deg, #0ea5e9 0%, #3b82f6 50%, #6366f1 100%); padding: 30px 28px; text-align: center;">
+      <h1 style="margin: 0 0 6px 0; color: #ffffff; font-size: 24px; font-weight: 800;">SalesBuster CRM</h1>
+      <p style="margin: 0; color: #e0f2fe; font-size: 14px;">Password Reset Request</p>
+    </div>
+    <div style="padding: 30px 28px;">
+      <h2 style="margin: 0 0 12px 0; color: #0f172a; font-size: 20px; font-weight: 700;">Reset Your Password</h2>
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 14px; line-height: 1.6;">
+        Hello <strong>${recipientName}</strong>, click the button below to set a new password for your SalesBuster CRM account (<strong>${email}</strong>). This link expires in <strong>15 minutes</strong>.
+      </p>
+      <div style="text-align: center; margin: 26px 0;">
+        <a href="${resetUrl}" style="display: inline-block; background: linear-gradient(135deg, #0284c7 0%, #2563eb 100%); color: #ffffff; font-size: 15px; font-weight: 700; text-decoration: none; padding: 13px 30px; border-radius: 10px;">
+          Reset Password →
+        </a>
+      </div>
+      <p style="margin: 0; color: #64748b; font-size: 13px;">If you did not request this, you can safely ignore this email.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+    return await sendEmail({
+      email,
+      subject: "Reset Your SalesBuster CRM Password",
+      message: `Hello ${recipientName},\n\nReset your SalesBuster CRM password using this link (valid for 15 minutes):\n${resetUrl}\n\nSalesBuster CRM Support: info@salesbuster.ai`,
+      htmlMessage,
+    });
+  }
 
   const htmlMessage = `
 <!DOCTYPE html>

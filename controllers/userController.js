@@ -236,7 +236,11 @@ export const addSalesPerson = async (req, res) => {
 
     // 9. Send welcome credentials email directly to representative
     const orgName = req.organization?.name || "SalesBuster";
-    const loginUrl = process.env.FRONTEND_URL || "https://holyminicow.com/kranthi-crm";
+    const loginUrl =
+      process.env.CRM_APP_URL ||
+      process.env.APP_URL ||
+      process.env.FRONTEND_URL ||
+      "https://betaapp.salesbuster.ai/";
     let emailSent = false;
     try {
       emailSent = await sendSalesPersonWelcomeEmail({
