@@ -289,14 +289,19 @@ export const fulfillOrderBenefits = async (order) => {
     let temporaryPassword = null;
     let isNewAccount = false;
 
-    // 1. Resolve existing organization by organizationId or customer email
+    // 1. Resolve existing organization by organizationId, email, or mobile
     if (order.organizationId) {
       org = await Organization.findById(order.organizationId);
     }
-    if (!org && order.customerDetails?.customerEmail) {
-      org = await Organization.findOne({
-        email: order.customerDetails.customerEmail.toLowerCase().trim(),
-      });
+    const lookupEmail = (order.customerDetails?.customerEmail || "").toLowerCase().trim();
+    const lookupDigits = String(order.customerDetails?.customerPhone || "").replace(/\D/g, "").slice(-10);
+    if (!org && (lookupEmail || lookupDigits)) {
+      const orConds = [];
+      if (lookupEmail) orConds.push({ email: lookupEmail });
+      if (lookupDigits.length >= 10) orConds.push({ mobile: new RegExp(`${lookupDigits}$`) });
+      if (orConds.length > 0) {
+        org = await Organization.findOne({ $or: orConds });
+      }
     }
 
     // 2. If organization does not exist in master DB (website checkout for new user) -> Auto-provision
@@ -529,13 +534,40 @@ export const createOrderHandler = async (req, res) => {
   try {
     let organizationId = req.user?.organizationId || req.organization?._id;
     if (!organizationId) {
-      // Allow public website checkout by resolving or generating guest organization
-      const custEmail = req.body.customerDetails?.customerEmail;
-      const { Organization } = getMasterModels();
-      if (custEmail && Organization) {
-        const existingOrg = await Organization.findOne({ email: custEmail.toLowerCase() }).lean();
+      // Public website checkout: prevent duplicate organizations with same email or mobile
+      const custEmail = (req.body.customerDetails?.customerEmail || "").toLowerCase().trim();
+      const custDigits = String(req.body.customerDetails?.customerPhone || "").replace(/\D/g, "").slice(-10);
+      const { Organization, AuthUser } = getMasterModels();
+      const orConds = [];
+      if (custEmail) orConds.push({ email: custEmail });
+      if (custDigits.length >= 10) orConds.push({ mobile: new RegExp(`${custDigits}$`) });
+
+      if (orConds.length > 0 && Organization) {
+        const existingOrg = await Organization.findOne({ $or: orConds }).lean();
+        if (existingOrg && existingOrg.accountType !== "guest") {
+          return res.status(409).json({
+            success: false,
+            code: "DUPLICATE_ORGANIZATION",
+            message:
+              "An organization with this email or mobile number is already registered. Please log in to your CRM to upgrade or renew.",
+          });
+        }
         if (existingOrg) {
           organizationId = existingOrg._id;
+        }
+      }
+      if (!organizationId && orConds.length > 0 && AuthUser) {
+        const authOr = [];
+        if (custEmail) authOr.push({ email: custEmail });
+        if (custDigits.length >= 10) authOr.push({ phone: new RegExp(`${custDigits}$`) });
+        const existingUser = authOr.length > 0 ? await AuthUser.findOne({ $or: authOr }).lean() : null;
+        if (existingUser && existingUser.accountType !== "guest") {
+          return res.status(409).json({
+            success: false,
+            code: "DUPLICATE_ACCOUNT",
+            message:
+              "An account with this email or mobile number already exists. Please log in to your CRM to manage billing.",
+          });
         }
       }
       if (!organizationId) {

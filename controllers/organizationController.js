@@ -94,6 +94,7 @@ export const provisionOrganization = async (req, res) => {
     }
 
     const cleanEmail = email.toLowerCase().trim();
+    const normalizedMobile = String(mobile || "").replace(/\D/g, "").slice(-10);
     const seatCount = parseInt(seats, 10);
     const paidAmount = Number(amountPaid);
 
@@ -126,20 +127,33 @@ export const provisionOrganization = async (req, res) => {
 
     const { Organization, AuthUser } = getMasterModels();
 
-    // 2. Check if email is already in use
-    const existingAuthUser = await AuthUser.findOne({ email: cleanEmail });
+    // 2. Check if email or mobile is already in use
+    const mobileRegex = normalizedMobile ? new RegExp(`${normalizedMobile}$`) : null;
+    const existingAuthUser = await AuthUser.findOne({
+      $or: [
+        { email: cleanEmail },
+        ...(mobileRegex ? [{ phone: mobileRegex }] : []),
+      ],
+    });
     if (existingAuthUser) {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
-        message: `An account with email '${cleanEmail}' already exists.`,
+        code: "DUPLICATE_ACCOUNT",
+        message: `An account with this email or mobile number already exists.`,
       });
     }
 
-    const existingOrg = await Organization.findOne({ email: cleanEmail });
+    const existingOrg = await Organization.findOne({
+      $or: [
+        { email: cleanEmail },
+        ...(mobileRegex ? [{ mobile: mobileRegex }] : []),
+      ],
+    });
     if (existingOrg) {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
-        message: `An organization with billing email '${cleanEmail}' is already registered.`,
+        code: "DUPLICATE_ORGANIZATION",
+        message: `An organization with this email or mobile number is already registered.`,
       });
     }
 
