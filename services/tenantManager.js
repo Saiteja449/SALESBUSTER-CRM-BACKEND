@@ -128,6 +128,9 @@ export const getMasterModels = () => {
     UserSession:
       masterDb.models.UserSession ||
       masterDb.model("UserSession", userSessionSchema),
+    SystemSettings:
+      masterDb.models.SystemSettings ||
+      masterDb.model("SystemSettings", SystemSettings.schema),
     masterDb,
   };
 };

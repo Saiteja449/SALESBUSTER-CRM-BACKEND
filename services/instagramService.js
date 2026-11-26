@@ -300,6 +300,7 @@ export const createOrLinkInstagramLead = async ({
       let dirty = false;
       if (normalizedPhone && !lead.phone) {
         lead.phone = normalizedPhone;
+        lead.phoneNormalized = normalizedPhone;
         dirty = true;
       }
       if (igsid && !lead.instagramIgsid) {
@@ -1009,7 +1010,9 @@ export const handleIncomingInstagramMessage = async ({
 
   // 3. Always create/link Instagram Lead (with detected phone if shared, or by IGSID)
   const detectedPhone = extractPhoneNumber(text);
+  const hadPhoneBefore = Boolean(contact?.phone);
   let dmLeadResult = null;
+  let ruleMatched = false;
   try {
     dmLeadResult = await createOrLinkInstagramLead({
       phone: detectedPhone || "",
@@ -1023,23 +1026,37 @@ export const handleIncomingInstagramMessage = async ({
       io,
     });
 
-    if (detectedPhone && dmLeadResult && dmLeadResult.isNewLead) {
+    if (detectedPhone && dmLeadResult && (dmLeadResult.isNewLead || !hadPhoneBefore)) {
       const confirmText =
-        "Thank you! We've received your contact number and our team will get in touch shortly.";
+        "Thank you! We've received your mobile number and updated your details. Our team will get in touch shortly.";
       await sendInstagramMessage({
         pageAccessToken: account.pageAccessTokenEncrypted,
         pageId: account.facebookPageId,
         igsid,
         text: confirmText,
       });
+      // If the message was primarily just a phone number, no need for another AI reply
+      if (/^[\s+\-().\d]{7,20}$/.test(text.trim())) {
+        ruleMatched = true;
+      }
+    } else if (!detectedPhone && !dmLeadResult?.lead?.phone && /\d{5,}/.test(text)) {
+      // User attempted to share digits that aren't a valid 10-digit mobile number
+      const invalidPhoneMsg =
+        "Please share a valid 10-digit mobile number starting with 6-9 so our team can reach you.";
+      await sendInstagramMessage({
+        pageAccessToken: account.pageAccessTokenEncrypted,
+        pageId: account.facebookPageId,
+        igsid,
+        text: invalidPhoneMsg,
+      });
+      ruleMatched = true;
     }
   } catch (leadErr) {
     console.error("[InstagramLead] Failed to process DM lead:", leadErr.message);
   }
 
   // 4. Keyword Auto-DM trigger check
-  let ruleMatched = false;
-  if (!detectedPhone || !dmLeadResult?.isNewLead) {
+  if (!ruleMatched && (!detectedPhone || !dmLeadResult?.isNewLead)) {
     const normalizedText = text.toLowerCase().trim();
     const rules = await InstagramAutomationRule.find({
       organizationId,
@@ -1173,10 +1190,18 @@ export const handleIncomingInstagramMessage = async ({
           tenantModels,
           org
         );
-        const replyText =
+        let replyText =
           typeof aiReply === "string"
             ? aiReply.trim()
             : (aiReply?.reply || aiReply?.text || "").trim();
+
+        if (
+          replyText &&
+          !leadDoc.phone &&
+          !/(mobile|phone|number|contact)/i.test(replyText)
+        ) {
+          replyText = `${replyText}\n\nCould you please share your 10-digit mobile number so our team can assist you faster?`;
+        }
 
         if (replyText) {
           const dmResult = await sendInstagramMessage({

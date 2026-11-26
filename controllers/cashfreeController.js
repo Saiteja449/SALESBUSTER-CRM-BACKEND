@@ -331,6 +331,7 @@ export const fulfillOrderBenefits = async (order) => {
     if (!org) {
       isNewAccount = true;
       const custName = (order.customerDetails?.customerName || "").trim() || "SalesBuster Customer";
+      const rawCompanyName = (order.customerDetails?.companyName || "").trim();
       const cleanEmail = (order.customerDetails?.customerEmail || "").toLowerCase().trim();
       const cleanPhone = (order.customerDetails?.customerPhone || "").trim();
 
@@ -342,11 +343,12 @@ export const fulfillOrderBenefits = async (order) => {
           : "monthly";
 
       const orgDisplayName =
-        custName.toLowerCase().includes("workspace") ||
+        rawCompanyName ||
+        (custName.toLowerCase().includes("workspace") ||
         custName.toLowerCase().includes("ltd") ||
         custName.toLowerCase().includes("pvt")
           ? custName
-          : `${custName}'s Workspace`;
+          : `${custName}'s Workspace`);
 
       // Determine seats and duration based on plan
       const extraReps = Number(order.additionalReps) || 0;
@@ -507,14 +509,16 @@ export const fulfillOrderBenefits = async (order) => {
           // Upgrade Guest organization to full CRM workspace on paid subscription
           if (org.accountType === "guest" || (org.email && org.email.includes("@guest.salesbuster.ai"))) {
             const custName = (order.customerDetails?.customerName || "").trim() || "SalesBuster Customer";
+            const rawCompanyName = (order.customerDetails?.companyName || "").trim();
             const cleanEmail = (order.customerDetails?.customerEmail || "").toLowerCase().trim();
             const cleanPhone = (order.customerDetails?.customerPhone || "").trim();
             const orgDisplayName =
-              custName.toLowerCase().includes("workspace") ||
+              rawCompanyName ||
+              (custName.toLowerCase().includes("workspace") ||
               custName.toLowerCase().includes("ltd") ||
               custName.toLowerCase().includes("pvt")
                 ? custName
-                : `${custName}'s Workspace`;
+                : `${custName}'s Workspace`);
 
             org.accountType = "crm";
             org.isTrial = false;
@@ -835,6 +839,7 @@ export const createOrderHandler = async (req, res) => {
       customerDetails: {
         customerId,
         customerName,
+        companyName: (customerDetails.companyName || "").trim(),
         customerEmail,
         customerPhone,
       },
@@ -874,6 +879,7 @@ export const createOrderHandler = async (req, res) => {
       customerDetails: {
         customerId,
         customerName,
+        companyName: (customerDetails.companyName || "").trim(),
         customerEmail,
         customerPhone,
       },

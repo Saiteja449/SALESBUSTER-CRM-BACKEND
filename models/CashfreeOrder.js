@@ -86,6 +86,10 @@ export const cashfreeOrderSchema = new mongoose.Schema(
         type: String,
         default: "",
       },
+      companyName: {
+        type: String,
+        default: "",
+      },
       customerEmail: {
         type: String,
         default: "",

@@ -23,6 +23,7 @@ import {
 } from "../controllers/cashfreeController.js";
 import {
   startFreeTrialHandler,
+  startPublicFreeTrialHandler,
   createAutopaySubscriptionHandler,
   getAutopayStatusHandler,
   cancelAutopaySubscriptionHandler,
@@ -70,6 +71,7 @@ router.post("/admin/orders/:orderId/resend-invoice", protect, requireCrmAccount,
 router.post("/webhook", handleCashfreeWebhook);
 
 // 3b. 3-Day Free Trial & Cashfree Autopay Subscriptions
+router.post("/public/trial/start", startPublicFreeTrialHandler);
 router.post("/trial/start", protect, startFreeTrialHandler);
 router.post("/autopay/create", protect, createAutopaySubscriptionHandler);
 router.get("/autopay/status", protect, getAutopayStatusHandler);

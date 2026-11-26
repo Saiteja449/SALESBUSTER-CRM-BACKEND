@@ -1,5 +1,13 @@
 import crypto from "crypto";
-import { getMasterModels } from "../services/tenantManager.js";
+import bcrypt from "bcryptjs";
+import {
+  getMasterModels,
+  getTenantModels,
+  generateTenantDbName,
+  generateSecurePassword,
+} from "../services/tenantManager.js";
+import { getDefaultAISettings } from "../models/Organization.js";
+import { sendTenantWelcomeEmail } from "../helpers/emailHelper.js";
 import { TRIAL_LIMITS } from "../middleware/trialLimitMiddleware.js";
 
 const getCashfreeBaseUrl = () =>
@@ -82,6 +90,153 @@ export const startFreeTrialHandler = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to activate 3-day free trial.",
+    });
+  }
+};
+
+/**
+ * POST /api/payment/cashfree/public/trial/start
+ * Public website signup for a new organization 3-day free trial with limited features.
+ */
+export const startPublicFreeTrialHandler = async (req, res) => {
+  try {
+    const {
+      customerName = "",
+      companyName = "",
+      customerEmail = "",
+      customerPhone = "",
+    } = req.body || {};
+
+    const cleanName = String(customerName).trim();
+    const cleanCompany = String(companyName).trim();
+    const cleanEmail = String(customerEmail).trim().toLowerCase();
+    const cleanPhone = String(customerPhone).replace(/\D/g, "").slice(-10);
+
+    if (!cleanName || !cleanEmail || !/^[6-9]\d{9}$/.test(cleanPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Full name, valid work email, and a 10-digit mobile number starting with 6-9 are required.",
+      });
+    }
+
+    const { Organization, AuthUser } = getMasterModels();
+    const mobileRegex = new RegExp(`${cleanPhone}$`);
+
+    const [existingOrg, existingUser] = await Promise.all([
+      Organization.findOne({ $or: [{ email: cleanEmail }, { mobile: mobileRegex }] }).lean(),
+      AuthUser.findOne({ $or: [{ email: cleanEmail }, { phone: mobileRegex }] }).lean(),
+    ]);
+
+    if (existingOrg || existingUser) {
+      return res.status(409).json({
+        success: false,
+        code: "DUPLICATE_ORGANIZATION",
+        message: "An organization with this email or mobile number already exists. Please log in to your CRM.",
+      });
+    }
+
+    const orgDisplayName = cleanCompany || `${cleanName}'s Workspace`;
+    let tenantDbName = generateTenantDbName(orgDisplayName);
+    let attempts = 0;
+    while (await Organization.findOne({ tenantDbName })) {
+      tenantDbName = generateTenantDbName(orgDisplayName);
+      attempts += 1;
+      if (attempts > 5) break;
+    }
+
+    const now = new Date();
+    const trialEndsAt = new Date(now.getTime() + TRIAL_LIMITS.durationDays * 24 * 60 * 60 * 1000);
+    const temporaryPassword = generateSecurePassword(cleanName);
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(temporaryPassword, salt);
+
+    const org = await Organization.create({
+      name: orgDisplayName,
+      email: cleanEmail,
+      mobile: cleanPhone,
+      seats: TRIAL_LIMITS.maxSeats,
+      amountPaid: 0,
+      pricingPerSeat: 0,
+      paymentMethod: "Free Trial",
+      subscriptionPlan: "monthly",
+      subscriptionStartDate: now,
+      subscriptionEndDate: trialEndsAt,
+      isTrial: true,
+      trialStartDate: now,
+      trialEndsAt,
+      trialConverted: false,
+      accountType: "crm",
+      status: "active",
+      tenantDbName,
+      notes: "3-Day Free Trial provisioned via Website",
+      aiSettings: getDefaultAISettings(orgDisplayName),
+    });
+
+    const masterAuthUser = await AuthUser.create({
+      email: cleanEmail,
+      phone: cleanPhone,
+      password: hashedPassword,
+      name: `${cleanName} Admin`,
+      role: "sales manager",
+      accountType: "crm",
+      organizationId: org._id,
+      tenantDbName,
+      isOrgOwner: true,
+      status: "active",
+    });
+
+    const tenantModels = getTenantModels(tenantDbName);
+    await tenantModels.User.create({
+      _id: masterAuthUser._id,
+      name: `${cleanName} Admin`,
+      email: cleanEmail,
+      phone: cleanPhone,
+      password: hashedPassword,
+      role: "sales manager",
+      organizationId: org._id,
+      isOrgOwner: true,
+      status: "active",
+    });
+
+    org.ownerId = masterAuthUser._id;
+    await org.save();
+
+    const appLoginUrl =
+      process.env.CRM_APP_URL ||
+      process.env.APP_URL ||
+      process.env.FRONTEND_URL ||
+      "https://betaapp.salesbuster.ai/";
+
+    sendTenantWelcomeEmail({
+      organizationName: org.name,
+      ownerName: cleanName,
+      ownerEmail: cleanEmail,
+      temporaryPassword,
+      loginUrl: appLoginUrl,
+      subscriptionPlan: "3-Day Free Trial",
+      seats: TRIAL_LIMITS.maxSeats,
+    }).catch((err) => {
+      console.warn("[PublicTrial] Welcome email warning:", err.message);
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Your 3-day free trial workspace is ready!",
+      data: {
+        organizationId: org._id,
+        organizationName: org.name,
+        email: cleanEmail,
+        trialEndsAt,
+        seats: TRIAL_LIMITS.maxSeats,
+        limits: TRIAL_LIMITS,
+        loginUrl: appLoginUrl,
+      },
+    });
+  } catch (error) {
+    console.error("[PublicTrial] startPublicFreeTrialHandler error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to provision 3-day free trial workspace.",
     });
   }
 };
