@@ -18,8 +18,8 @@ const connectDB = async () => {
 
     const dbUri =
       process.env.NODE_ENV === "production"
-        ? process.env.MONGODB_URI || process.env.MONGODB_URI_BETA
-        : process.env.MONGODB_URI_BETA || process.env.MONGODB_URI;
+        ? process.env.MONGODB_URI : process.env.MONGODB_URI_BETA
+       
 
     if (!dbUri) {
       throw new Error("MongoDB connection URI is not defined in environment variables.");
