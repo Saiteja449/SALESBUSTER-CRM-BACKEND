@@ -262,10 +262,13 @@ export const resolveAuthoritativePrice = ({
   };
 };
 
+const _activeOrderFulfillments = new Set();
+
 /**
  * Fulfill organization subscription or addon upon successful payment and dispatch confirmation email
  */
 export const fulfillOrderBenefits = async (order) => {
+  const lockKey = order?.orderId || (order?._id ? String(order._id) : null);
   try {
     if (!order) return;
 
@@ -275,7 +278,13 @@ export const fulfillOrderBenefits = async (order) => {
       return;
     }
 
-    const { Organization, AuthUser } = getMasterModels();
+    if (lockKey && _activeOrderFulfillments.has(lockKey)) {
+      console.log(`[CashfreeFulfillment] Order ${lockKey} fulfillment already in progress. Skipping concurrent call.`);
+      return;
+    }
+    if (lockKey) _activeOrderFulfillments.add(lockKey);
+
+    const { Organization, AuthUser, CashfreeOrder } = getMasterModels();
     let org = null;
     let temporaryPassword = null;
     let isNewAccount = false;
@@ -457,28 +466,46 @@ export const fulfillOrderBenefits = async (order) => {
     }
 
     // 3. Dispatch Payment Receipt & Confirmation Email
-    const targetEmail = order.customerDetails?.customerEmail || org.email;
-    if (targetEmail) {
+    const targetEmail = order.customerDetails?.customerEmail || org?.email;
+    if (targetEmail && !order.receiptEmailSent) {
       try {
-        const appLoginUrl =
-          process.env.CRM_APP_URL ||
-          process.env.APP_URL ||
-          process.env.FRONTEND_URL ||
-          "https://betaapp.salesbuster.ai/";
+        let shouldSend = true;
+        if (order._id && typeof CashfreeOrder?.findOneAndUpdate === "function") {
+          const claimed = await CashfreeOrder.findOneAndUpdate(
+            { _id: order._id, receiptEmailSent: { $ne: true } },
+            { $set: { receiptEmailSent: true } },
+            { new: true }
+          );
+          if (!claimed) {
+            shouldSend = false;
+            console.log(`[CashfreeFulfillment] Receipt email already claimed/sent for ${order.orderId}. Skipping duplicate.`);
+          }
+        }
 
-        const emailResult = await sendPaymentReceiptEmail({
-          order,
-          organization: org,
-          temporaryPassword,
-          isNewAccount,
-          loginUrl: appLoginUrl,
-        });
+        if (shouldSend) {
+          const appLoginUrl =
+            process.env.CRM_APP_URL ||
+            process.env.APP_URL ||
+            process.env.FRONTEND_URL ||
+            "https://betaapp.salesbuster.ai/";
 
-        if (emailResult) {
-          order.receiptEmailSent = true;
-          console.log(`[CashfreeFulfillment] Payment receipt email sent to ${targetEmail}`);
-        } else {
-          console.warn(`[CashfreeFulfillment] Payment receipt email could not be delivered to ${targetEmail}`);
+          const emailResult = await sendPaymentReceiptEmail({
+            order,
+            organization: org,
+            temporaryPassword,
+            isNewAccount,
+            loginUrl: appLoginUrl,
+          });
+
+          if (emailResult) {
+            order.receiptEmailSent = true;
+            console.log(`[CashfreeFulfillment] Payment receipt email sent to ${targetEmail}`);
+          } else {
+            if (order._id && typeof CashfreeOrder?.updateOne === "function") {
+              await CashfreeOrder.updateOne({ _id: order._id }, { $set: { receiptEmailSent: false } });
+            }
+            console.warn(`[CashfreeFulfillment] Payment receipt email could not be delivered to ${targetEmail}`);
+          }
         }
       } catch (emailErr) {
         console.error("[CashfreeFulfillment] Error dispatching payment receipt email:", emailErr.message);
@@ -489,6 +516,8 @@ export const fulfillOrderBenefits = async (order) => {
     await order.save();
   } catch (err) {
     console.error("[CashfreeFulfillment] Error fulfilling order benefits:", err.message);
+  } finally {
+    if (lockKey) _activeOrderFulfillments.delete(lockKey);
   }
 };
 
