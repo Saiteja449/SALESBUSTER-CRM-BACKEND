@@ -20,6 +20,22 @@ export const apiActivityLogger = (req, res, next) => {
 
   const startHr = process.hrtime.bigint();
 
+  // Capture exact JSON error message/code returned by controllers/middleware
+  const origJson = res.json.bind(res);
+  res.json = (body) => {
+    if (body && typeof body === "object" && (res.statusCode >= 400 || body.success === false)) {
+      const msg =
+        body.message ||
+        (typeof body.error === "string" ? body.error : "") ||
+        "";
+      if (msg && res.locals) {
+        res.locals.responseErrorMessage = String(msg).slice(0, 1000);
+        res.locals.responseErrorCode = body.code ? String(body.code) : "";
+      }
+    }
+    return origJson(body);
+  };
+
   res.on("finish", () => {
     const durationMs = Number(process.hrtime.bigint() - startHr) / 1e6;
     const statusCode = res.statusCode || 200;
@@ -38,6 +54,7 @@ export const apiActivityLogger = (req, res, next) => {
 
     const message =
       errorMeta?.message ||
+      res.locals?.responseErrorMessage ||
       res.locals?.logMessage ||
       `${req.method} ${req.originalUrl} -> ${statusCode}`;
 
@@ -49,7 +66,7 @@ export const apiActivityLogger = (req, res, next) => {
       level,
       category,
       message,
-      errorName: errorMeta?.errorName || "",
+      errorName: errorMeta?.errorName || res.locals?.responseErrorCode || "",
       stack: errorMeta?.stack || "",
       userId: req.user?._id || req.user?.id || null,
       userEmail: req.user?.email || req.body?.email || null,

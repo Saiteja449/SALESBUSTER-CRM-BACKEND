@@ -32,13 +32,14 @@ export const uploadApk = async (req, res) => {
       });
     }
 
-    const { version, versionCode, minSupportedVersion, releaseNotes } = req.body;
+    const { version, versionCode, minSupportedVersion, releaseNotes, forceUpdate } = req.body;
     const { AppRelease } = getMasterModels();
 
     const relativeUrl = `/uploads/apk/${req.file.filename}`;
     const baseUrl = `${req.protocol}://${req.get("host")}`;
 
     const parsedVersionCode = versionCode ? parseInt(versionCode, 10) : 1;
+    const parsedForceUpdate = forceUpdate === true || forceUpdate === "true";
 
     // 1. Create and persist new APK release record first
     const newRelease = await AppRelease.create({
@@ -50,6 +51,7 @@ export const uploadApk = async (req, res) => {
       version: (version || "1.0.0").trim(),
       versionCode: isNaN(parsedVersionCode) ? 1 : parsedVersionCode,
       minSupportedVersion: (minSupportedVersion || version || "1.0.0").trim(),
+      forceUpdate: parsedForceUpdate,
       releaseNotes: releaseNotes || "",
       mimeType: req.file.mimetype || "application/vnd.android.package-archive",
       uploadedBy: req.user?._id || null,
@@ -99,6 +101,7 @@ export const uploadApk = async (req, res) => {
         version: newRelease.version,
         versionCode: newRelease.versionCode,
         minSupportedVersion: newRelease.minSupportedVersion,
+        forceUpdate: Boolean(newRelease.forceUpdate),
         releaseNotes: newRelease.releaseNotes,
         originalName: newRelease.originalName,
         fileName: newRelease.fileName,
@@ -158,6 +161,7 @@ export const getLatestApkInfo = async (req, res) => {
         version: release.version,
         versionCode: release.versionCode,
         minSupportedVersion: release.minSupportedVersion,
+        forceUpdate: Boolean(release.forceUpdate),
         releaseNotes: release.releaseNotes,
         originalName: release.originalName,
         fileName: release.fileName,
@@ -237,6 +241,99 @@ export const deleteApk = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Server error while deleting APK release",
+    });
+  }
+};
+
+// @desc    Enable or disable Force Update on the active APK release
+// @route   PATCH /api/app-release/force-update
+// @access  Protected (Super Admin / Developer)
+export const toggleForceUpdate = async (req, res) => {
+  try {
+    const { forceUpdate, minSupportedVersion } = req.body || {};
+    if (typeof forceUpdate !== "boolean") {
+      return res.status(400).json({
+        success: false,
+        message: "forceUpdate (boolean) is required.",
+      });
+    }
+
+    const { AppRelease } = getMasterModels();
+    const release = await AppRelease.findOne().sort({ createdAt: -1 });
+    if (!release) {
+      return res.status(404).json({
+        success: false,
+        message: "No active APK release found.",
+      });
+    }
+
+    release.forceUpdate = forceUpdate;
+    if (minSupportedVersion && String(minSupportedVersion).trim()) {
+      release.minSupportedVersion = String(minSupportedVersion).trim();
+    }
+    await release.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `Force Update ${forceUpdate ? "enabled" : "disabled"} for v${release.version}.`,
+      data: {
+        _id: release._id,
+        version: release.version,
+        versionCode: release.versionCode,
+        minSupportedVersion: release.minSupportedVersion,
+        forceUpdate: release.forceUpdate,
+      },
+    });
+  } catch (error) {
+    console.error("Error toggling force update:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update Force Update setting.",
+    });
+  }
+};
+
+// @desc    Mobile app version & force-update check endpoint
+// @route   GET /api/app-release/check
+// @access  Public
+export const checkAppUpdate = async (req, res) => {
+  try {
+    const { version: clientVersion, versionCode: clientVersionCode } = req.query;
+    const { AppRelease } = getMasterModels();
+    const release = await AppRelease.findOne().sort({ createdAt: -1 }).lean();
+
+    if (!release) {
+      return res.status(200).json({
+        success: true,
+        updateAvailable: false,
+        forceUpdate: false,
+      });
+    }
+
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const parsedClientCode = clientVersionCode ? parseInt(clientVersionCode, 10) : null;
+    const updateAvailable =
+      (parsedClientCode !== null && !isNaN(parsedClientCode) && release.versionCode > parsedClientCode) ||
+      (clientVersion && String(clientVersion).trim() !== release.version);
+
+    const mustForceUpdate = Boolean(release.forceUpdate) && Boolean(updateAvailable || !clientVersion);
+
+    return res.status(200).json({
+      success: true,
+      updateAvailable: Boolean(updateAvailable),
+      forceUpdate: mustForceUpdate,
+      forceUpdateEnabled: Boolean(release.forceUpdate),
+      latestVersion: release.version,
+      latestVersionCode: release.versionCode,
+      minSupportedVersion: release.minSupportedVersion || release.version,
+      releaseNotes: release.releaseNotes || "",
+      downloadUrl: `${baseUrl}/api/mobile-app/apk/download`,
+    });
+  } catch (error) {
+    console.error("Error checking app update:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to check app update status.",
     });
   }
 };

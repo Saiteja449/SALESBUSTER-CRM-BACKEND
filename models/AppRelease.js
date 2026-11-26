@@ -38,6 +38,10 @@ export const appReleaseSchema = new mongoose.Schema(
       default: "1.0.0",
       trim: true,
     },
+    forceUpdate: {
+      type: Boolean,
+      default: false,
+    },
     releaseNotes: {
       type: String,
       default: "",

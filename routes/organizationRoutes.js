@@ -28,6 +28,7 @@ import {
   uploadServiceImage,
   updateQuotaSplit,
   regenerateWebhookKey,
+  deleteOrganization,
 } from "../controllers/organizationController.js";
 import { protect, verifySuperAdmin } from "../middleware/authMiddleware.js";
 
@@ -173,5 +174,6 @@ router.delete(
   verifySuperAdmin,
   deleteOrgKnowledgeDoc,
 );
+router.delete("/:id", verifySuperAdmin, deleteOrganization);
 
 export default router;

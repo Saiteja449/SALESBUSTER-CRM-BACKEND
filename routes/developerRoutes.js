@@ -4,6 +4,7 @@ import {
   getDeveloperOverview,
   getApiLogs,
   clearApiLogs,
+  updateLogResolution,
   getUserSessions,
   forceLogoutSession,
   forceLogoutPlatform,
@@ -20,6 +21,7 @@ router.use(verifySuperAdmin);
 router.get("/overview", getDeveloperOverview);
 router.get("/logs", getApiLogs);
 router.delete("/logs", clearApiLogs);
+router.patch("/logs/:id/resolution", updateLogResolution);
 router.get("/sessions", getUserSessions);
 router.post("/sessions/force-logout-platform", forceLogoutPlatform);
 router.post("/sessions/:sessionId/force-logout", forceLogoutSession);

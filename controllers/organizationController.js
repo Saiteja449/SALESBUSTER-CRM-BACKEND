@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import fs from "fs";
 import crypto from "crypto";
@@ -2219,6 +2220,87 @@ export const upgradeGuestOrganization = async (req, res) => {
       success: false,
       code: "SERVER_ERROR",
       message: "Server error while upgrading guest organization.",
+    });
+  }
+};
+
+// @desc    Permanently delete an organization, drop its tenant DB, and clear all associated master records
+// @route   DELETE /api/organizations/:id
+// @access  Protected (Super Admin / Developer)
+export const deleteOrganization = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const masterModels = getMasterModels();
+    const {
+      Organization,
+      AuthUser,
+      UserSession,
+      WAAccount,
+      InstagramAccount,
+      MarketingCampaign,
+      CashfreeOrder,
+      CashfreeSubscription,
+      ApiActivityLog,
+    } = masterModels;
+
+    const org = await Organization.findById(id);
+    if (!org) {
+      return res.status(404).json({
+        success: false,
+        code: "ORGANIZATION_NOT_FOUND",
+        message: "Organization not found.",
+      });
+    }
+
+    const orgIdStr = String(org._id);
+    const tenantDbName = org.tenantDbName;
+
+    // 1. Drop isolated tenant database if present
+    if (tenantDbName) {
+      try {
+        const tenantConn = mongoose.connection.useDb(tenantDbName);
+        await tenantConn.dropDatabase();
+        console.log(`[deleteOrganization] Dropped tenant DB: ${tenantDbName}`);
+      } catch (dbErr) {
+        console.warn(`[deleteOrganization] Failed to drop tenant DB ${tenantDbName}:`, dbErr.message);
+      }
+    }
+
+    // 2. Clear all Master DB records linked to this organization
+    await Promise.allSettled([
+      AuthUser?.deleteMany({
+        $or: [
+          { organizationId: org._id },
+          ...(tenantDbName ? [{ tenantDbName }] : []),
+        ],
+      }),
+      UserSession?.deleteMany({
+        $or: [
+          { organizationId: orgIdStr },
+          ...(tenantDbName ? [{ tenantDbName }] : []),
+        ],
+      }),
+      WAAccount?.deleteMany({ organizationId: org._id }),
+      InstagramAccount?.deleteMany({ organizationId: org._id }),
+      MarketingCampaign?.deleteMany({ organizationId: org._id }),
+      CashfreeOrder?.deleteMany({ organizationId: org._id }),
+      CashfreeSubscription?.deleteMany({ organizationId: org._id }),
+      ApiActivityLog?.deleteMany({ organizationId: orgIdStr }),
+    ]);
+
+    // 3. Delete the Organization document
+    await Organization.findByIdAndDelete(org._id);
+
+    return res.status(200).json({
+      success: true,
+      message: `Organization "${org.name}" and all associated data have been permanently deleted.`,
+    });
+  } catch (error) {
+    console.error("[deleteOrganization] Error deleting organization:", error);
+    return res.status(500).json({
+      success: false,
+      code: "SERVER_ERROR",
+      message: "Server error while deleting organization.",
     });
   }
 };

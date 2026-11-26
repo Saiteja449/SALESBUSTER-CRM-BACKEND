@@ -82,6 +82,24 @@ export const apiActivityLogSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    resolutionStatus: {
+      type: String,
+      enum: ["unsolved", "solved"],
+      default: "unsolved",
+      index: true,
+    },
+    resolvedAt: {
+      type: Date,
+      default: null,
+    },
+    resolvedBy: {
+      type: String,
+      default: null,
+    },
+    resolutionNote: {
+      type: String,
+      default: "",
+    },
     createdAt: {
       type: Date,
       default: Date.now,

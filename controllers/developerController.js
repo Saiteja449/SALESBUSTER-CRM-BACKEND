@@ -71,6 +71,7 @@ export const getApiLogs = async (req, res) => {
       level,
       category,
       platform,
+      resolutionStatus,
       search,
       onlyFailures,
       page = 1,
@@ -86,6 +87,13 @@ export const getApiLogs = async (req, res) => {
     }
     if (platform && platform !== "all") {
       filter.platform = platform;
+    }
+    if (resolutionStatus && resolutionStatus !== "all") {
+      if (resolutionStatus === "unsolved") {
+        filter.resolutionStatus = { $ne: "solved" };
+      } else {
+        filter.resolutionStatus = resolutionStatus;
+      }
     }
     if (onlyFailures === "true") {
       filter.$or = [
@@ -165,6 +173,60 @@ export const clearApiLogs = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to clear logs.",
+    });
+  }
+};
+
+/**
+ * PATCH /api/developer/logs/:id/resolution
+ * Mark a bug/error log as solved or unsolved.
+ */
+export const updateLogResolution = async (req, res) => {
+  try {
+    const { ApiActivityLog } = getMasterModels();
+    const { id } = req.params;
+    const { status, note } = req.body || {};
+
+    if (!["solved", "unsolved"].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Status must be 'solved' or 'unsolved'.",
+      });
+    }
+
+    const updated = await ApiActivityLog.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          resolutionStatus: status,
+          resolvedAt: status === "solved" ? new Date() : null,
+          resolvedBy:
+            status === "solved"
+              ? req.user?.email || req.user?.name || "developer"
+              : null,
+          resolutionNote: note !== undefined ? String(note).slice(0, 500) : "",
+        },
+      },
+      { new: true }
+    ).lean();
+
+    if (!updated) {
+      return res.status(404).json({
+        success: false,
+        message: "Log entry not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Marked as ${status}.`,
+      data: updated,
+    });
+  } catch (error) {
+    console.error("[Developer] updateLogResolution error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update log resolution status.",
     });
   }
 };

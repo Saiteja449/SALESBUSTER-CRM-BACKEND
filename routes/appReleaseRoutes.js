@@ -8,6 +8,8 @@ import {
   getLatestApkInfo,
   downloadLatestApk,
   deleteApk,
+  toggleForceUpdate,
+  checkAppUpdate,
 } from "../controllers/appReleaseController.js";
 import { verifySuperAdmin } from "../middleware/authMiddleware.js";
 
@@ -85,11 +87,13 @@ router.post("/upload", verifySuperAdmin, handleApkUpload, uploadApk);
 
 // 2. Public: Fetch latest APK version & metadata
 router.get("/latest", getLatestApkInfo);
+router.get("/check", checkAppUpdate);
 
 // 3. Public: Direct download latest APK binary
 router.get("/download", downloadLatestApk);
 
-// 4. Super Admin: Delete APK
+// 4. Super Admin: Toggle Force Update & Delete APK
+router.patch("/force-update", verifySuperAdmin, toggleForceUpdate);
 router.delete("/", verifySuperAdmin, deleteApk);
 
 export default router;
