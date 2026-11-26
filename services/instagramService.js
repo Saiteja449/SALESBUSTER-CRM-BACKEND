@@ -1075,6 +1075,7 @@ export const handleIncomingInstagramMessage = async ({
       try {
         const dmResult = await sendInstagramMessage({
           pageAccessToken: account.pageAccessTokenEncrypted,
+          pageId: account.facebookPageId,
           igsid,
           text: matchedRule.dmMessageTemplate,
           callToAction: matchedRule.callToAction,

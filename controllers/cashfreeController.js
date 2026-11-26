@@ -501,9 +501,121 @@ export const fulfillOrderBenefits = async (order) => {
           newEnd.setMonth(newEnd.getMonth() + extensionMonths);
           org.subscriptionEndDate = newEnd;
           org.amountPaid = (org.amountPaid || 0) + (order.orderAmount || 0);
-          if (order.additionalReps) {
-            const totalSeats = 5 + (Number(order.additionalReps) || 0);
-            org.seats = Math.max(org.seats || 1, totalSeats);
+          const totalSeats = 5 + (Number(order.additionalReps) || 0);
+          org.seats = Math.max(org.seats || 1, totalSeats);
+
+          // Upgrade Guest organization to full CRM workspace on paid subscription
+          if (org.accountType === "guest" || (org.email && org.email.includes("@guest.salesbuster.ai"))) {
+            const custName = (order.customerDetails?.customerName || "").trim() || "SalesBuster Customer";
+            const cleanEmail = (order.customerDetails?.customerEmail || "").toLowerCase().trim();
+            const cleanPhone = (order.customerDetails?.customerPhone || "").trim();
+            const orgDisplayName =
+              custName.toLowerCase().includes("workspace") ||
+              custName.toLowerCase().includes("ltd") ||
+              custName.toLowerCase().includes("pvt")
+                ? custName
+                : `${custName}'s Workspace`;
+
+            org.accountType = "crm";
+            org.isTrial = false;
+            org.trialConverted = true;
+            org.name = orgDisplayName;
+            if (cleanEmail) org.email = cleanEmail;
+            if (cleanPhone) org.mobile = cleanPhone;
+
+            // Migrate guest tenant DB (sb_guest_...) to normal paid tenant DB (sb_tenant_...)
+            const oldTenantDbName = org.tenantDbName;
+            if (oldTenantDbName && oldTenantDbName.startsWith("sb_guest_")) {
+              try {
+                let newTenantDbName = generateTenantDbName(orgDisplayName);
+                let dbAttempts = 0;
+                while (await Organization.findOne({ tenantDbName: newTenantDbName })) {
+                  newTenantDbName = generateTenantDbName(orgDisplayName);
+                  dbAttempts += 1;
+                  if (dbAttempts > 5) break;
+                }
+
+                const oldConn = mongoose.connection.useDb(oldTenantDbName);
+                const newConn = mongoose.connection.useDb(newTenantDbName);
+                if (oldConn?.db && newConn?.db) {
+                  const collections = await oldConn.db.listCollections().toArray();
+                  for (const col of collections) {
+                    if (col.name.startsWith("system.")) continue;
+                    const docs = await oldConn.db.collection(col.name).find({}).toArray();
+                    if (docs.length > 0) {
+                      await newConn.db.collection(col.name).insertMany(docs, { ordered: false }).catch(() => {});
+                    }
+                  }
+                  await oldConn.dropDatabase().catch(() => {});
+                }
+
+                org.tenantDbName = newTenantDbName;
+                await AuthUser.updateMany(
+                  { organizationId: org._id },
+                  { $set: { tenantDbName: newTenantDbName, accountType: "crm" } }
+                ).catch(() => {});
+                console.log(`[CashfreeFulfillment] Migrated guest DB ${oldTenantDbName} -> ${newTenantDbName}`);
+              } catch (migErr) {
+                console.warn("[CashfreeFulfillment] Guest DB migration warning:", migErr.message);
+              }
+            }
+
+            temporaryPassword = generateSecurePassword(custName);
+            isNewAccount = true;
+            const salt = await bcrypt.genSalt(10);
+            const hashedPassword = await bcrypt.hash(temporaryPassword, salt);
+
+            let ownerAuth = await AuthUser.findOne({ organizationId: org._id, isOrgOwner: true });
+            if (!ownerAuth && cleanEmail) {
+              ownerAuth = await AuthUser.findOne({ email: cleanEmail });
+            }
+            if (ownerAuth) {
+              if (cleanEmail) ownerAuth.email = cleanEmail;
+              ownerAuth.password = hashedPassword;
+              ownerAuth.name = `${custName} Admin`;
+              ownerAuth.accountType = "crm";
+              ownerAuth.role = "sales manager";
+              ownerAuth.tenantDbName = org.tenantDbName;
+              ownerAuth.isOrgOwner = true;
+              ownerAuth.status = "active";
+              await ownerAuth.save();
+            } else if (cleanEmail) {
+              ownerAuth = await AuthUser.create({
+                email: cleanEmail,
+                phone: cleanPhone || undefined,
+                password: hashedPassword,
+                name: `${custName} Admin`,
+                role: "sales manager",
+                accountType: "crm",
+                organizationId: org._id,
+                tenantDbName: org.tenantDbName,
+                isOrgOwner: true,
+                status: "active",
+              });
+            }
+
+            if (org.tenantDbName && ownerAuth) {
+              try {
+                const tenantModels = getTenantModels(org.tenantDbName);
+                await tenantModels.User.findOneAndUpdate(
+                  { _id: ownerAuth._id },
+                  {
+                    $set: {
+                      name: `${custName} Admin`,
+                      email: cleanEmail || ownerAuth.email,
+                      password: hashedPassword,
+                      role: "sales manager",
+                      organizationId: org._id,
+                      isOrgOwner: true,
+                      status: "active",
+                    },
+                  },
+                  { upsert: true }
+                );
+              } catch (tErr) {
+                console.warn("[CashfreeFulfillment] Tenant owner sync warning:", tErr.message);
+              }
+            }
           }
         }
       }
