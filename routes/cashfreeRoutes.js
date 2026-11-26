@@ -1,5 +1,5 @@
 import express from "express";
-import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
+import { protect, requireCrmAccount, verifySuperAdmin } from "../middleware/authMiddleware.js";
 import validateRequest from "../middleware/validateRequest.js";
 import {
   createCashfreeOrderSchema,
@@ -52,12 +52,12 @@ router.post("/public/dev-simulate-success", devSimulateSuccessHandler);
 // 1d. Pricing & GST Config (Public for web checkout)
 router.get("/public/pricing-config", getPublicPricingConfigHandler);
 
-// 1e. Admin Pricing, GST & Addon Catalog Configuration (Auth required)
-router.get("/admin/pricing-settings", protect, requireCrmAccount, getAdminPricingSettingsHandler);
-router.put("/admin/pricing-settings", protect, requireCrmAccount, updatePricingSettingsHandler);
-router.post("/admin/addons", protect, requireCrmAccount, createAdminAddonHandler);
-router.put("/admin/addons/:addonId", protect, requireCrmAccount, updateAdminAddonHandler);
-router.delete("/admin/addons/:addonId", protect, requireCrmAccount, deleteAdminAddonHandler);
+// 1e. Admin Pricing, GST & Addon Catalog Configuration (Super Admin / Developer only)
+router.get("/admin/pricing-settings", verifySuperAdmin, getAdminPricingSettingsHandler);
+router.put("/admin/pricing-settings", verifySuperAdmin, updatePricingSettingsHandler);
+router.post("/admin/addons", verifySuperAdmin, createAdminAddonHandler);
+router.put("/admin/addons/:addonId", verifySuperAdmin, updateAdminAddonHandler);
+router.delete("/admin/addons/:addonId", verifySuperAdmin, deleteAdminAddonHandler);
 
 // 2. Fetch / Verify Order Status & Download Tax Invoice
 router.get("/order/:orderId", protect, getOrderStatusHandler);
