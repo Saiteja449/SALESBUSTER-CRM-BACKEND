@@ -263,12 +263,16 @@ export const resolveAuthoritativePrice = ({
 };
 
 const _activeOrderFulfillments = new Set();
+const _activeOrgProvisionKeys = new Set();
 
 /**
  * Fulfill organization subscription or addon upon successful payment and dispatch confirmation email
  */
 export const fulfillOrderBenefits = async (order) => {
   const lockKey = order?.orderId || (order?._id ? String(order._id) : null);
+  const emailKey = (order?.customerDetails?.customerEmail || "").toLowerCase().trim();
+  const phoneKey = String(order?.customerDetails?.customerPhone || "").replace(/\D/g, "").slice(-10);
+  const provisionLockKey = emailKey || phoneKey || null;
   try {
     if (!order) return;
 
@@ -282,7 +286,12 @@ export const fulfillOrderBenefits = async (order) => {
       console.log(`[CashfreeFulfillment] Order ${lockKey} fulfillment already in progress. Skipping concurrent call.`);
       return;
     }
+    if (provisionLockKey && _activeOrgProvisionKeys.has(provisionLockKey)) {
+      console.log(`[CashfreeFulfillment] Provisioning already in progress for ${provisionLockKey}. Skipping concurrent duplicate.`);
+      return;
+    }
     if (lockKey) _activeOrderFulfillments.add(lockKey);
+    if (provisionLockKey) _activeOrgProvisionKeys.add(provisionLockKey);
 
     const { Organization, AuthUser, CashfreeOrder } = getMasterModels();
     let org = null;
@@ -545,6 +554,7 @@ export const fulfillOrderBenefits = async (order) => {
     console.error("[CashfreeFulfillment] Error fulfilling order benefits:", err.message);
   } finally {
     if (lockKey) _activeOrderFulfillments.delete(lockKey);
+    if (provisionLockKey) _activeOrgProvisionKeys.delete(provisionLockKey);
   }
 };
 
