@@ -382,30 +382,49 @@ export const fulfillOrderBenefits = async (order) => {
       });
 
       // Register Owner in Master AuthUser registry
-      const masterAuthUser = await AuthUser.create({
-        email: cleanEmail,
-        password: hashedPassword,
-        name: `${custName} Admin`,
-        role: "sales manager",
-        organizationId: org._id,
-        tenantDbName,
-        isOrgOwner: true,
-        status: "active",
-      });
+      let masterAuthUser = await AuthUser.findOne({ email: cleanEmail });
+      if (masterAuthUser) {
+        masterAuthUser.password = hashedPassword;
+        masterAuthUser.name = masterAuthUser.name || `${custName} Admin`;
+        masterAuthUser.role = "sales manager";
+        masterAuthUser.organizationId = org._id;
+        masterAuthUser.tenantDbName = tenantDbName;
+        masterAuthUser.isOrgOwner = true;
+        masterAuthUser.status = "active";
+        await masterAuthUser.save();
+      } else {
+        masterAuthUser = await AuthUser.create({
+          email: cleanEmail,
+          phone: cleanPhone || undefined,
+          password: hashedPassword,
+          name: `${custName} Admin`,
+          role: "sales manager",
+          organizationId: org._id,
+          tenantDbName,
+          isOrgOwner: true,
+          status: "active",
+        });
+      }
 
       // Initialize tenant database and create Owner inside tenant DB
       const tenantModels = getTenantModels(tenantDbName);
-      await tenantModels.User.create({
-        _id: masterAuthUser._id,
-        name: `${custName} Admin`,
-        email: cleanEmail,
-        password: hashedPassword,
-        role: "sales manager",
-        organizationId: org._id,
-        isOrgOwner: true,
-        phone: cleanPhone,
-        status: "active",
-      });
+      await tenantModels.User.findOneAndUpdate(
+        { email: cleanEmail },
+        {
+          $set: {
+            _id: masterAuthUser._id,
+            name: `${custName} Admin`,
+            email: cleanEmail,
+            password: hashedPassword,
+            role: "sales manager",
+            organizationId: org._id,
+            isOrgOwner: true,
+            phone: cleanPhone,
+            status: "active",
+          },
+        },
+        { upsert: true, new: true }
+      );
 
       org.ownerId = masterAuthUser._id;
       await org.save();
