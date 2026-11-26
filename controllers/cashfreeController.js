@@ -513,6 +513,9 @@ export const fulfillOrderBenefits = async (order) => {
           }
         }
       } catch (emailErr) {
+        if (order._id && typeof CashfreeOrder?.updateOne === "function") {
+          await CashfreeOrder.updateOne({ _id: order._id }, { $set: { receiptEmailSent: false } }).catch(() => {});
+        }
         console.error("[CashfreeFulfillment] Error dispatching payment receipt email:", emailErr.message);
       }
     }

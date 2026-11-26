@@ -534,7 +534,10 @@ export const forgotPassword = async (req, res) => {
 
     const cleanEmail = String(email).trim().toLowerCase();
     const { AuthUser } = getMasterModels();
-    const user = await AuthUser.findOne({ email: cleanEmail }).select("-password");
+    let user = await AuthUser.findOne({ email: cleanEmail }).select("-password");
+    if (!user) {
+      user = await User.findOne({ email: cleanEmail }).select("-password");
+    }
 
     if (user) {
       const resetToken = jwt.sign(
@@ -556,11 +559,20 @@ export const forgotPassword = async (req, res) => {
       ).replace(/\/+$/, "");
       const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
 
-      await sendPasswordResetEmail({
+      const sent = await sendPasswordResetEmail({
         email: user.email,
         name: user.name,
         resetUrl,
       });
+
+      if (!sent) {
+        return res.status(502).json({
+          success: false,
+          message: "Failed to dispatch password reset email. Please check SMTP configuration.",
+        });
+      }
+    } else {
+      console.warn(`[Auth] forgotPassword: no user found for email ${cleanEmail}`);
     }
 
     return res.status(200).json({
