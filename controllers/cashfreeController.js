@@ -657,11 +657,14 @@ export const createOrderHandler = async (req, res) => {
       req.user?.email ||
       req.organization?.email ||
       "billing@salesbuster.ai";
-    const customerPhone =
+    const rawPhone =
       customerDetails.customerPhone ||
       req.user?.phone ||
       req.organization?.phone ||
+      req.organization?.mobile ||
       "9999999999";
+    const customerPhone =
+      String(rawPhone).replace(/\D/g, "").slice(-10) || "9999999999";
 
     // 3. Generate unique order ID
     const randomHex = crypto.randomBytes(3).toString("hex");
@@ -709,9 +712,9 @@ export const createOrderHandler = async (req, res) => {
       },
       orderTags: {
         organizationId: String(organizationId),
-        userId: String(req.user?._id || ""),
-        purpose,
-        addonType,
+        ...(req.user?._id ? { userId: String(req.user._id) } : {}),
+        purpose: String(purpose || "addon"),
+        ...(addonType ? { addonType: String(addonType) } : {}),
       },
       orderNote: orderNote || priceResolution.title,
     });
