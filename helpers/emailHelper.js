@@ -494,8 +494,12 @@ export const sendPaymentReceiptEmail = async ({
     process.env.FRONTEND_URL ||
     "https://betaapp.salesbuster.ai/";
 
-  const orderId = order.orderId || "N/A";
-  const invoiceNumber = `INV-${orderId}`;
+  const rawOrderId = order.orderId || "N/A";
+  const shortCode = rawOrderId !== "N/A"
+    ? (rawOrderId.split("_").filter(Boolean).pop() || rawOrderId).slice(-8).toUpperCase()
+    : "N/A";
+  const orderId = rawOrderId !== "N/A" ? `SB-${shortCode}` : "N/A";
+  const invoiceNumber = rawOrderId !== "N/A" ? `INV-${shortCode}` : "INV-N/A";
   const gstPercentLabel =
     typeof order.gstRate === "number"
       ? `${order.gstRate <= 1 && order.gstRate > 0 ? Math.round(order.gstRate * 10000) / 100 : order.gstRate}%`
@@ -552,7 +556,7 @@ export const sendPaymentReceiptEmail = async ({
       })
     : "Active Subscription";
 
-  const planTitle =
+  const rawPlanTitle =
     order.notes ||
     (order.planId === "yearly"
       ? "Yearly Plan (5 Sales Rep Seats, Annual Subscription)"
@@ -561,6 +565,10 @@ export const sendPaymentReceiptEmail = async ({
       : order.purpose === "addon"
       ? `Addon: ${order.addonType || "Feature"}`
       : `${order.planId || "Standard"} Plan`);
+  const planTitle = String(rawPlanTitle)
+    .replace(/Website Subscription:/gi, "CRM Subscription:")
+    .replace(/\s*\(Most Popular\)/gi, "")
+    .trim();
 
   const htmlMessage = `
 <!DOCTYPE html>
@@ -673,7 +681,7 @@ export const sendPaymentReceiptEmail = async ({
           </div>
           <div>
             <span style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">${temporaryPassword ? "Temporary Password:" : "Password:"}</span>
-            <div style="font-size: 15px; font-weight: 700; color: #0284c7; font-family: monospace; letter-spacing: 0.5px;">${temporaryPassword || "Your existing CRM password (use Forgot Password if needed)"}</div>
+            <div style="font-size: 15px; font-weight: 700; color: #0284c7; font-family: monospace; letter-spacing: 0.5px;">${temporaryPassword || `<a href="${appLoginUrl.replace(/\/+$/, "")}/forgot-password" style="color: #0284c7; text-decoration: underline;">Reset / Forgot Password →</a>`}</div>
           </div>
         </div>
         ${

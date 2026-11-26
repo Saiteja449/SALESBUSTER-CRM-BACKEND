@@ -2,7 +2,7 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import { getMasterModels, getTenantModels, generateTenantDbName } from "../services/tenantManager.js";
-import { sendLoginAlertEmail } from "../helpers/emailHelper.js";
+import { sendLoginAlertEmail, sendPasswordResetEmail } from "../helpers/emailHelper.js";
 import {
   createUserSession,
   normalizeSessionPlatform,
@@ -518,6 +518,122 @@ export const logout = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Logged out.",
+    });
+  }
+};
+
+export const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required.",
+      });
+    }
+
+    const cleanEmail = String(email).trim().toLowerCase();
+    const { AuthUser } = getMasterModels();
+    const user = await AuthUser.findOne({ email: cleanEmail }).select("-password");
+
+    if (user) {
+      const resetToken = jwt.sign(
+        {
+          id: user._id,
+          email: user.email,
+          tenantDbName: user.tenantDbName || null,
+          purpose: "password_reset",
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: "15m" }
+      );
+
+      const appUrl = (
+        process.env.CRM_APP_URL ||
+        process.env.APP_URL ||
+        process.env.FRONTEND_URL ||
+        "https://betaapp.salesbuster.ai"
+      ).replace(/\/+$/, "");
+      const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
+
+      await sendPasswordResetEmail({
+        email: user.email,
+        name: user.name,
+        resetUrl,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "If an account exists with this email, a password reset link has been sent.",
+    });
+  } catch (error) {
+    console.error("[Auth] forgotPassword error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to process forgot password request.",
+    });
+  }
+};
+
+export const resetPassword = async (req, res) => {
+  try {
+    const { token, newPassword } = req.body || {};
+    if (!token || !newPassword || String(newPassword).length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid reset token and a new password (min 6 characters) are required.",
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch {
+      return res.status(400).json({
+        success: false,
+        message: "Password reset link is invalid or has expired.",
+      });
+    }
+
+    if (decoded?.purpose !== "password_reset" || !decoded?.id) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid password reset token.",
+      });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(String(newPassword), salt);
+
+    const { AuthUser } = getMasterModels();
+    await AuthUser.findByIdAndUpdate(decoded.id, {
+      $set: { password: hashedPassword },
+    });
+
+    if (decoded.tenantDbName) {
+      try {
+        const tenantModels = getTenantModels(decoded.tenantDbName);
+        if (tenantModels?.User) {
+          await tenantModels.User.updateOne(
+            { email: decoded.email },
+            { $set: { password: hashedPassword } }
+          );
+        }
+      } catch (tErr) {
+        console.warn("[Auth] Tenant user password sync warning:", tErr.message);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Password has been reset successfully. You can now log in.",
+    });
+  } catch (error) {
+    console.error("[Auth] resetPassword error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to reset password.",
     });
   }
 };
