@@ -779,7 +779,9 @@ export const getInstagramConversations = async (req, res) => {
         msgTime >= convoTime
           ? (lastMsg?.text || convo?.lastMessage || "Conversation started")
           : (convo?.lastMessage || lastMsg?.text || "Conversation started");
-      const latestMessageText = String(latestMessageTextRaw).replace(/^\[Comment on Reel\/Post\]:\s*"?(.*?)"?$/s, "$1");
+      const latestMessageText = String(latestMessageTextRaw)
+        .replace(/^\[Comment on Reel\/Post\]:\s*"?(.*?)"?$/s, "$1")
+        .replace(/^\[Comment\]:\s*"?(.*?)"?\s*(?:➔\s*Auto-DM Sent)?$/s, "$1");
       const latestMessageTime =
         msgTime >= convoTime
           ? (lastMsg?.timestamp || convo?.lastMessageTime || c.lastInteractedAt)
@@ -979,7 +981,9 @@ export const getInstagramMessages = async (req, res) => {
       aiGenerated: m.senderType === "ai_bot",
       isAutoDM: m.senderType === "auto_dm",
       messageType: m.mediaType !== "none" ? m.mediaType : "text",
-      text: String(m.text || "").replace(/^\[Comment on Reel\/Post\]:\s*"?(.*?)"?$/s, "$1"),
+      text: String(m.text || "")
+        .replace(/^\[Comment on Reel\/Post\]:\s*"?(.*?)"?$/s, "$1")
+        .replace(/^\[Comment\]:\s*"?(.*?)"?\s*(?:➔\s*Auto-DM Sent)?$/s, "$1"),
       mediaUrl: m.mediaUrl,
       timestamp: m.timestamp,
       channel: "instagram",

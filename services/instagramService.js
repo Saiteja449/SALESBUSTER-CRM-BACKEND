@@ -841,7 +841,7 @@ export const handleIncomingInstagramComment = async ({
           },
           {
             $set: {
-              lastMessage: `[Comment]: "${text}" ➔ Auto-DM Sent`,
+              lastMessage: dmText,
               lastMessageTime: new Date(),
             },
           }
