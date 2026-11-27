@@ -122,20 +122,21 @@ describe("Cashfree Payment Gateway Backend Tests", () => {
       addonType: "whatsapp_campaigns",
       clientAmount: 1, // Tampered ₹1 input from client
     });
-    assert.equal(addonPrice.baseAmount, 999, "Server catalog must override tampered client amount");
-    assert.equal(addonPrice.gstAmount, 179.82, "Must calculate 18% GST");
-    assert.equal(addonPrice.amount, 1178.82, "Total payable must include 18% GST");
+    assert.equal(addonPrice.baseAmount, 2997, "Server quarterly catalog must override tampered client amount");
+    assert.equal(addonPrice.gstAmount, 539.46, "Must calculate 18% GST");
+    assert.equal(addonPrice.amount, 3536.46, "Total payable must include 18% GST");
     assert.equal(addonPrice.currency, "INR");
 
     // 2. Growth Subscription Plan should resolve to ₹2999 + 18% GST (₹3,538.82)
     const planPrice = resolveAuthoritativePrice({
       purpose: "subscription",
-      planId: "growth",
+      planId: "quarterly",
       clientAmount: 50, // Tampered input
     });
-    assert.equal(planPrice.baseAmount, 2999, "Server catalog must enforce growth plan price");
-    assert.equal(planPrice.gstAmount, 539.82, "Must calculate 18% GST");
-    assert.equal(planPrice.amount, 3538.82, "Total payable must include 18% GST");
+    assert.equal(planPrice.baseAmount, 17985, "Server catalog must enforce quarterly plan price");
+    assert.equal(planPrice.gstAmount, 3237.3, "Must calculate 18% GST");
+    assert.equal(planPrice.amount, 21222.3, "Total payable must include 18% GST");
+    assert.throws(() => resolveAuthoritativePrice({ purpose: "subscription", planId: "growth" }));
 
     // 3. Reject invalid addon or plan
     assert.throws(() => {

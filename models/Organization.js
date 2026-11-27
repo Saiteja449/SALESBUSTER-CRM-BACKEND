@@ -347,6 +347,15 @@ const organizationSchema = new mongoose.Schema(
         index: true,
       },
     },
+    addonEntitlements: [
+      {
+        addonId: { type: String, required: true, trim: true },
+        startsAt: { type: Date, required: true },
+        expiresAt: { type: Date, required: true, index: true },
+        orderId: { type: String, default: "" },
+        source: { type: String, enum: ["payment", "admin"], default: "payment" },
+      },
+    ],
     aiSettings: {
       geminiApiKey: {
         type: String,

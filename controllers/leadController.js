@@ -25,6 +25,7 @@ import { recordLeadCallAtomic } from "../services/leadCallService.js";
 import CallRecord from "../models/CallRecord.js";
 import TelecallerAnalytics from "../models/TelecallerAnalytics.js";
 import { recordCallEvent } from "../services/callEventService.js";
+import { TRIAL_LIMITS } from "../middleware/trialLimitMiddleware.js";
 
 
 // Feature toggle for AI Call Analysis & Transcription
@@ -1932,6 +1933,17 @@ export const importExcelLeads = async (req, res) => {
         success: false,
         message: "The uploaded spreadsheet contains no data rows.",
       });
+    }
+
+    if (req.organization?.isTrial) {
+      const currentLeadCount = await LeadModel.countDocuments({});
+      if (currentLeadCount + rows.length > TRIAL_LIMITS.maxLeads) {
+        return res.status(403).json({
+          success: false,
+          code: "TRIAL_LIMIT_REACHED",
+          message: `Free trial is limited to ${TRIAL_LIMITS.maxLeads} leads. Your workspace has ${currentLeadCount} leads, so this import would exceed the trial limit.`,
+        });
+      }
     }
 
     if (rows.length > 500) {

@@ -57,7 +57,7 @@ export const cashfreeOrderSchema = new mongoose.Schema(
     },
     purpose: {
       type: String,
-      enum: ["subscription", "addon", "wallet_credits", "service"],
+      enum: ["subscription", "addon", "extra_reps", "wallet_credits", "service"],
       default: "addon",
     },
     planId: {
@@ -68,6 +68,23 @@ export const cashfreeOrderSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    addonTerm: {
+      type: String,
+      enum: ["quarterly", "yearly", ""],
+      default: "",
+    },
+    addonItems: [
+      {
+        addonId: { type: String, required: true },
+        title: { type: String, default: "" },
+        term: { type: String, enum: ["quarterly", "yearly"] },
+        baseAmount: { type: Number, min: 0 },
+        daysCovered: { type: Number, min: 0 },
+        totalTermDays: { type: Number, min: 0 },
+        startsAt: { type: Date },
+        expiresAt: { type: Date },
+      },
+    ],
     additionalReps: {
       type: Number,
       default: 0,

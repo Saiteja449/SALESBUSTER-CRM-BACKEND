@@ -1,4 +1,5 @@
 import { getMasterModels } from "../services/tenantManager.js";
+import { isAddonActive } from "../services/addonEntitlementService.js";
 
 /**
  * Middleware to require a specific Organization Add-on.
@@ -43,8 +44,7 @@ export const requireAddon = (addonKey) => async (req, res, next) => {
     }
 
     // 3. Verify add-on status
-    const isAddonActive = Boolean(org.addons?.[addonKey]);
-    if (!isAddonActive) {
+    if (!isAddonActive(org, addonKey)) {
       const addonLabels = {
         whatsappCampaigns: "WhatsApp Campaigns",
         biAnalyst: "BI Analyst",

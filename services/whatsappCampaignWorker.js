@@ -2,6 +2,7 @@ import { sendTemplateMessage } from "./whatsappCloudService.js";
 import { decryptApiKey } from "../utils/encryption.js";
 import { getMasterModels, getTenantModels } from "./tenantManager.js";
 import { getIO } from "../socket/socket.js";
+import { isAddonActive } from "./addonEntitlementService.js";
 
 const STALE_LOCK_MS = 120000; // 2 minutes for stale lease recovery
 const runningCampaignWorkers = new Set(); // Tracks actively running campaign IDs in-process
@@ -77,7 +78,7 @@ export const processCampaignQueue = async (campaignId, tenantDbName, organizatio
       return;
     }
 
-    if (!org.addons?.whatsappCampaigns) {
+    if (!isAddonActive(org, "whatsappCampaigns")) {
       // console.error(`[CampaignWorker] Organization ${organizationId} does not have WhatsApp Campaigns add-on active.`);
       await WhatsAppCampaign.findByIdAndUpdate(campaignId, {
         status: "Paused",

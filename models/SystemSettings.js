@@ -54,8 +54,10 @@ const systemSettingsSchema = new mongoose.Schema(
       {
         id: { type: String, required: true, trim: true },
         title: { type: String, required: true, trim: true },
-        price: { type: Number, required: true, min: 0 },
-        period: { type: String, default: "monthly", trim: true },
+        price: { type: Number, min: 0 }, // Legacy catalog value, retained for older admin clients.
+        quarterlyPrice: { type: Number, min: 0 },
+        yearlyPrice: { type: Number, min: 0 },
+        period: { type: String, default: "quarterly", trim: true },
         description: { type: String, default: "", trim: true },
         icon: { type: String, default: "Sparkles", trim: true },
         features: [{ type: String, trim: true }],

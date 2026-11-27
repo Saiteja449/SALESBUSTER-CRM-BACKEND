@@ -15,10 +15,11 @@ const getCashfreeHeaders = () => ({
 });
 
 const PLAN_PRICING = {
-  monthly: { baseAmount: 5995, intervalType: "MONTH", durationDays: 30 },
   quarterly: { baseAmount: 17985, intervalType: "QUARTER", durationDays: 90 },
   yearly: { baseAmount: 53940, intervalType: "YEAR", durationDays: 365 },
   annual: { baseAmount: 53940, intervalType: "YEAR", durationDays: 365 },
+  // Historical value retained only to process existing monthly mandates/webhooks.
+  monthly: { baseAmount: 5995, intervalType: "MONTH", durationDays: 30 },
 };
 
 /**
@@ -94,7 +95,7 @@ export const createAutopaySubscriptionHandler = async (req, res) => {
   try {
     const orgId = req.organization?._id || req.user?.organizationId || null;
     const {
-      planId = "monthly",
+      planId = "quarterly",
       withTrial = false,
       customerName,
       customerEmail,
@@ -102,7 +103,10 @@ export const createAutopaySubscriptionHandler = async (req, res) => {
     } = req.body || {};
 
     const normalizedPlan = String(planId).toLowerCase();
-    const plan = PLAN_PRICING[normalizedPlan] || PLAN_PRICING.monthly;
+    if (!["quarterly", "yearly", "annual"].includes(normalizedPlan)) {
+      return res.status(400).json({ success: false, message: "Autopay is available only for quarterly or yearly plans." });
+    }
+    const plan = PLAN_PRICING[normalizedPlan];
     const gstAmount = Math.round(plan.baseAmount * 0.18 * 100) / 100;
     const totalAmount = Math.round((plan.baseAmount + gstAmount) * 100) / 100;
 
@@ -358,6 +362,13 @@ export const handleSubscriptionWebhookEvent = async (eventType, data) => {
     const plan = PLAN_PRICING[sub.planId] || PLAN_PRICING.monthly;
     const now = new Date();
     const nextEnd = new Date(now.getTime() + plan.durationDays * 24 * 60 * 60 * 1000);
+    if (["quarterly", "yearly", "annual"].includes(sub.planId)) {
+      nextEnd.setTime(now.getTime());
+      const day = now.getDate();
+      nextEnd.setDate(1);
+      nextEnd.setMonth(nextEnd.getMonth() + (sub.planId === "quarterly" ? 3 : 12));
+      nextEnd.setDate(Math.min(day, new Date(nextEnd.getFullYear(), nextEnd.getMonth() + 1, 0).getDate()));
+    }
 
     sub.status = "ACTIVE";
     sub.lastPaymentStatus = "SUCCESS";
@@ -373,10 +384,12 @@ export const handleSubscriptionWebhookEvent = async (eventType, data) => {
           autopayEnabled: true,
           autopayStatus: "active",
           subscriptionPlan: sub.planId,
+          subscriptionStartDate: now,
           subscriptionEndDate: nextEnd,
           nextBillingDate: nextEnd,
           status: "active",
         },
+        $max: { seats: 5 },
       });
     }
     return true;

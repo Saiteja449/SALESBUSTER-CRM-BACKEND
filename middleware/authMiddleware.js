@@ -132,7 +132,9 @@ export const protect = async (req, res, next) => {
 
           if (req.organization.accountType !== "guest" && req.organization.subscriptionEndDate) {
             const isExpired = new Date() > new Date(req.organization.subscriptionEndDate);
-            if (isExpired) {
+            const billingPath = String(req.originalUrl || "").split("?")[0];
+            const canManageRenewal = /\/payment\/cashfree\/(create-order|order\/[^/]+|autopay\/(create|status|cancel)|history|orders)$/.test(billingPath) || /\/organizations\/my-org$/.test(billingPath);
+            if (isExpired && !canManageRenewal) {
               return res.status(403).json({
                 success: false,
                 subscriptionExpired: true,

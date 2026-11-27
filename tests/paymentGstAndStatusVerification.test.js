@@ -27,15 +27,15 @@ describe("Payment GST Calculation & Order Status Gating Tests", () => {
 
     // WhatsApp Campaigns Addon
     const whatsapp = resolveAuthoritativePrice({ purpose: "addon", addonType: "whatsapp_campaigns" });
-    assert.strictEqual(whatsapp.baseAmount, 999);
-    assert.strictEqual(whatsapp.gstAmount, 179.82);
-    assert.strictEqual(whatsapp.amount, 1178.82, "Total payable must be ₹1,178.82");
+    assert.strictEqual(whatsapp.baseAmount, 2997);
+    assert.strictEqual(whatsapp.gstAmount, 539.46);
+    assert.strictEqual(whatsapp.amount, 3536.46);
 
     // Instagram Automation Addon
     const instagram = resolveAuthoritativePrice({ purpose: "addon", addonType: "instagram_automation" });
-    assert.strictEqual(instagram.baseAmount, 499);
-    assert.strictEqual(instagram.gstAmount, 89.82);
-    assert.strictEqual(instagram.amount, 588.82, "Total payable must be ₹588.82");
+    assert.strictEqual(instagram.baseAmount, 1497);
+    assert.strictEqual(instagram.gstAmount, 269.46);
+    assert.strictEqual(instagram.amount, 1766.46);
   });
 
   it("2. Normalizes 'plan' purpose alias to 'subscription' cleanly", () => {
@@ -63,6 +63,7 @@ describe("Payment GST Calculation & Order Status Gating Tests", () => {
     // FulfillOrderBenefits should safely exit or not grant benefits if order is not completed/paid
     // when invoked on null or already fulfilled orders
     await fulfillOrderBenefits(null);
+    await fulfillOrderBenefits(fakeOrder);
     assert.strictEqual(saveCalled, false);
 
     const alreadyFulfilled = {
