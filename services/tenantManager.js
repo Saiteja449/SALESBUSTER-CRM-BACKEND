@@ -46,7 +46,6 @@ import InstagramMessage, { instagramMessageSchema } from "../models/InstagramMes
 import MarketingCampaign, { marketingCampaignSchema } from "../models/MarketingCampaign.js";
 import CashfreeOrder, { cashfreeOrderSchema } from "../models/CashfreeOrder.js";
 import CashfreeWebhookEvent, { cashfreeWebhookEventSchema } from "../models/CashfreeWebhookEvent.js";
-import CashfreeSubscription, { cashfreeSubscriptionSchema } from "../models/CashfreeSubscription.js";
 import ApiActivityLog, { apiActivityLogSchema } from "../models/ApiActivityLog.js";
 import UserSession, { userSessionSchema } from "../models/UserSession.js";
 
@@ -119,9 +118,6 @@ export const getMasterModels = () => {
     CashfreeWebhookEvent:
       masterDb.models.CashfreeWebhookEvent ||
       masterDb.model("CashfreeWebhookEvent", cashfreeWebhookEventSchema),
-    CashfreeSubscription:
-      masterDb.models.CashfreeSubscription ||
-      masterDb.model("CashfreeSubscription", cashfreeSubscriptionSchema),
     ApiActivityLog:
       masterDb.models.ApiActivityLog ||
       masterDb.model("ApiActivityLog", apiActivityLogSchema),

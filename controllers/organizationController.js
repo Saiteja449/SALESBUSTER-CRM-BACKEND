@@ -2272,7 +2272,6 @@ export const deleteOrganization = async (req, res) => {
       InstagramAccount,
       MarketingCampaign,
       CashfreeOrder,
-      CashfreeSubscription,
       ApiActivityLog,
     } = masterModels;
 
@@ -2317,7 +2316,6 @@ export const deleteOrganization = async (req, res) => {
       InstagramAccount?.deleteMany({ organizationId: org._id }),
       MarketingCampaign?.deleteMany({ organizationId: org._id }),
       CashfreeOrder?.deleteMany({ organizationId: org._id }),
-      CashfreeSubscription?.deleteMany({ organizationId: org._id }),
       ApiActivityLog?.deleteMany({ organizationId: orgIdStr }),
     ]);
 

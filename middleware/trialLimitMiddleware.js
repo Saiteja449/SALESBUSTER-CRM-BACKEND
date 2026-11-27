@@ -23,7 +23,7 @@ export const enforceTrialLimits = (resource = "general") => {
           success: false,
           code: "TRIAL_EXPIRED",
           message:
-            "Your 3-day free trial has expired. Please upgrade to a paid plan or enable Autopay to continue.",
+            "Your 3-day free trial has expired. Please upgrade to a paid plan to continue.",
         });
       }
 

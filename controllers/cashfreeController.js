@@ -1,7 +1,6 @@
 import crypto from "crypto";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import { handleSubscriptionWebhookEvent } from "./trialAutopayController.js";
 import {
   getTenantModels,
   getMasterModels,
@@ -1149,10 +1148,6 @@ export const handleCashfreeWebhook = async (req, res) => {
     const paymentData = data.payment || {};
 
     const orderId = orderData.order_id || payload.order_id;
-    if (String(eventType || "").startsWith("SUBSCRIPTION_")) {
-      await handleSubscriptionWebhookEvent(eventType, payload.data || payload);
-      return res.status(200).json({ status: "SUBSCRIPTION_PROCESSED" });
-    }
 
     if (!orderId) {
       return res.status(200).json({ status: "IGNORED_NO_ORDER_ID" });
