@@ -1,32 +1,22 @@
 import bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
-import Otp from "../models/Otp.js";
 import { getMasterModels, getTenantModels, generateTenantDbName } from "../services/tenantManager.js";
 import { TRIAL_LIMITS } from "../middleware/trialLimitMiddleware.js";
 import { sendTenantWelcomeEmail } from "../helpers/emailHelper.js";
 
-/** Creates a CRM trial workspace after a phone OTP has been verified. */
+/** Creates a CRM trial workspace and emails generated login credentials. */
 export const registerTrialWorkspace = async (req, res) => {
   try {
-    const { phone, otp, name, email, companyName } = req.body || {};
+    const { phone, name, email, companyName } = req.body || {};
     const cleanPhone = String(phone || "").replace(/\D/g, "").slice(-10);
     const cleanEmail = String(email || "").trim().toLowerCase();
     const cleanName = String(name || "").trim();
     const cleanCompany = String(companyName || cleanName).trim();
-    if (cleanPhone.length !== 10 || String(otp || "").trim().length !== 4) {
-      return res.status(400).json({ success: false, message: "Enter a valid mobile number and 4-digit verification code." });
+    if (cleanPhone.length !== 10) {
+      return res.status(400).json({ success: false, message: "Enter a valid 10-digit mobile number." });
     }
     if (cleanName.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       return res.status(400).json({ success: false, message: "Enter your name and a valid email address." });
-    }
-
-    const otpRecord = await Otp.findOne({ phone: cleanPhone, expiresAt: { $gt: new Date() }, verified: false }).sort({ createdAt: -1 });
-    if (!otpRecord || otpRecord.attempts >= 5 || !(await bcrypt.compare(String(otp).trim(), otpRecord.otpHash))) {
-      if (otpRecord) {
-        otpRecord.attempts = Number(otpRecord.attempts || 0) + 1;
-        await otpRecord.save();
-      }
-      return res.status(400).json({ success: false, message: "The verification code is invalid or expired. Request a new code and try again." });
     }
 
     const { AuthUser, Organization } = getMasterModels();
@@ -35,9 +25,6 @@ export const registerTrialWorkspace = async (req, res) => {
     if (duplicate || phoneOrg) {
       return res.status(409).json({ success: false, message: "An account already uses this email or phone number. Please sign in instead." });
     }
-
-    otpRecord.verified = true;
-    await otpRecord.save();
 
     let tenantDbName = generateTenantDbName(cleanCompany);
     let attempt = 0;
