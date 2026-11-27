@@ -347,12 +347,19 @@ export const receiveWhatsAppWebhook = async (req, res) => {
         value.phone_number_id ||
         value.metadata?.display_phone_number;
 
+      const historyMeta = Array.isArray(value.history) ? value.history[0]?.metadata : value.history?.metadata;
+      const chunkSuffix =
+        field === "history" && historyMeta
+          ? `_p${historyMeta.phase ?? 0}_c${historyMeta.chunk_order ?? 0}`
+          : field === "smb_app_state_sync" && Array.isArray(value.state_sync)
+          ? `_s${value.state_sync.length}_${value.state_sync[0]?.metadata?.timestamp || ""}`
+          : "";
       const timestamp = entry.time || value.statuses?.[0]?.timestamp || value.messages?.[0]?.timestamp || "0";
       const changeLevelId = makeChangeLevelEventId(
         entry.id || "entry",
         field,
         phoneNumberId,
-        timestamp
+        `${timestamp}${chunkSuffix}`
       );
 
       changeItems.push({
@@ -511,7 +518,7 @@ export const processChangeItem = async (
         "processing"
       );
       if (claim.shouldProcess) {
-        const contactsData = value.contacts || value.app_state_sync || [];
+        const contactsData = value.state_sync || value.contacts || value.app_state_sync || [];
         if (Array.isArray(contactsData) && contactsData.length > 0) {
           await processAppStateContacts(contactsData, tenantModels, org, waAccount);
         }
@@ -1476,47 +1483,116 @@ const processAppStateContacts = async (
   org,
   waAccount
 ) => {
-  const { WAContact, Lead } = tenantModels;
-  if (!WAContact) return;
+  const { WAContact, Lead, Conversation } = tenantModels;
+  if (!WAContact && !Lead) return;
+
+  let syncedCount = 0;
 
   for (const c of contacts) {
-    const waId = normalizePhoneDigits(c.wa_id || c.phone);
+    // Support both Meta state_sync format ({ type: "contact", contact: { phone_number, full_name, first_name }, action })
+    // and legacy/flat format ({ wa_id, phone, name, display_name, action })
+    if (c.type && c.type !== "contact") continue;
+    const rawContact = c.contact || c;
+    const rawPhone = rawContact.phone_number || rawContact.wa_id || rawContact.phone || c.wa_id || c.phone;
+    const waId = normalizePhoneDigits(rawPhone);
     if (!waId) continue;
 
-    const name = c.name || c.display_name || "";
-    const action = c.action === "delete" ? "delete" : "upsert";
+    const name =
+      rawContact.full_name ||
+      rawContact.first_name ||
+      rawContact.name ||
+      rawContact.display_name ||
+      c.name ||
+      c.display_name ||
+      waId;
+    const action = c.action === "delete" || c.action === "remove" ? "delete" : "upsert";
 
     if (action === "delete") {
-      await WAContact.deleteOne({
-        accountId: waAccount?._id,
-        waId,
-      });
+      if (WAContact) {
+        await WAContact.deleteOne({
+          accountId: waAccount?._id,
+          waId,
+        });
+      }
       continue;
     }
 
-    // Upsert into WAContact
+    const intlPhone = toInternationalPhone(rawPhone || waId);
+
+    // Find or create CRM Lead so synced phone contacts appear in Leads & Unified Inbox
     let lead = null;
     if (Lead) {
       lead = await Lead.findOne({
-        $or: [{ phone: waId }, { phone: `+91${waId}` }, { phone: `91${waId}` }],
+        $or: [
+          { phone: waId },
+          { phone: intlPhone },
+          { phoneNormalized: intlPhone },
+          { phone: `+91${waId}` },
+          { phone: `91${waId}` },
+        ],
       });
+
+      if (!lead) {
+        lead = await Lead.create({
+          name: name || waId,
+          phone: waId,
+          phoneNormalized: intlPhone || waId,
+          source: "WhatsApp Coexistence",
+          status: "Existing Client",
+          assignedTo: waAccount?.userId || "Unassigned",
+          joinedAt: new Date(),
+        });
+      } else if (name && name !== waId && (!lead.name || lead.name === waId || lead.name === lead.phone)) {
+        lead.name = name;
+        await lead.save().catch(() => {});
+      }
     }
 
-    await WAContact.findOneAndUpdate(
-      { accountId: waAccount?._id, waId },
-      {
-        $set: {
-          organizationId: org._id,
-          accountId: waAccount?._id,
-          waId,
-          name,
-          leadId: lead?._id || null,
-          syncAction: "upsert",
-          lastSyncedAt: new Date(),
+    if (WAContact) {
+      await WAContact.findOneAndUpdate(
+        { accountId: waAccount?._id, waId },
+        {
+          $set: {
+            organizationId: org._id,
+            accountId: waAccount?._id,
+            waId,
+            name,
+            leadId: lead?._id || null,
+            syncAction: "upsert",
+            lastSyncedAt: new Date(),
+          },
         },
-      },
-      { upsert: true }
-    );
+        { upsert: true }
+      );
+    }
+
+    if (Conversation && lead) {
+      const existingConvo = await Conversation.findOne({ leadId: lead._id }).lean();
+      if (!existingConvo) {
+        await Conversation.create({
+          leadId: lead._id,
+          channel: "whatsapp",
+          customerName: name || waId,
+          customerPhone: intlPhone || waId,
+          lastMessage: "Contact synced from WhatsApp Business",
+          lastMessageTime: new Date(),
+          unreadCount: 0,
+        }).catch(() => {});
+      }
+    }
+
+    syncedCount++;
+  }
+
+  if (syncedCount > 0) {
+    console.log(`[WhatsAppCoexistence] Synced ${syncedCount} phone contacts for org ${org._id}`);
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit("conversation_updated", {
+        channel: "whatsapp",
+        syncedContacts: syncedCount,
+      });
+    }
   }
 };
 
@@ -1525,13 +1601,16 @@ const processAppStateContacts = async (
  */
 const processChatHistoryChunk = async (value, tenantModels, org, waAccount) => {
   const { Message, Conversation, Lead } = tenantModels;
-  const historyData = value.history || value;
+  const rawHistory = value.history ?? value;
+  const historyChunks = Array.isArray(rawHistory) ? rawHistory : [rawHistory];
 
   // Handle User Declined Error (code 2593109 or decline flag)
+  const firstChunk = historyChunks[0] || {};
   if (
-    historyData.error?.code === 2593109 ||
-    historyData.status === "declined" ||
-    historyData.sharing_declined === true
+    value.error?.code === 2593109 ||
+    firstChunk.error?.code === 2593109 ||
+    firstChunk.status === "declined" ||
+    firstChunk.sharing_declined === true
   ) {
     console.log(
       `[WhatsAppCoexistence] Client declined history sharing for account ${waAccount?._id}`
@@ -1544,58 +1623,125 @@ const processChatHistoryChunk = async (value, tenantModels, org, waAccount) => {
     return;
   }
 
-  const messagesList = historyData.messages || [];
+  const businessDigits = normalizePhoneDigits(waAccount?.displayPhone || "");
   let importedCount = 0;
+  let isFinalChunk = Boolean(value.is_last_chunk || value.is_complete);
+  const latestByLead = new Map();
 
-  for (const item of messagesList) {
-    const wamid = item.id;
-    if (!wamid) continue;
-
-    const existing = await Message.findOne({
-      $or: [{ wamid }, { messageId: wamid }],
-    });
-    if (existing) continue;
-
-    const cleanPhone = normalizePhoneDigits(item.from || item.to);
-    if (!cleanPhone) continue;
-
-    let lead = await Lead.findOne({
-      $or: [{ phone: cleanPhone }, { phone: `+91${cleanPhone}` }],
-    });
-
-    if (!lead) {
-      lead = await Lead.create({
-        name: cleanPhone,
-        phone: cleanPhone,
-        phoneNormalized: toInternationalPhone(item.from || item.to),
-        source: "WhatsApp History",
-        status: "Existing Client",
-        assignedTo: waAccount?.userId || "Unassigned",
-        joinedAt: new Date(),
-      });
+  for (const chunk of historyChunks) {
+    if (!chunk) continue;
+    if (chunk.is_last_chunk || chunk.is_complete || chunk.metadata?.progress === 100) {
+      isFinalChunk = true;
     }
 
-    const direction =
-      item.from === waAccount?.displayPhone ? "outgoing" : "incoming";
-    const timestamp = item.timestamp
-      ? new Date(parseInt(item.timestamp) * 1000)
-      : new Date();
+    const threadItems = Array.isArray(chunk.threads)
+      ? chunk.threads.flatMap((t) =>
+          (t.messages || []).map((m) => ({ ...m, _threadId: t.id }))
+        )
+      : (chunk.messages || []).map((m) => ({ ...m, _threadId: null }));
 
-    await Message.create({
-      messageId: wamid,
-      wamid,
-      leadId: lead._id,
-      sender: direction === "outgoing" ? "Me" : cleanPhone,
-      direction,
-      messageType: item.type || "text",
-      text: item.text?.body || `[${item.type || "History Message"}]`,
-      timestamp,
-      source: "history", // Does NOT open 24h window
-      status: "delivered",
-      rawPayload: item,
-    });
+    for (const item of threadItems) {
+      const wamid = item.id;
+      if (!wamid) continue;
 
-    importedCount++;
+      const existing = await Message.findOne({
+        $or: [{ wamid }, { messageId: wamid }],
+      });
+      if (existing) continue;
+
+      const fromDigits = normalizePhoneDigits(item.from);
+      const toDigits = normalizePhoneDigits(item.to);
+      const threadDigits = normalizePhoneDigits(item._threadId);
+
+      const isFromMe =
+        item.history_context?.from_me === true ||
+        (businessDigits && fromDigits && fromDigits === businessDigits);
+      const direction = isFromMe ? "outgoing" : "incoming";
+
+      const cleanPhone =
+        threadDigits ||
+        (isFromMe ? toDigits : fromDigits) ||
+        fromDigits ||
+        toDigits;
+      if (!cleanPhone) continue;
+
+      const intlPhone = toInternationalPhone(item._threadId || (isFromMe ? item.to : item.from) || cleanPhone);
+
+      let lead = await Lead.findOne({
+        $or: [
+          { phone: cleanPhone },
+          { phone: intlPhone },
+          { phoneNormalized: intlPhone },
+          { phone: `+91${cleanPhone}` },
+        ],
+      });
+
+      if (!lead) {
+        lead = await Lead.create({
+          name: cleanPhone,
+          phone: cleanPhone,
+          phoneNormalized: intlPhone || cleanPhone,
+          source: "WhatsApp History",
+          status: "Existing Client",
+          assignedTo: waAccount?.userId || "Unassigned",
+          joinedAt: new Date(),
+        });
+      }
+
+      const timestamp = item.timestamp
+        ? new Date(parseInt(item.timestamp, 10) * 1000)
+        : new Date();
+      const msgText =
+        item.text?.body ||
+        item.caption ||
+        item[item.type]?.caption ||
+        `[${item.type || "History Message"}]`;
+
+      await Message.create({
+        messageId: wamid,
+        wamid,
+        leadId: lead._id,
+        sender: direction === "outgoing" ? "Me" : cleanPhone,
+        direction,
+        messageType: item.type || "text",
+        text: msgText,
+        timestamp,
+        source: "history", // Does NOT open 24h window
+        status: "delivered",
+        rawPayload: item,
+      });
+
+      const leadKey = lead._id.toString();
+      const prevLatest = latestByLead.get(leadKey);
+      if (!prevLatest || timestamp > prevLatest.timestamp) {
+        latestByLead.set(leadKey, { lead, text: msgText, timestamp });
+      }
+
+      importedCount++;
+    }
+  }
+
+  // Upsert Conversation records so imported chats appear in Unified Inbox
+  if (Conversation && latestByLead.size > 0) {
+    for (const { lead, text, timestamp } of latestByLead.values()) {
+      const existingConvo = await Conversation.findOne({ leadId: lead._id });
+      if (!existingConvo || !existingConvo.lastMessageTime || timestamp >= new Date(existingConvo.lastMessageTime)) {
+        await Conversation.findOneAndUpdate(
+          { leadId: lead._id },
+          {
+            $set: {
+              leadId: lead._id,
+              channel: "whatsapp",
+              customerName: lead.name || lead.phone,
+              customerPhone: lead.phoneNormalized || lead.phone,
+              lastMessage: text,
+              lastMessageTime: timestamp,
+            },
+          },
+          { upsert: true }
+        ).catch(() => {});
+      }
+    }
   }
 
   if (waAccount) {
@@ -1606,11 +1752,22 @@ const processChatHistoryChunk = async (value, tenantModels, org, waAccount) => {
       (waAccount.historyProgress.messagesImported || 0) + importedCount;
     waAccount.historyProgress.lastChunkReceivedAt = new Date();
 
-    if (historyData.is_last_chunk || historyData.is_complete) {
+    if (isFinalChunk) {
       waAccount.historyProgress.isComplete = true;
       waAccount.status = "connected";
     }
     await waAccount.save();
+  }
+
+  if (importedCount > 0) {
+    console.log(`[WhatsAppCoexistence] Imported ${importedCount} history messages for org ${org._id}`);
+    const io = getIO();
+    if (io) {
+      io.to(`org_${org._id}`).emit("conversation_updated", {
+        channel: "whatsapp",
+        importedMessages: importedCount,
+      });
+    }
   }
 };
 

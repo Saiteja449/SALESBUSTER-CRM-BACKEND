@@ -207,7 +207,6 @@ const organizationSchema = new mongoose.Schema(
       },
       trim: true,
       lowercase: true,
-      index: true,
     },
     mobile: {
       type: String,
