@@ -590,7 +590,7 @@ export const handleIncomingInstagramComment = async ({
       mid: commentId || `comment_${Date.now()}`,
       direction: "incoming",
       senderType: "user",
-      text: `[Comment on Reel/Post]: "${text}"`,
+      text,
       triggerSource: "comment_to_dm",
       timestamp: new Date(),
     });
@@ -630,7 +630,7 @@ export const handleIncomingInstagramComment = async ({
             customerName: contact.name || contact.username || "Instagram Commenter",
             ...(contact.leadId ? { leadId: contact.leadId } : {}),
             isLead: Boolean(contact.leadId),
-            lastMessage: `[Comment on Reel/Post]: "${text}"`,
+            lastMessage: text,
             lastMessageTime: new Date(),
           },
           $inc: { unreadCount: 1 },
@@ -650,7 +650,7 @@ export const handleIncomingInstagramComment = async ({
       type: "comment_to_dm",
       igsid: contact.igsid,
       username: contact.username,
-      text: `[Comment on Reel/Post]: "${text}"`,
+      text,
     });
     io.to(`org_${organizationId}`).emit("conversation_updated", {
       channel: "instagram_comment",

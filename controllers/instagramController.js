@@ -775,10 +775,11 @@ export const getInstagramConversations = async (req, res) => {
       // Always display whichever message is newer between Conversation cache and InstagramMessage
       const convoTime = convo?.lastMessageTime ? new Date(convo.lastMessageTime).getTime() : 0;
       const msgTime = lastMsg?.timestamp ? new Date(lastMsg.timestamp).getTime() : 0;
-      const latestMessageText =
+      const latestMessageTextRaw =
         msgTime >= convoTime
           ? (lastMsg?.text || convo?.lastMessage || "Conversation started")
           : (convo?.lastMessage || lastMsg?.text || "Conversation started");
+      const latestMessageText = String(latestMessageTextRaw).replace(/^\[Comment on Reel\/Post\]:\s*"?(.*?)"?$/s, "$1");
       const latestMessageTime =
         msgTime >= convoTime
           ? (lastMsg?.timestamp || convo?.lastMessageTime || c.lastInteractedAt)
@@ -978,7 +979,7 @@ export const getInstagramMessages = async (req, res) => {
       aiGenerated: m.senderType === "ai_bot",
       isAutoDM: m.senderType === "auto_dm",
       messageType: m.mediaType !== "none" ? m.mediaType : "text",
-      text: m.text,
+      text: String(m.text || "").replace(/^\[Comment on Reel\/Post\]:\s*"?(.*?)"?$/s, "$1"),
       mediaUrl: m.mediaUrl,
       timestamp: m.timestamp,
       channel: "instagram",

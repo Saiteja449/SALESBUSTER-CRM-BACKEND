@@ -1,7 +1,211 @@
 import { getMasterModels, getTenantModels } from "./tenantManager.js";
 import { getIO } from "../socket/socket.js";
+import { decryptApiKey } from "../utils/encryption.js";
+import { sendTextMessage, sendTemplateMessage } from "./whatsappCloudService.js";
+import { generateAIResponse } from "../ai/aiService.js";
 
 let schedulerInterval = null;
+
+/**
+ * Resolves WhatsApp Cloud credentials for a lead/organization and sends an
+ * automated AI text (if within 24h window) or approved template (if outside 24h window).
+ * Persists the outgoing message to Message & Conversation so Auto-Reply AI has full context.
+ */
+export const sendAutomatedLeadWhatsAppMessage = async ({
+  lead,
+  org,
+  tenantModels,
+  stage = "followup",
+  customInstruction = "",
+}) => {
+  try {
+    if (!lead || !lead.phone || !org) return { sent: false, reason: "missing_context" };
+    if (
+      lead.isOptedOut ||
+      lead.status === "DND" ||
+      lead.folder === "DND" ||
+      lead.disableAI ||
+      lead.aiEnabled === false
+    ) {
+      return { sent: false, reason: "opted_out_or_ai_disabled" };
+    }
+
+    const { WAAccount, WATemplate, Template, Message, Conversation } = tenantModels || {};
+    const { WAAccount: MasterWA } = getMasterModels();
+
+    // Resolve WhatsApp Cloud credentials (rep line -> org line -> org.whatsappCloudSettings)
+    let waAccount = null;
+    const accountModel = WAAccount || MasterWA;
+    if (accountModel && typeof accountModel.findOne === "function") {
+      if (lead.assignedTo && lead.assignedTo !== "Unassigned") {
+        waAccount = await accountModel
+          .findOne({ organizationId: org._id, userId: lead.assignedTo, status: { $ne: "disconnected" } })
+          .lean()
+          .catch(() => null);
+      }
+      if (!waAccount) {
+        waAccount = await accountModel
+          .findOne({ organizationId: org._id, status: { $ne: "disconnected" } })
+          .sort({ userId: 1 })
+          .lean()
+          .catch(() => null);
+      }
+    }
+
+    const phoneNumberId = waAccount?.phoneNumberId || org.whatsappCloudSettings?.phoneNumberId;
+    const encryptedToken = waAccount?.accessTokenEncrypted || org.whatsappCloudSettings?.accessTokenEncrypted;
+    const accessToken = encryptedToken ? decryptApiKey(encryptedToken) : "";
+
+    if (!phoneNumberId || !accessToken) {
+      return { sent: false, reason: "no_whatsapp_credentials" };
+    }
+
+    const now = new Date();
+    const toPhone = lead.phoneNormalized || lead.phone;
+    const in24hWindow =
+      lead.serviceWindowExpiresAt && new Date(lead.serviceWindowExpiresAt).getTime() > now.getTime();
+
+    const defaultPrompts = {
+      new_lead: `Send a warm, concise welcome message to ${lead.name || "the prospect"} thanking them for their interest in ${lead.service || "our services"} and asking how we can help.`,
+      not_attended: `Send a polite check-in message to ${lead.name || "the prospect"} apologizing for any delay and asking if they are still looking for ${lead.service || "assistance"}.`,
+      followup: `Send a friendly scheduled follow-up message to ${lead.name || "the prospect"} regarding ${lead.service || "their enquiry"} and ask if they are ready to connect.`,
+      not_responding: `Send a brief, helpful follow-up message (attempt ${(lead.cadence?.followupCount || 0) + 1}) to ${lead.name || "the prospect"} checking if they still need help with ${lead.service || "our services"}.`,
+      marketing_drip: `Send a friendly 15-day check-in / promotional update to ${lead.name || "the prospect"} sharing value about ${lead.service || "our services"} and inviting them to reply if interested.`,
+    };
+
+    let sentText = "";
+    let metaMessageId = null;
+    let messageType = "text";
+
+    if (in24hWindow) {
+      let aiText = "";
+      try {
+        const aiRes = await generateAIResponse(
+          lead._id,
+          customInstruction || defaultPrompts[stage] || defaultPrompts.followup,
+          tenantModels,
+          org
+        );
+        aiText = typeof aiRes === "object" && aiRes !== null ? aiRes.reply : aiRes;
+      } catch (aiErr) {
+        console.warn(`[WorkflowWorker] AI generation fallback (${stage}):`, aiErr.message);
+      }
+
+      sentText =
+        (aiText && aiText.trim()) ||
+        `Hi ${lead.name || "there"}, just checking in regarding ${lead.service || "your enquiry"}! Please reply here if you have any questions.`;
+
+      const sendRes = await sendTextMessage({
+        phoneNumberId,
+        accessToken,
+        toPhone,
+        textBody: sentText,
+      });
+      metaMessageId = sendRes?.metaMessageId || null;
+    } else {
+      // Outside 24h window: Meta requires an approved template
+      const TemplateModel = WATemplate || Template;
+      const workflow = org.workflowSettings || {};
+      const preferredName =
+        stage === "marketing_drip"
+          ? workflow.marketingTemplateName
+          : stage === "new_lead" || stage === "not_attended"
+          ? workflow.autoMsgTemplateName
+          : workflow.followupTemplateName;
+
+      let tpl = null;
+      if (TemplateModel && typeof TemplateModel.findOne === "function") {
+        if (preferredName) {
+          tpl = await TemplateModel.findOne({ name: preferredName, status: "APPROVED" }).lean().catch(() => null);
+        }
+        if (!tpl && stage === "marketing_drip") {
+          tpl = await TemplateModel.findOne({ status: "APPROVED", category: "MARKETING" }).lean().catch(() => null);
+        }
+        if (!tpl) {
+          tpl = await TemplateModel.findOne({ status: "APPROVED" }).lean().catch(() => null);
+        }
+      }
+
+      if (!tpl) {
+        console.log(
+          `[WorkflowWorker] Skipping ${stage} for lead ${lead._id} (${toPhone}): outside 24h window and no APPROVED template found.`
+        );
+        return { sent: false, reason: "no_approved_template" };
+      }
+
+      const bodyComp = Array.isArray(tpl.components)
+        ? tpl.components.find((c) => String(c.type || "").toUpperCase() === "BODY")
+        : null;
+      const bodyText = bodyComp?.text || `[Template: ${tpl.name}]`;
+      const hasVar1 = /\{\{1\}\}/.test(bodyText);
+      const components = hasVar1
+        ? [{ type: "body", parameters: [{ type: "text", text: lead.name || "there" }] }]
+        : [];
+
+      const sendRes = await sendTemplateMessage({
+        phoneNumberId,
+        accessToken,
+        toPhone,
+        templateName: tpl.name,
+        languageCode: tpl.language || "en_US",
+        components,
+      });
+      metaMessageId = sendRes?.metaMessageId || null;
+      messageType = "template";
+      sentText = hasVar1 ? bodyText.replace(/\{\{1\}\}/g, lead.name || "there") : bodyText;
+    }
+
+    if (Message && typeof Message.create === "function") {
+      const msgRecord = await Message.create({
+        messageId: metaMessageId || `auto_${stage}_${lead._id}_${Date.now()}`,
+        wamid: metaMessageId || null,
+        leadId: lead._id,
+        sender: "AI Agent",
+        senderName: org.aiSettings?.agentPersona || "SalesBuster AI",
+        direction: "outgoing",
+        messageType,
+        text: sentText,
+        timestamp: now,
+        aiGenerated: true,
+        source: "ai_agent",
+        status: "sent",
+      }).catch(() => null);
+
+      const io = getIO();
+      if (io && msgRecord) {
+        io.to(lead._id.toString()).emit("new_message", msgRecord);
+      }
+    }
+
+    if (Conversation && typeof Conversation.findOneAndUpdate === "function") {
+      await Conversation.findOneAndUpdate(
+        { leadId: lead._id },
+        {
+          $set: {
+            lastMessage: sentText,
+            lastMessageTime: now,
+            unreadCount: 0,
+          },
+        },
+        { upsert: true }
+      ).catch(() => {});
+
+      const io = getIO();
+      if (io) {
+        io.to(`org_${org._id}`).emit("conversation_updated", {
+          leadId: lead._id,
+          lastMessage: sentText,
+          lastMessageTime: now,
+        });
+      }
+    }
+
+    return { sent: true, messageId: metaMessageId, text: sentText };
+  } catch (err) {
+    console.warn(`[WorkflowWorker] Automated WhatsApp (${stage}) warning for lead ${lead?._id}:`, err.message);
+    return { sent: false, reason: err.message };
+  }
+};
 
 /**
  * Runs the dynamic SLA breach check for an organization
@@ -41,6 +245,14 @@ export const checkOrganizationSlaBreaches = async (org) => {
     lead.sla.slaBreached = true;
     lead.sla.breachedAt = new Date();
     await lead.save();
+
+    // Send Not Attended Auto Msg (non-blocking)
+    sendAutomatedLeadWhatsAppMessage({
+      lead,
+      org,
+      tenantModels,
+      stage: "not_attended",
+    }).catch(() => {});
 
     if (Notification) {
       try {
@@ -108,6 +320,14 @@ export const checkScheduledFollowupReminders = async (org) => {
       lead.callerReminded = true;
       await lead.save();
 
+      // Trigger AI Followup with Client alongside caller reminder
+      sendAutomatedLeadWhatsAppMessage({
+        lead,
+        org,
+        tenantModels,
+        stage: "followup",
+      }).catch(() => {});
+
       if (Notification && lead.assignedTo && lead.assignedTo !== "Unassigned") {
         try {
           await Notification.create({
@@ -157,8 +377,18 @@ export const checkCadenceWorkflows = async (org) => {
   });
 
   const io = getIO();
+  const processedNotRespondingIds = new Set();
 
   for (const lead of dueCadenceLeads) {
+    if (lead._id) processedNotRespondingIds.add(String(lead._id));
+    // Send AI follow-up message for this Not Responding cadence attempt
+    await sendAutomatedLeadWhatsAppMessage({
+      lead,
+      org,
+      tenantModels,
+      stage: "not_responding",
+    });
+
     const currentCount = (lead.cadence?.followupCount || 0) + 1;
     lead.cadence.followupCount = currentCount;
     lead.cadence.lastCadenceSentAt = now;
@@ -198,6 +428,40 @@ export const checkCadenceWorkflows = async (org) => {
 
     if (io) {
       io.to(`org_${org._id}`).emit("lead_updated", lead.toJSON ? lead.toJSON() : lead);
+    }
+  }
+
+  // 2. Process "Future Leads" 15-day recurring marketing drip
+  const dripIntervalDays = workflow.futureLeadsDripIntervalDays || 15;
+  const dueDripLeads = await Lead.find({
+    "cadence.type": "Drip_FutureLeads",
+    "cadence.nextCadenceScheduledAt": { $lte: now },
+    isOptedOut: { $ne: true },
+    status: { $ne: "DND" },
+  });
+
+  if (Array.isArray(dueDripLeads)) {
+    for (const lead of dueDripLeads) {
+      if (lead._id && processedNotRespondingIds.has(String(lead._id))) continue;
+      if (lead.cadence?.type !== "Drip_FutureLeads") continue;
+      await sendAutomatedLeadWhatsAppMessage({
+        lead,
+        org,
+        tenantModels,
+        stage: "marketing_drip",
+      });
+
+      if (!lead.cadence) lead.cadence = { type: "Drip_FutureLeads" };
+      lead.cadence.followupCount = (lead.cadence.followupCount || 0) + 1;
+      lead.cadence.lastCadenceSentAt = now;
+      lead.cadence.nextCadenceScheduledAt = new Date(
+        now.getTime() + dripIntervalDays * 24 * 60 * 60 * 1000
+      );
+      await lead.save();
+
+      if (io) {
+        io.to(`org_${org._id}`).emit("lead_updated", lead.toJSON ? lead.toJSON() : lead);
+      }
     }
   }
 };

@@ -21,6 +21,7 @@ import * as XLSX from "xlsx";
 import { decryptApiKey } from "../utils/encryption.js";
 import WAAccount from "../models/WhatsAppAccount.js";
 import { sendTemplateMessage } from "../services/whatsappCloudService.js";
+import { sendAutomatedLeadWhatsAppMessage } from "../services/leadWorkflowWorker.js";
 import { recordLeadCallAtomic } from "../services/leadCallService.js";
 import CallRecord from "../models/CallRecord.js";
 import TelecallerAnalytics from "../models/TelecallerAnalytics.js";
@@ -1006,6 +1007,16 @@ export const createLead = async (req, res) => {
     const lead = await LeadModel.create(leadData);
     console.log(`[createLead] [Step 8] Lead saved successfully. ID: ${lead._id}, Name: "${lead.name}", Status: "${lead.status}"`);
 
+    // Auto Msg for New Leads (non-blocking)
+    if (lead.status === "New" || lead.folder === "New Leads") {
+      sendAutomatedLeadWhatsAppMessage({
+        lead,
+        org: req.organization,
+        tenantModels: req.tenantModels,
+        stage: "new_lead",
+      }).catch(() => {});
+    }
+
     // AI Audio analysis trigger
     if (req.file && ENABLE_AI_AUDIO_ANALYSIS && lead.recordings?.length > 0) {
       const newRecording = lead.recordings[0];
@@ -1301,6 +1312,15 @@ export const updateLead = async (req, res) => {
         lead.isOptedOut = true;
       } else if (s === "future leads") {
         lead.folder = "Future Leads";
+        const dripDays = req.organization?.workflowSettings?.futureLeadsDripIntervalDays || 15;
+        lead.cadence = {
+          type: "Drip_FutureLeads",
+          followupCount: 0,
+          maxFollowups: 0,
+          cadenceStartDate: new Date(),
+          lastCadenceSentAt: null,
+          nextCadenceScheduledAt: new Date(Date.now() + dripDays * 24 * 60 * 60 * 1000),
+        };
       } else if (s === "priority") {
         lead.priorityLevel = "High";
       } else if (s === "follow up") {
