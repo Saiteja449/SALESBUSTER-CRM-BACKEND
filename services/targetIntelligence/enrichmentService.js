@@ -151,33 +151,43 @@ function extractFromHtml(html, baseUrl) {
       !rawEmail.includes(".png") &&
       !rawEmail.includes(".jpg") &&
       !rawEmail.includes(".webp") &&
-      !rawEmail.includes(".svg")
+      !rawEmail.includes(".svg") &&
+      !/^(your|example|test|name|user|admin|info)@(email|example|domain|company)\./i.test(rawEmail)
     ) {
       extracted.emails.add(rawEmail);
     }
   }
 
-  // Phones regex (Indian formats, mobile & landline)
-  const phoneRegex = /(?:\+91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}|(?:\+91[\s-]?)?0?\d{2,4}[\s-]?\d{6,8}/g;
+  // Phones regex (Indian mobile 10-digit or explicit 0-prefixed STD landline; ignore timestamps/INT_MAX)
+  const phoneRegex = /(?:\+91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}|(?:\+91[\s-]?)?0\d{2,4}[\s-]\d{6,8}/g;
   let pMatch;
   while ((pMatch = phoneRegex.exec(html)) !== null) {
+    const digits = pMatch[0].replace(/\D/g, "");
+    if (digits.includes("2147483647") || /^202\d{5}$/.test(digits)) continue;
     extracted.phones.add(pMatch[0].trim());
   }
 
-  // Find contact / about links
+  // Find contact / about / team / social links
   const hrefRegex = /href=["']([^"']+)["']/gi;
   let hMatch;
   while ((hMatch = hrefRegex.exec(html)) !== null) {
-    const href = hMatch[1].toLowerCase();
-    if (href.includes("contact") && !extracted.contactPageUrl) {
-      extracted.contactPageUrl = resolveUrl(baseUrl, hMatch[1]);
+    const rawHref = hMatch[1];
+    const href = rawHref.toLowerCase();
+    if (href.startsWith("mailto:")) {
+      const mail = rawHref.replace(/^mailto:/i, "").split("?")[0].trim().toLowerCase();
+      if (mail.includes("@")) extracted.emails.add(mail);
+    } else if (href.startsWith("tel:")) {
+      const tel = rawHref.replace(/^tel:/i, "").trim();
+      if (tel) extracted.phones.add(tel);
+    } else if (href.includes("contact") && !extracted.contactPageUrl) {
+      extracted.contactPageUrl = resolveUrl(baseUrl, rawHref);
     } else if (href.includes("about") && !extracted.aboutPageUrl) {
-      extracted.aboutPageUrl = resolveUrl(baseUrl, hMatch[1]);
+      extracted.aboutPageUrl = resolveUrl(baseUrl, rawHref);
     } else if (
       (href.includes("team") || href.includes("leadership") || href.includes("founder")) &&
       !extracted.teamPageUrl
     ) {
-      extracted.teamPageUrl = resolveUrl(baseUrl, hMatch[1]);
+      extracted.teamPageUrl = resolveUrl(baseUrl, rawHref);
     }
   }
 
@@ -272,15 +282,44 @@ export async function enrichCompanyWebsite(websiteUrl, companyName = "", apiKey 
   if (homeData.description) result.description = homeData.description;
   if (homeData.contactPageUrl) result.contactPageUrl = homeData.contactPageUrl;
 
-  // 2. Fetch Contact / About page if available
-  let contactHtml = "";
-  if (homeData.contactPageUrl) {
-    contactHtml = await fetchPublicPage(homeData.contactPageUrl, 6000);
-    if (contactHtml) {
-      result.sources.push({ url: homeData.contactPageUrl, field: "contact_page", accessedAt: retrievedAt });
-      const contactData = extractFromHtml(contactHtml, homeData.contactPageUrl);
-      contactData.emails.forEach((e) => homeData.emails.add(e));
-      contactData.phones.forEach((p) => homeData.phones.add(p));
+  // 2. Fetch Contact, About, and Team pages concurrently if available (or probe common paths)
+  const origin = new URL(safeUrl).origin;
+  const subUrls = new Set();
+  if (homeData.contactPageUrl) subUrls.add(homeData.contactPageUrl);
+  else subUrls.add(`${origin}/contact`);
+  if (homeData.aboutPageUrl) subUrls.add(homeData.aboutPageUrl);
+  else subUrls.add(`${origin}/about`);
+  if (homeData.teamPageUrl) subUrls.add(homeData.teamPageUrl);
+
+  const subPages = await Promise.all(
+    Array.from(subUrls)
+      .slice(0, 3)
+      .map(async (u) => ({ url: u, html: await fetchPublicPage(u, 5000) }))
+  );
+
+  let combinedSubHtml = "";
+  for (const page of subPages) {
+    if (!page.html) continue;
+    combinedSubHtml += " " + page.html;
+    result.sources.push({ url: page.url, field: "subpage", accessedAt: retrievedAt });
+    const subData = extractFromHtml(page.html, page.url);
+    subData.emails.forEach((e) => homeData.emails.add(e));
+    subData.phones.forEach((p) => homeData.phones.add(p));
+  }
+
+  // Extract social links from homepage + subpages
+  const allHtml = `${homeHtml} ${combinedSubHtml}`;
+  const socialPatterns = [
+    { key: "instagram", regex: /https?:\/\/(?:www\.)?instagram\.com\/[A-Za-z0-9._-]+/i },
+    { key: "facebook", regex: /https?:\/\/(?:www\.)?facebook\.com\/[A-Za-z0-9._-]+/i },
+    { key: "linkedin", regex: /https?:\/\/(?:[a-z]{2,3}\.)?linkedin\.com\/(?:company|in)\/[A-Za-z0-9._-]+/i },
+    { key: "twitter", regex: /https?:\/\/(?:www\.)?(?:twitter\.com|x\.com)\/[A-Za-z0-9._-]+/i },
+    { key: "whatsapp", regex: /https?:\/\/(?:wa\.me|api\.whatsapp\.com)\/[A-Za-z0-9?=&_-]+/i },
+  ];
+  for (const { key, regex } of socialPatterns) {
+    if (!result.socialLinks[key]) {
+      const m = allHtml.match(regex);
+      if (m) result.socialLinks[key] = m[0];
     }
   }
 
@@ -308,15 +347,15 @@ export async function enrichCompanyWebsite(websiteUrl, companyName = "", apiKey 
     }
   }
 
-  // 5. Use Gemini to extract executive leadership from text if apiKey present
-  if (apiKey && (homeHtml || contactHtml)) {
-    const cleanText = (homeHtml + " " + contactHtml)
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .slice(0, 15000);
+  // 5. Extract executive leadership / founders (Gemini if apiKey present, plus deterministic regex fallback)
+  const cleanText = allHtml
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .slice(0, 18000);
 
+  if (apiKey && cleanText.length > 50) {
     try {
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({
@@ -363,6 +402,33 @@ Return JSON:
       }
     } catch (err) {
       console.warn(`[enrichmentService] Gemini extraction error:`, err.message);
+    }
+  }
+
+  // Deterministic regex fallback for founders / lead veterinarians when Gemini is unavailable or returned 0
+  if (result.decisionMakers.length === 0 && cleanText.length > 50) {
+    const founderRegex =
+      /\b(?:Founder(?:\s*&\s*CEO)?|Co-?Founder|Managing\s+Director|Chief\s+Executive\s+Officer|CEO|Lead\s+Veterinarian)\s*[:\-–]?\s*((?:Dr\.\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z.]+){1,2})\b/g;
+    const seenNames = new Set();
+    let fMatch;
+    while ((fMatch = founderRegex.exec(cleanText)) !== null && result.decisionMakers.length < 3) {
+      const name = fMatch[1].trim();
+      const lower = name.toLowerCase();
+      if (
+        name.length >= 5 &&
+        !seenNames.has(lower) &&
+        !/^(the|and|for|with|our|about|contact|home|services|clinic|hospital|pet|care)$/i.test(lower)
+      ) {
+        seenNames.add(lower);
+        result.decisionMakers.push({
+          name,
+          title: fMatch[0].split(/[:\-–]/)[0].trim() || "Founder",
+          designation: "Founder",
+          email: "",
+          phone: "",
+          verificationStatus: "unknown",
+        });
+      }
     }
   }
 

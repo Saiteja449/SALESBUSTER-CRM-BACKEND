@@ -109,34 +109,48 @@ export class DuckDuckGoProvider extends BaseSearchProvider {
 
     const desiredCount = limit ? Math.min(Math.max(parseInt(limit, 10) || 10, 1), 30) : 10;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 9000);
+
+    const loc = city && city !== "All" ? city : "India";
+    const queries = [query];
+    if (/pet/i.test(`${industry || ""} ${prompt || ""}`)) {
+      queries.push(`veterinary hospital pet clinic ${loc}`);
+      queries.push(`pet grooming boarding daycare ${loc}`);
+    } else if (industry && industry !== "All") {
+      queries.push(`${industry} company ${loc} contact email`);
+    }
 
     try {
-      const formBody = new URLSearchParams({ q: query, kl: "in-en" }).toString();
-      const response = await fetch(DUCKDUCKGO_HTML_URL, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-          Accept: "text/html,application/xhtml+xml",
-        },
-        body: formBody,
-      });
+      const htmlPages = await Promise.all(
+        queries.slice(0, 3).map(async (qStr) => {
+          const formBody = new URLSearchParams({ q: qStr, kl: "in-en" }).toString();
+          const resp = await fetch(DUCKDUCKGO_HTML_URL, {
+            method: "POST",
+            signal: controller.signal,
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+              Accept: "text/html,application/xhtml+xml",
+            },
+            body: formBody,
+          }).catch(() => null);
+          if (!resp || !resp.ok) return "";
+          return await resp.text().catch(() => "");
+        })
+      );
 
       const durationMs = Date.now() - start;
-      if (!response.ok) {
+      const html = htmlPages.filter(Boolean).join("\n");
+      if (!html) {
         return {
           provider: this.name,
           status: "error",
           results: [],
           durationMs,
-          error: `DuckDuckGo returned status ${response.status}`,
+          error: "DuckDuckGo returned no HTML responses",
         };
       }
-
-      const html = await response.text();
       const retrievedAt = new Date().toISOString();
       const results = [];
       const seenDomains = new Set();
@@ -171,9 +185,14 @@ export class DuckDuckGoProvider extends BaseSearchProvider {
 
         const companyName =
           rawTitle
-            .split(/[-|–:•]/)[0]
+            .split(/\s+[-|–—:•]\s+|[|–—•]/)
+            .map((part) => part.trim())
+            .find((part) => part && !/^(home|welcome|pet clinic in |best |top )/i.test(part)) ||
+          rawTitle
+            .split(/\s+[-|–—:•]\s+|[|–—•]/)[0]
             ?.replace(/\b(home|official website|welcome to|services|page)\b/gi, "")
-            ?.trim() || domain;
+            ?.trim() ||
+          domain;
 
         results.push({
           companyName,

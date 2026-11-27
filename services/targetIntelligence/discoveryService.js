@@ -709,7 +709,11 @@ export class DiscoveryService {
         await Promise.all(
           batch.map(async (company) => {
             try {
-              const enriched = await enrichCompanyWebsite(company, apiKey);
+              const enriched = await enrichCompanyWebsite(
+                company.website,
+                company.companyName,
+                apiKey
+              );
               if (!enriched) return;
 
               if (!company.contact.businessPhone && enriched.businessPhone) {
@@ -722,8 +726,15 @@ export class DiscoveryService {
                 company.contact.emailType = enriched.emailType || "none";
                 company.contact.emailVerificationStatus = enriched.emailVerificationStatus || "unknown";
               }
-              if (!company.contact.contactPage && enriched.contactPage) {
-                company.contact.contactPage = enriched.contactPage;
+              if (!company.contact.contactPage && (enriched.contactPageUrl || enriched.contactPage)) {
+                company.contact.contactPage = enriched.contactPageUrl || enriched.contactPage;
+              }
+              if (enriched.socialLinks) {
+                for (const [k, v] of Object.entries(enriched.socialLinks)) {
+                  if (v && !company.socialLinks[k]) {
+                    company.socialLinks[k] = v;
+                  }
+                }
               }
               if ((!company.description || company.description.length < 20) && enriched.description) {
                 company.description = enriched.description;
