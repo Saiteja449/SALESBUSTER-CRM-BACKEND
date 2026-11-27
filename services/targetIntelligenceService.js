@@ -1,28 +1,43 @@
 import mongoose from "mongoose";
 import { NotFoundError, BadRequestError } from "../utils/AppError.js";
 
+const DEFAULT_MONTHLY_CREDITS = 100;
+
 /**
- * Calculates current month search usage and limits for the organization.
+ * Calculates current month credit usage and limits for the organization.
+ * Credits are charged (1 credit per newly discovered company) up to the monthly cap (default 100/month).
  */
 export const getMonthlyQuotaService = async ({ tenantModels, organization }) => {
   const { TargetSearch } = tenantModels;
   const orgId = organization?._id;
 
+  const customLimit = organization?.targetIntelligenceQuota?.searchesLimit;
   const searchesLimit =
-    typeof organization?.targetIntelligenceQuota?.searchesLimit === "number"
-      ? organization.targetIntelligenceQuota.searchesLimit
-      : null;
-  const isConfigured = searchesLimit !== null;
+    typeof customLimit === "number" && customLimit > 0
+      ? customLimit
+      : DEFAULT_MONTHLY_CREDITS;
+  const isConfigured = true;
 
   let searchesUsedThisMonth = 0;
   if (orgId && TargetSearch) {
     try {
       const now = new Date();
       const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-      searchesUsedThisMonth = await TargetSearch.countDocuments({
-        organizationId: orgId,
-        createdAt: { $gte: startOfMonth },
-      });
+      const agg = await TargetSearch.aggregate([
+        {
+          $match: {
+            organizationId: new mongoose.Types.ObjectId(orgId),
+            createdAt: { $gte: startOfMonth },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalCredits: { $sum: { $ifNull: ["$creditsUsed", 0] } },
+          },
+        },
+      ]);
+      searchesUsedThisMonth = agg?.[0]?.totalCredits || 0;
     } catch (_) {
       searchesUsedThisMonth = organization?.targetIntelligenceQuota?.searchesUsed || 0;
     }
@@ -38,12 +53,16 @@ export const getMonthlyQuotaService = async ({ tenantModels, organization }) => 
     isConfigured,
     searchesUsedThisMonth,
     searchesLimit,
-    resetDate: isConfigured ? resetDate : null,
+    creditsUsedThisMonth: searchesUsedThisMonth,
+    creditsLimit: searchesLimit,
+    remainingCredits: Math.max(0, searchesLimit - searchesUsedThisMonth),
+    resetDate,
   };
 };
 
 /**
  * Persists search record and caches discovered companies in TargetCompany collection.
+ * Only newly discovered companies (not already cached for this organization) deduct credits.
  */
 export const saveSearchAndCacheCompaniesService = async ({
   tenantModels,
@@ -55,6 +74,38 @@ export const saveSearchAndCacheCompaniesService = async ({
 }) => {
   const { TargetSearch, TargetCompany } = tenantModels;
   const companies = discoveryResult.companies || [];
+
+  // Determine which companies are genuinely new (never seen before for this organization)
+  let creditsDeducted = 0;
+  if (organizationId && TargetCompany && companies.length > 0) {
+    const keys = companies.map((c) => c.prospectKey).filter(Boolean);
+    const domains = companies.map((c) => c.normalizedDomain).filter(Boolean);
+    const existingDocs = await TargetCompany.find({
+      organizationId,
+      $or: [
+        ...(keys.length > 0 ? [{ prospectKey: { $in: keys } }] : []),
+        ...(domains.length > 0 ? [{ normalizedDomain: { $in: domains } }] : []),
+      ],
+    })
+      .select("prospectKey normalizedDomain")
+      .lean();
+
+    const existingKeys = new Set(existingDocs.map((d) => d.prospectKey).filter(Boolean));
+    const existingDomains = new Set(existingDocs.map((d) => d.normalizedDomain).filter(Boolean));
+
+    for (const c of companies) {
+      const alreadySeen =
+        (c.prospectKey && existingKeys.has(c.prospectKey)) ||
+        (c.normalizedDomain && existingDomains.has(c.normalizedDomain));
+      if (!alreadySeen) {
+        creditsDeducted++;
+        if (c.prospectKey) existingKeys.add(c.prospectKey);
+        if (c.normalizedDomain) existingDomains.add(c.normalizedDomain);
+      }
+    }
+  } else {
+    creditsDeducted = companies.length;
+  }
 
   let searchRecord = null;
   const generatedSearchId = `ti_${new mongoose.Types.ObjectId().toString()}`;
@@ -77,6 +128,7 @@ export const saveSearchAndCacheCompaniesService = async ({
         status: "completed",
         totalDiscovered: companies.length,
         totalMatched: companies.length,
+        creditsUsed: creditsDeducted,
         searchProviders: discoveryResult.usedProviders,
         durationMs,
       });
@@ -122,7 +174,7 @@ export const saveSearchAndCacheCompaniesService = async ({
     }
   }
 
-  return searchRecord;
+  return { searchRecord, creditsDeducted };
 };
 
 /**

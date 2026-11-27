@@ -46,6 +46,10 @@ const targetSearchSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    creditsUsed: {
+      type: Number,
+      default: 0,
+    },
     searchProviders: {
       type: [String],
       default: [],

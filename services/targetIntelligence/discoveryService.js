@@ -97,7 +97,9 @@ export class DiscoveryService {
    */
   async discoverBusinesses(filters, context = {}) {
     const { apiKey, tavilyKey, organizationId, tenantModels = {} } = context;
-    const { ResolvedModel, TargetCompanyModel, ProviderUsageModel } = tenantModels;
+    const ResolvedModel = tenantModels.ResolvedProspect || tenantModels.ResolvedModel;
+    const TargetCompanyModel = tenantModels.TargetCompany || tenantModels.TargetCompanyModel;
+    const ProviderUsageModel = tenantModels.ProviderUsage || tenantModels.ProviderUsageModel;
 
     const timings = {
       totalMs: 0,
@@ -152,14 +154,16 @@ export class DiscoveryService {
       try {
         // A. Check ResolvedProspect collection
         if (ResolvedModel && (ResolvedModel.db?.readyState === 1 || !ResolvedModel.db)) {
-          const allResolved = await ResolvedModel.find({ organization: organizationId })
-            .select("prospectKey companyName website")
+          const allResolved = await ResolvedModel.find({
+            $or: [{ organizationId }, { organization: organizationId }],
+          })
+            .select("prospectKey companyName website domain")
             .lean();
           if (Array.isArray(allResolved)) {
             allResolved.forEach((r) => {
               if (r.prospectKey) resolvedKeysSet.add(r.prospectKey);
               if (r.companyName) resolvedNamesSet.add(r.companyName.toLowerCase().trim());
-              const d = normalizeDomain(r.website || "");
+              const d = normalizeDomain(r.website || r.domain || "");
               if (d) resolvedDomainsSet.add(d);
             });
           }

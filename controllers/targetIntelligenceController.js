@@ -114,6 +114,24 @@ export const searchProspects = asyncHandler(async (req, res) => {
     limit,
   } = req.body;
 
+  // Enforce monthly credit cap (default 100/month)
+  const currentQuota = await getMonthlyQuotaService({
+    tenantModels,
+    organization: req.organization,
+  });
+  if (
+    currentQuota.searchesLimit &&
+    currentQuota.searchesUsedThisMonth >= currentQuota.searchesLimit
+  ) {
+    return res.status(429).json({
+      success: false,
+      message: `Monthly Target Intelligence credit limit (${currentQuota.searchesUsedThisMonth}/${currentQuota.searchesLimit}) reached. Credits reset on ${currentQuota.resetDate}.`,
+      data: {
+        quota: currentQuota,
+      },
+    });
+  }
+
   const apiKey = resolveGeminiKey(req);
   const tavilyKey = resolveTavilyKey(req);
 
@@ -144,6 +162,8 @@ export const searchProspects = asyncHandler(async (req, res) => {
       data: {
         totalCount: 0,
         prospects: [],
+        creditsDeducted: 0,
+        quota: currentQuota,
         searchProviders: discoveryResult.usedProviders,
         providerStatuses: discoveryResult.providerStatuses,
         outcome: discoveryResult.outcome,
@@ -154,7 +174,7 @@ export const searchProspects = asyncHandler(async (req, res) => {
     });
   }
 
-  const searchRecord = await saveSearchAndCacheCompaniesService({
+  const { searchRecord, creditsDeducted } = await saveSearchAndCacheCompaniesService({
     tenantModels,
     organizationId,
     userId,
@@ -163,11 +183,18 @@ export const searchProspects = asyncHandler(async (req, res) => {
     durationMs,
   });
 
+  const updatedQuota = await getMonthlyQuotaService({
+    tenantModels,
+    organization: req.organization,
+  });
+
   return sendSuccess(res, {
     data: {
       searchId: searchRecord ? searchRecord._id.toString() : `ti-search-${Date.now()}`,
       totalCount: companies.length,
       excludedResolvedCount: discoveryResult.excludedResolvedCount || 0,
+      creditsDeducted,
+      quota: updatedQuota,
       prospects: companies,
       searchProviders: discoveryResult.usedProviders,
       providerStatuses: discoveryResult.providerStatuses,
