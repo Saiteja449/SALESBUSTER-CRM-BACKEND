@@ -19,6 +19,9 @@ import {
   createAdminAddonHandler,
   updateAdminAddonHandler,
   deleteAdminAddonHandler,
+  createAdminPlanHandler,
+  updateAdminPlanHandler,
+  deleteAdminPlanHandler,
   getAddonQuoteHandler,
   downloadInvoiceHandler,
   resendInvoiceHandler,
@@ -59,6 +62,9 @@ router.put("/admin/pricing-settings", verifySuperAdmin, updatePricingSettingsHan
 router.post("/admin/addons", verifySuperAdmin, createAdminAddonHandler);
 router.put("/admin/addons/:addonId", verifySuperAdmin, updateAdminAddonHandler);
 router.delete("/admin/addons/:addonId", verifySuperAdmin, deleteAdminAddonHandler);
+router.post("/admin/plans", verifySuperAdmin, createAdminPlanHandler);
+router.put("/admin/plans/:planId", verifySuperAdmin, updateAdminPlanHandler);
+router.delete("/admin/plans/:planId", verifySuperAdmin, deleteAdminPlanHandler);
 
 // 2. Fetch / Verify Order Status & Download Tax Invoice
 router.get("/order/:orderId", protect, getOrderStatusHandler);

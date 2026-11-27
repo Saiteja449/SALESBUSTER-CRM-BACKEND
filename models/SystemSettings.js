@@ -64,6 +64,24 @@ const systemSettingsSchema = new mongoose.Schema(
         isActive: { type: Boolean, default: true },
       },
     ],
+    planCatalogConfigured: {
+      type: Boolean,
+      default: false,
+    },
+    planCatalog: [
+      {
+        id: { type: String, required: true, trim: true },
+        title: { type: String, required: true, trim: true },
+        price: { type: Number, required: true, min: 0 },
+        period: { type: String, default: "year", trim: true },
+        durationMonths: { type: Number, default: 12, min: 1 },
+        description: { type: String, default: "", trim: true },
+        popular: { type: Boolean, default: false },
+        saveBadge: { type: String, default: "", trim: true },
+        features: [{ type: String, trim: true }],
+        isActive: { type: Boolean, default: true },
+      },
+    ],
     updatedBy: {
       type: String,
       default: "System",

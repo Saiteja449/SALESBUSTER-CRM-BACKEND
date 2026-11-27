@@ -174,6 +174,76 @@ export const getEffectiveAddonCatalog = (sysSettings) => {
   return DEFAULT_ADDON_CATALOG.map(normalize);
 };
 
+export const DEFAULT_PLAN_CATALOG = [
+  {
+    id: "yearly",
+    title: "Yearly Plan",
+    price: 53940,
+    period: "year (₹4,495/mo)",
+    durationMonths: 12,
+    description: "Annual commitment for teams committed to steady sales growth.",
+    popular: true,
+    saveBadge: "Save 25%",
+    features: [
+      "Up to 5 Sales Rep Seats Included",
+      "Unified WhatsApp & CRM Pipeline",
+      "AI Follow-up Scheduling & Tracking",
+      "Meta Cloud Broadcast Engine",
+      "Priority Onboarding & Tech Support",
+    ],
+    isActive: true,
+  },
+  {
+    id: "quarterly",
+    title: "Quarterly Plan",
+    price: 17985,
+    period: "quarter (₹5,995/mo)",
+    durationMonths: 3,
+    description: "Standard flexibility with quarterly billing cycles.",
+    popular: false,
+    saveBadge: "3-Month Cycle",
+    features: [
+      "Up to 5 Sales Rep Seats Included",
+      "Unified WhatsApp & CRM Pipeline",
+      "AI Follow-up Tracking",
+      "Flexible 3-Month Renewal Cycle",
+    ],
+    isActive: true,
+  },
+];
+
+export const getEffectivePlanCatalog = (sysSettings) => {
+  const normalize = (plan) => {
+    const id = String(plan.id || "").trim().toLowerCase();
+    const durationMonths = Number.isFinite(Number(plan.durationMonths)) && Number(plan.durationMonths) > 0
+      ? Number(plan.durationMonths)
+      : id === "yearly" || id === "annual"
+      ? 12
+      : 3;
+    const price = Number(plan.price) || 0;
+    const monthly = Math.round(price / durationMonths);
+    const defaultPeriod = durationMonths === 12
+      ? `year (₹${monthly.toLocaleString("en-IN")}/mo)`
+      : `quarter (₹${monthly.toLocaleString("en-IN")}/mo)`;
+    return {
+      ...plan,
+      id,
+      price,
+      durationMonths,
+      period: plan.period || defaultPeriod,
+      features: Array.isArray(plan.features) ? plan.features : [],
+      isActive: plan.isActive !== false,
+    };
+  };
+  if (sysSettings?.planCatalogConfigured && Array.isArray(sysSettings.planCatalog)) {
+    return sysSettings.planCatalog.map(normalize);
+  }
+  if (Array.isArray(sysSettings?.planCatalog) && sysSettings.planCatalog.length > 0) {
+    return sysSettings.planCatalog.map(normalize);
+  }
+  return DEFAULT_PLAN_CATALOG.map(normalize);
+};
+
 const normalizeAddonTerm = (term) => {
   if (term === "annual" || term === "annually" || term === "yearly") return "yearly";
   if (term === "quarterly") return "quarterly";
@@ -333,6 +403,7 @@ export const resolveAuthoritativePrice = ({
   extraRepPriceYearly = 899,
   extraRepPriceQuarterly = 1199,
   dynamicAddons = null,
+  dynamicPlans = null,
   addonTerm = "",
   addonItems = [],
 }) => {
@@ -374,10 +445,21 @@ export const resolveAuthoritativePrice = ({
     currency = "INR";
     title = addonItems.length > 1 ? `${addonItems.length} Add-ons` : addonConfig.title;
   } else if (normalizedPurpose === "subscription") {
-    if (!["quarterly", "yearly", "annual", "annually"].includes(String(planId).toLowerCase())) {
+    const normalizedPlanId = String(planId || "").toLowerCase();
+    const canonicalPlanId = ["annual", "annually"].includes(normalizedPlanId) ? "yearly" : normalizedPlanId;
+    if (!["quarterly", "yearly"].includes(canonicalPlanId)) {
       throw new Error("New subscriptions are available only quarterly or yearly.");
     }
-    const planConfig = CASHFREE_PRICING_CATALOG.subscription[planId];
+    const dynamicPlan = Array.isArray(dynamicPlans)
+      ? dynamicPlans.find((p) => p.id === canonicalPlanId && p.isActive !== false)
+      : null;
+    const planConfig = dynamicPlan
+      ? {
+          amount: Number(dynamicPlan.price),
+          currency: "INR",
+          title: dynamicPlan.title,
+        }
+      : CASHFREE_PRICING_CATALOG.subscription[canonicalPlanId] || CASHFREE_PRICING_CATALOG.subscription[planId];
     if (!planConfig) {
       throw new Error(`Invalid or unsupported subscription plan: '${planId}'`);
     }
@@ -835,6 +917,8 @@ export const createOrderHandler = async (req, res) => {
       });
     }
 
+    const planCatalog = getEffectivePlanCatalog(sysSettings).filter((p) => p.isActive !== false);
+
     // 1. Authoritative Server-Side Price Resolution (prevents parameter tampering)
     const priceResolution = resolveAuthoritativePrice({
       purpose,
@@ -846,6 +930,7 @@ export const createOrderHandler = async (req, res) => {
       extraRepPriceYearly,
       extraRepPriceQuarterly,
       dynamicAddons: catalog,
+      dynamicPlans: planCatalog,
       addonTerm: resolvedAddonTerm,
       addonItems,
     });
@@ -1466,6 +1551,18 @@ export const getPublicPricingConfigHandler = async (req, res) => {
         : 1199;
 
     const effectiveAddons = getEffectiveAddonCatalog(settings).filter((a) => a.isActive !== false);
+    const effectivePlans = getEffectivePlanCatalog(settings).filter((p) => p.isActive !== false);
+    const plansById = Object.fromEntries(
+      effectivePlans.map((p) => [
+        p.id,
+        {
+          ...p,
+          amount: p.price,
+          basePrice: p.price,
+          currency: "INR",
+        },
+      ])
+    );
 
     return res.status(200).json({
       success: true,
@@ -1475,10 +1572,8 @@ export const getPublicPricingConfigHandler = async (req, res) => {
         extraRepMonthlyPriceYearly,
         extraRepMonthlyPriceQuarterly,
         baseRepsIncluded: 5,
-        plans: {
-          quarterly: CASHFREE_PRICING_CATALOG.subscription.quarterly,
-          yearly: CASHFREE_PRICING_CATALOG.subscription.yearly,
-        },
+        plans: plansById,
+        planCatalog: effectivePlans,
         addons: effectiveAddons,
       },
     });
@@ -1509,6 +1604,7 @@ export const getAdminPricingSettingsHandler = async (req, res) => {
         ? settings.extraRepMonthlyPriceQuarterly
         : 1199;
     const addons = getEffectiveAddonCatalog(settings);
+    const plans = getEffectivePlanCatalog(settings);
 
     return res.status(200).json({
       success: true,
@@ -1517,6 +1613,7 @@ export const getAdminPricingSettingsHandler = async (req, res) => {
         extraRepMonthlyPriceYearly,
         extraRepMonthlyPriceQuarterly,
         addons,
+        plans,
         updatedBy: settings?.updatedBy || "System",
         updatedAt: settings?.updatedAt || null,
       },
@@ -1579,6 +1676,7 @@ export const updatePricingSettingsHandler = async (req, res) => {
         extraRepMonthlyPriceYearly: settings.extraRepMonthlyPriceYearly,
         extraRepMonthlyPriceQuarterly: settings.extraRepMonthlyPriceQuarterly,
         addons: getEffectiveAddonCatalog(settings),
+        plans: getEffectivePlanCatalog(settings),
         updatedBy: settings.updatedBy,
         updatedAt: settings.updatedAt,
       },
@@ -1757,6 +1855,163 @@ export const deleteAdminAddonHandler = async (req, res) => {
     });
   } catch (error) {
     console.error("[DeleteAdminAddon] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const loadOrInitPlanSettings = async (SystemSettings, user) => {
+  let settings = await SystemSettings.findOne();
+  if (!settings) {
+    settings = new SystemSettings({});
+  }
+  if (!settings.planCatalogConfigured && (!settings.planCatalog || settings.planCatalog.length === 0)) {
+    settings.planCatalog = DEFAULT_PLAN_CATALOG.map((p) => ({ ...p }));
+    settings.planCatalogConfigured = true;
+  }
+  settings.updatedBy = user?.name || user?.email || "Admin";
+  return settings;
+};
+
+const parseFeaturesList = (features) =>
+  Array.isArray(features)
+    ? features.map((f) => String(f).trim()).filter(Boolean)
+    : String(features || "")
+        .split(/[\n,]+/)
+        .map((f) => f.trim())
+        .filter(Boolean);
+
+/**
+ * POST /api/payment/cashfree/admin/plans
+ * Create a subscription plan in SystemSettings
+ */
+export const createAdminPlanHandler = async (req, res) => {
+  try {
+    const {
+      id,
+      title,
+      price,
+      period = "",
+      durationMonths,
+      description = "",
+      popular = false,
+      saveBadge = "",
+      features = [],
+      isActive = true,
+    } = req.body;
+    const numericPrice = Number(price);
+    if (!title || !Number.isFinite(numericPrice) || numericPrice < 0) {
+      return res.status(400).json({ success: false, message: "Title and valid price are required." });
+    }
+    const normalizedId = String(
+      id || title.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")
+    ).trim();
+    if (!normalizedId) {
+      return res.status(400).json({ success: false, message: "Valid plan ID is required." });
+    }
+
+    const { SystemSettings } = getMasterModels();
+    const settings = await loadOrInitPlanSettings(SystemSettings, req.user);
+    if (settings.planCatalog.some((p) => p.id === normalizedId)) {
+      return res.status(409).json({ success: false, message: `Plan '${normalizedId}' already exists.` });
+    }
+
+    const months = Number.isFinite(Number(durationMonths)) && Number(durationMonths) > 0
+      ? Number(durationMonths)
+      : normalizedId === "yearly" ? 12 : 3;
+
+    settings.planCatalog.push({
+      id: normalizedId,
+      title: String(title).trim(),
+      price: numericPrice,
+      period: String(period || "").trim(),
+      durationMonths: months,
+      description: String(description || "").trim(),
+      popular: Boolean(popular),
+      saveBadge: String(saveBadge || "").trim(),
+      features: parseFeaturesList(features),
+      isActive: Boolean(isActive),
+    });
+    await settings.save();
+
+    return res.status(201).json({
+      success: true,
+      message: "Plan created successfully.",
+      plans: getEffectivePlanCatalog(settings),
+    });
+  } catch (error) {
+    console.error("[CreateAdminPlan] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * PUT /api/payment/cashfree/admin/plans/:planId
+ * Update an existing subscription plan in SystemSettings
+ */
+export const updateAdminPlanHandler = async (req, res) => {
+  try {
+    const { planId } = req.params;
+    const { title, price, period, durationMonths, description, popular, saveBadge, features, isActive } = req.body;
+
+    const { SystemSettings } = getMasterModels();
+    const settings = await loadOrInitPlanSettings(SystemSettings, req.user);
+    const target = settings.planCatalog.find((p) => p.id === planId);
+    if (!target) {
+      return res.status(404).json({ success: false, message: `Plan '${planId}' not found.` });
+    }
+
+    if (title !== undefined) target.title = String(title).trim();
+    if (price !== undefined && Number.isFinite(Number(price)) && Number(price) >= 0) {
+      target.price = Number(price);
+    }
+    if (period !== undefined) target.period = String(period).trim();
+    if (durationMonths !== undefined && Number.isFinite(Number(durationMonths)) && Number(durationMonths) > 0) {
+      target.durationMonths = Number(durationMonths);
+    }
+    if (description !== undefined) target.description = String(description).trim();
+    if (popular !== undefined) target.popular = Boolean(popular);
+    if (saveBadge !== undefined) target.saveBadge = String(saveBadge).trim();
+    if (isActive !== undefined) target.isActive = Boolean(isActive);
+    if (features !== undefined) target.features = parseFeaturesList(features);
+
+    settings.markModified("planCatalog");
+    await settings.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Plan updated successfully.",
+      plans: getEffectivePlanCatalog(settings),
+    });
+  } catch (error) {
+    console.error("[UpdateAdminPlan] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * DELETE /api/payment/cashfree/admin/plans/:planId
+ */
+export const deleteAdminPlanHandler = async (req, res) => {
+  try {
+    const { planId } = req.params;
+    const { SystemSettings } = getMasterModels();
+    const settings = await loadOrInitPlanSettings(SystemSettings, req.user);
+    const prevLen = settings.planCatalog.length;
+    settings.planCatalog = settings.planCatalog.filter((p) => p.id !== planId);
+    if (settings.planCatalog.length === prevLen) {
+      return res.status(404).json({ success: false, message: `Plan '${planId}' not found.` });
+    }
+    settings.planCatalogConfigured = true;
+    settings.markModified("planCatalog");
+    await settings.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Plan deleted successfully.",
+      plans: getEffectivePlanCatalog(settings),
+    });
+  } catch (error) {
+    console.error("[DeleteAdminPlan] Error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
