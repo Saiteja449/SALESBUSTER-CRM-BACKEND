@@ -1,13 +1,16 @@
 import TavilySearchProvider from "./providers/tavilyProvider.js";
 import OsmSearchProvider from "./providers/osmProvider.js";
 import McaSearchProvider from "./providers/mcaProvider.js";
+import DuckDuckGoProvider from "./providers/duckDuckGoProvider.js";
 import GeminiSearchProvider from "./providers/geminiProvider.js";
 import rapidApiScraperProvider from "./providers/rapidApiScraperProvider.js";
+import { enrichCompanyWebsite } from "./enrichmentService.js";
 import { verifyEmail, normalizeAndVerifyPhone, normalizeDomain } from "./verificationService.js";
 
 const tavilyProvider = new TavilySearchProvider();
 const osmProvider = new OsmSearchProvider();
 const mcaProvider = new McaSearchProvider();
+const duckDuckGoProvider = new DuckDuckGoProvider();
 const geminiProvider = new GeminiSearchProvider();
 
 /**
@@ -119,6 +122,12 @@ export class DiscoveryService {
         durationMs: 0,
         error: null,
       },
+      duckDuckGo: {
+        status: "pending",
+        count: 0,
+        durationMs: 0,
+        error: null,
+      },
       mcaRegistry: {
         status: mcaProvider.isConfigured() ? "pending" : "unconfigured",
         count: 0,
@@ -207,6 +216,19 @@ export class DiscoveryService {
         .then((res) => ({ providerKey: "openStreetMap", ...res }))
         .catch((err) => ({
           providerKey: "openStreetMap",
+          status: "error",
+          results: [],
+          durationMs: 0,
+          error: err.message,
+        }))
+    );
+
+    providerTasks.push(
+      duckDuckGoProvider
+        .searchBusinesses(filters)
+        .then((res) => ({ providerKey: "duckDuckGo", ...res }))
+        .catch((err) => ({
+          providerKey: "duckDuckGo",
           status: "error",
           results: [],
           durationMs: 0,
@@ -305,7 +327,7 @@ export class DiscoveryService {
                 .filter(Boolean);
               rawCandidates.push(...mapped);
             }
-          } else if (pKey === "openStreetMap" || pKey === "mcaRegistry") {
+          } else if (pKey === "openStreetMap" || pKey === "mcaRegistry" || pKey === "duckDuckGo") {
             rawCandidates.push(...val.results);
           }
         }
@@ -466,6 +488,19 @@ export class DiscoveryService {
         }
       }
     }
+
+    // Rank candidates by completeness + relevance so companies with real websites/contacts rank first
+    reconciled.sort((a, b) => {
+      const scoreItem = (item) => {
+        let s = item.confidenceScore || 70;
+        if (item.website) s += 15;
+        if (item.contact?.businessPhone) s += 15;
+        if (item.contact?.businessEmail) s += 15;
+        if (Array.isArray(item.founders) && item.founders.length > 0) s += 10;
+        return s;
+      };
+      return scoreItem(b) - scoreItem(a);
+    });
 
     // Slice candidates to requested limit (default 10, max 50)
     const targetLimit = filters.limit ? Math.min(Math.max(parseInt(filters.limit, 10), 1), 50) : 10;
@@ -654,6 +689,70 @@ export class DiscoveryService {
       };
     }
 
+    // 4b. Open-Source Direct Website Enrichment Fallback (free SSRF-safe HTML scraper)
+    // Runs on candidates with a website that still lack phone, email, or founders
+    const companiesForDirectEnrich = selectedCompanies.filter(
+      (c) =>
+        !c.cached &&
+        c.website &&
+        (!c.contact?.businessPhone ||
+          !c.contact?.businessEmail ||
+          !Array.isArray(c.founders) ||
+          c.founders.length === 0)
+    );
+
+    if (companiesForDirectEnrich.length > 0) {
+      const directStart = Date.now();
+      const batchSize = 3;
+      for (let i = 0; i < companiesForDirectEnrich.length; i += batchSize) {
+        const batch = companiesForDirectEnrich.slice(i, i + batchSize);
+        await Promise.all(
+          batch.map(async (company) => {
+            try {
+              const enriched = await enrichCompanyWebsite(company, apiKey);
+              if (!enriched) return;
+
+              if (!company.contact.businessPhone && enriched.businessPhone) {
+                company.contact.businessPhone = enriched.businessPhone;
+                company.contact.phoneType = enriched.phoneType || "none";
+                company.contact.phoneVerificationStatus = enriched.phoneVerificationStatus || "unknown";
+              }
+              if (!company.contact.businessEmail && enriched.businessEmail) {
+                company.contact.businessEmail = enriched.businessEmail;
+                company.contact.emailType = enriched.emailType || "none";
+                company.contact.emailVerificationStatus = enriched.emailVerificationStatus || "unknown";
+              }
+              if (!company.contact.contactPage && enriched.contactPage) {
+                company.contact.contactPage = enriched.contactPage;
+              }
+              if ((!company.description || company.description.length < 20) && enriched.description) {
+                company.description = enriched.description;
+              }
+              if (
+                (!Array.isArray(company.founders) || company.founders.length === 0) &&
+                Array.isArray(enriched.decisionMakers) &&
+                enriched.decisionMakers.length > 0
+              ) {
+                company.founders = enriched.decisionMakers;
+              }
+              if (Array.isArray(enriched.sources) && enriched.sources.length > 0) {
+                company.sources.push(...enriched.sources);
+              }
+              if (company.contact.businessPhone || company.contact.businessEmail) {
+                company.confidenceScore = Math.max(company.confidenceScore || 75, 88);
+              }
+            } catch {
+              // ignore individual website scrape failures
+            }
+          })
+        );
+      }
+      timings.contactScrapingMs = (timings.contactScrapingMs || 0) + (Date.now() - directStart);
+      if (!usedProviders.includes("Open-Source Website Scraper")) {
+        usedProviders.push("Open-Source Website Scraper");
+      }
+    }
+
     // 5. Record Provider Usage
     if (organizationId && ProviderUsageModel) {
       const today = new Date().toISOString().split("T")[0];
@@ -678,6 +777,7 @@ export class DiscoveryService {
     const searchProviders = [
       providerStatuses.tavily,
       providerStatuses.openStreetMap,
+      providerStatuses.duckDuckGo,
       providerStatuses.mcaRegistry,
     ];
     const allProvidersFailed = searchProviders.every(

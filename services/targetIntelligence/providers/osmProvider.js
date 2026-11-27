@@ -1,8 +1,117 @@
 import BaseSearchProvider from "./baseProvider.js";
 
+const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+
+const OVERPASS_TAG_MAP = [
+  { match: /pet|vet|veterinary|animal|grooming|kennel/i, tags: ['["shop"="pet"]', '["amenity"="veterinary"]'] },
+  { match: /pharma|medical|clinic|hospital|health|diagnostic/i, tags: ['["amenity"="hospital"]', '["amenity"="clinic"]', '["amenity"="pharmacy"]', '["healthcare"]'] },
+  { match: /it|software|tech|saas|digital|cloud/i, tags: ['["office"="it"]', '["office"="company"]'] },
+  { match: /food|restaurant|cafe|bakery|beverage|catering/i, tags: ['["amenity"="restaurant"]', '["amenity"="cafe"]', '["shop"="bakery"]'] },
+  { match: /auto|car|garage|motor|ev/i, tags: ['["shop"="car"]', '["shop"="car_repair"]'] },
+  { match: /manufactur|industrial|factory|engineering/i, tags: ['["man_made"="works"]', '["industrial"]'] },
+];
+
 export class OsmSearchProvider extends BaseSearchProvider {
   constructor() {
     super("OpenStreetMap");
+  }
+
+  async searchOverpass(filters, targetCity, rawTerms) {
+    if (!targetCity) return [];
+    const combinedText = `${filters.industry || ""} ${rawTerms || ""} ${filters.prompt || ""}`;
+    const matchedTagGroup = OVERPASS_TAG_MAP.find((g) => g.match.test(combinedText));
+    const escapedCity = targetCity.replace(/"/g, "");
+    const escapedTerm = (rawTerms || "").split(" ")[0]?.replace(/[^a-zA-Z0-9]/g, "") || "";
+
+    const tagFilters = matchedTagGroup
+      ? matchedTagGroup.tags
+      : escapedTerm
+      ? [`["name"~"${escapedTerm}",i]`]
+      : ['["office"]', '["shop"]'];
+
+    const queryParts = tagFilters
+      .map(
+        (tf) =>
+          `  node${tf}(area.searchArea);\n  way${tf}(area.searchArea);`
+      )
+      .join("\n");
+
+    const overpassQuery = `[out:json][timeout:6];\narea["name"~"${escapedCity}",i]["boundary"="administrative"]->.searchArea;\n(\n${queryParts}\n);\nout center 25;`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 7000);
+
+    try {
+      const res = await fetch(OVERPASS_URL, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": "SalesBusterCRM-Intelligence/2.0 (contact: support@salesbuster.ai)",
+        },
+        body: `data=${encodeURIComponent(overpassQuery)}`,
+      });
+      if (!res.ok) return [];
+
+      const json = await res.json();
+      const elements = Array.isArray(json?.elements) ? json.elements : [];
+      const retrievedAt = new Date().toISOString();
+
+      return elements
+        .filter((el) => el?.tags?.name)
+        .map((el) => {
+          const tags = el.tags || {};
+          const name = tags.name;
+          const website = tags.website || tags["contact:website"] || "";
+          const phone = tags.phone || tags["contact:phone"] || tags.mobile || "";
+          const email = tags.email || tags["contact:email"] || "";
+          const osmUrl = `https://www.openstreetmap.org/${el.type || "node"}/${el.id}`;
+          const addrParts = [
+            tags["addr:housenumber"],
+            tags["addr:street"],
+            tags["addr:suburb"],
+            tags["addr:city"] || targetCity,
+            tags["addr:state"],
+          ].filter(Boolean);
+
+          const detectedIndustry =
+            tags.amenity || tags.shop || tags.healthcare || tags.office || tags.craft || null;
+
+          const sources = [
+            { url: osmUrl, field: "companyName", accessedAt: retrievedAt, provider: "OpenStreetMap Overpass" },
+          ];
+          if (website) sources.push({ url: osmUrl, field: "website", accessedAt: retrievedAt, provider: "OpenStreetMap Overpass" });
+          if (phone) sources.push({ url: osmUrl, field: "phone", accessedAt: retrievedAt, provider: "OpenStreetMap Overpass" });
+          if (email) sources.push({ url: osmUrl, field: "email", accessedAt: retrievedAt, provider: "OpenStreetMap Overpass" });
+
+          return {
+            title: name,
+            companyName: name,
+            url: website || osmUrl,
+            industry: detectedIndustry,
+            description: tags.description || null,
+            location: addrParts.join(", ") || targetCity,
+            city: tags["addr:city"] || targetCity,
+            state: tags["addr:state"] || null,
+            country: tags["addr:country"] || "India",
+            website: website || "",
+            phone: phone || "",
+            email: email || "",
+            decisionMaker: null,
+            founders: [],
+            sources,
+            sourceUrl: osmUrl,
+            source: "OpenStreetMap Overpass",
+            confidenceScore: website || phone || email ? 85 : 74,
+            matchReasons: ["Verified local business POI from OpenStreetMap Overpass"],
+            retrievedAt,
+          };
+        });
+    } catch {
+      return [];
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async searchBusinesses(filters, context = {}) {
@@ -10,14 +119,21 @@ export class OsmSearchProvider extends BaseSearchProvider {
     const start = Date.now();
 
     try {
-      const targetTerm = industry && industry !== "All" && industry !== "Commercial Enterprise"
-        ? industry
-        : prompt || "";
+      const targetTerm =
+        industry && industry !== "All" && industry !== "Commercial Enterprise"
+          ? industry
+          : prompt || "";
 
       let rawTerms = targetTerm
         .replace(/[&/\\#,+()$~%.'":*?<>{}]/g, " ")
-        .replace(/\b(find|search|companies|company|businesses|business|providing|services|service|in|near|and|or|for|the|with)\b/gi, " ")
-        .replace(/\b(founder names?|founders?|mobile numbers?|phones?|business emails?|emails?|websites?|contact details?|contacts?)\b/gi, " ")
+        .replace(
+          /\b(find|search|companies|company|businesses|business|providing|services|service|in|near|and|or|for|the|with)\b/gi,
+          " "
+        )
+        .replace(
+          /\b(founder names?|founders?|mobile numbers?|phones?|business emails?|emails?|websites?|contact details?|contacts?)\b/gi,
+          " "
+        )
         .replace(/\s+/g, " ")
         .trim();
 
@@ -46,118 +162,86 @@ export class OsmSearchProvider extends BaseSearchProvider {
       const timeout = setTimeout(() => controller.abort(), 7000);
 
       try {
-        const response = await fetch(url, {
-          signal: controller.signal,
-          headers: {
-            "User-Agent": "SalesBusterCRM-Intelligence/2.0 (contact: support@salesbuster.ai)",
-          },
-        });
+        const [nominatimResp, overpassResults] = await Promise.all([
+          fetch(url, {
+            signal: controller.signal,
+            headers: {
+              "User-Agent": "SalesBusterCRM-Intelligence/2.0 (contact: support@salesbuster.ai)",
+            },
+          }).catch(() => null),
+          this.searchOverpass(filters, targetCity, rawTerms),
+        ]);
 
         const durationMs = Date.now() - start;
+        let nominatimResults = [];
 
-        if (!response.ok) {
-          const errText = await response.text().catch(() => "");
-          console.warn(`[OsmSearchProvider] API error (${response.status}):`, errText);
-          return {
-            provider: this.name,
-            status: "error",
-            results: [],
-            durationMs,
-            error: `OpenStreetMap Nominatim returned status ${response.status}`,
-          };
+        if (nominatimResp && nominatimResp.ok) {
+          const data = await nominatimResp.json().catch(() => []);
+          if (Array.isArray(data)) {
+            const retrievedAt = new Date().toISOString();
+            nominatimResults = data.map((item, idx) => {
+              const name =
+                item.namedetails?.name ||
+                item.name ||
+                (item.display_name ? item.display_name.split(",")[0]?.trim() : `Location ${idx + 1}`);
+
+              const addr = item.address || {};
+              const cityName =
+                addr.city || addr.town || addr.municipality || addr.state_district || targetCity || "";
+              const state = addr.state || "";
+              const tags = item.extratags || {};
+              const website = tags.website || tags["contact:website"] || "";
+              const phone = tags.phone || tags["contact:phone"] || "";
+              const email = tags.email || tags["contact:email"] || "";
+
+              const detectedIndustry =
+                tags.amenity || tags.shop || tags.healthcare || tags.office || tags.craft || null;
+
+              const osmType = item.osm_type || "node";
+              const osmId = item.osm_id || "";
+              const osmUrl = osmId ? `https://www.openstreetmap.org/${osmType}/${osmId}` : url;
+
+              const locationParts = [addr.suburb || addr.neighbourhood, cityName, state].filter(Boolean);
+              const locationRaw = locationParts.length > 0 ? locationParts.join(", ") : item.display_name || "";
+
+              const sources = [
+                { url: osmUrl, field: "companyName", accessedAt: retrievedAt, provider: "OpenStreetMap" },
+              ];
+              if (website) sources.push({ url: osmUrl, field: "website", accessedAt: retrievedAt, provider: "OpenStreetMap" });
+              if (phone) sources.push({ url: osmUrl, field: "phone", accessedAt: retrievedAt, provider: "OpenStreetMap" });
+              if (email) sources.push({ url: osmUrl, field: "email", accessedAt: retrievedAt, provider: "OpenStreetMap" });
+
+              return {
+                title: name,
+                companyName: name,
+                url: website || osmUrl,
+                industry: detectedIndustry,
+                description: tags.description || null,
+                location: locationRaw || null,
+                city: cityName || null,
+                state: state || null,
+                country: addr.country || "India",
+                website: website || "",
+                phone: phone || "",
+                email: email || "",
+                decisionMaker: null,
+                founders: [],
+                sources,
+                sourceUrl: osmUrl,
+                source: "OpenStreetMap Public Directory",
+                confidenceScore: website || phone || email ? 80 : 70,
+                matchReasons: ["Public geographic listing verified from OpenStreetMap"],
+                retrievedAt,
+              };
+            });
+          }
         }
 
-        const data = await response.json();
-        if (!Array.isArray(data)) {
-          return {
-            provider: this.name,
-            status: "success",
-            results: [],
-            durationMs,
-            error: null,
-          };
-        }
-
-        const retrievedAt = new Date().toISOString();
-
-        const results = data.map((item, idx) => {
-          const name =
-            item.namedetails?.name ||
-            item.name ||
-            (item.display_name ? item.display_name.split(",")[0]?.trim() : `Location ${idx + 1}`);
-
-          const addr = item.address || {};
-          const cityName = addr.city || addr.town || addr.municipality || addr.state_district || targetCity || "";
-          const state = addr.state || "";
-          const tags = item.extratags || {};
-          const website = tags.website || tags["contact:website"] || "";
-          const phone = tags.phone || tags["contact:phone"] || "";
-          const email = tags.email || tags["contact:email"] || "";
-
-          // Only use specific tags OSM actually supplies. Do NOT fabricate generic fallbacks.
-          const detectedIndustry =
-            tags.amenity ||
-            tags.shop ||
-            tags.healthcare ||
-            tags.office ||
-            tags.craft ||
-            null;
-
-          const osmType = item.osm_type || "node";
-          const osmId = item.osm_id || "";
-          const osmUrl = osmId ? `https://www.openstreetmap.org/${osmType}/${osmId}` : url;
-
-          const locationParts = [addr.suburb || addr.neighbourhood, cityName, state].filter(Boolean);
-          const locationRaw = locationParts.length > 0 ? locationParts.join(", ") : item.display_name || "";
-
-          const sources = [
-            {
-              url: osmUrl,
-              field: "companyName",
-              accessedAt: retrievedAt,
-              provider: "OpenStreetMap",
-            },
-          ];
-
-          if (website) {
-            sources.push({ url: osmUrl, field: "website", accessedAt: retrievedAt, provider: "OpenStreetMap" });
-          }
-          if (phone) {
-            sources.push({ url: osmUrl, field: "phone", accessedAt: retrievedAt, provider: "OpenStreetMap" });
-          }
-          if (email) {
-            sources.push({ url: osmUrl, field: "email", accessedAt: retrievedAt, provider: "OpenStreetMap" });
-          }
-
-          return {
-            title: name,
-            companyName: name,
-            url: website || osmUrl,
-            industry: detectedIndustry,
-            description: tags.description || null,
-            location: locationRaw || null,
-            city: cityName || null,
-            state: state || null,
-            country: addr.country || "India",
-            website: website || "",
-            phone: phone || "",
-            email: email || "",
-            // Treat OSM as evidence ONLY for fields it supplies: do NOT infer founders/roles
-            decisionMaker: null,
-            founders: [],
-            sources,
-            sourceUrl: osmUrl,
-            source: "OpenStreetMap Public Directory",
-            confidenceScore: website || phone || email ? 80 : 70,
-            matchReasons: ["Public geographic listing verified from OpenStreetMap"],
-            retrievedAt,
-          };
-        });
-
+        const combined = [...overpassResults, ...nominatimResults];
         return {
           provider: this.name,
           status: "success",
-          results,
+          results: combined,
           durationMs,
           error: null,
         };

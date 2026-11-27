@@ -264,41 +264,89 @@ export class McaSearchProvider extends BaseSearchProvider {
     const requestedLimit = filters.limit
       ? Math.min(Math.max(parseInt(filters.limit, 10) || 10, 1), 50)
       : 10;
-    const fetchLimit = Math.min(Math.max(requestedLimit * 5, 50), 100);
+    const keywords = extractKeywords(filters);
+    const targetCity =
+      filters.city && filters.city !== "All" ? String(filters.city).toLowerCase().trim() : "";
 
-    const url = new URL(`https://api.data.gov.in/resource/${DATA_GOV_RESOURCE_ID}`);
-    url.searchParams.set("api-key", apiKey);
-    url.searchParams.set("format", "json");
-    url.searchParams.set("limit", String(fetchLimit));
-    url.searchParams.set("filters[CompanyStateCode]", stateCode);
-    url.searchParams.set("filters[CompanyStatus]", "Active");
+    const pageSize = 100;
+    const maxPages = 1;
+    const matchedRecords = [];
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), 12000);
 
     try {
-      const response = await fetch(url.toString(), {
-        signal: controller.signal,
-        headers: {
-          Accept: "application/json",
-        },
-      });
-      const durationMs = Date.now() - start;
+      for (let page = 0; page < maxPages; page++) {
+        const offset = page * pageSize;
+        const url = new URL(`https://api.data.gov.in/resource/${DATA_GOV_RESOURCE_ID}`);
+        url.searchParams.set("api-key", apiKey);
+        url.searchParams.set("format", "json");
+        url.searchParams.set("limit", String(pageSize));
+        url.searchParams.set("offset", String(offset));
+        url.searchParams.set("filters[CompanyStateCode]", stateCode);
+        url.searchParams.set("filters[CompanyStatus]", "Active");
 
-      if (!response.ok) {
-        const errText = await response.text().catch(() => "");
-        return {
-          provider: this.name,
-          status: "error",
-          results: [],
-          durationMs,
-          error: `data.gov.in MCA API returned status ${response.status}${errText ? `: ${errText.slice(0, 120)}` : ""}`,
-        };
+        const response = await fetch(url.toString(), {
+          signal: controller.signal,
+          headers: {
+            Accept: "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          if (page === 0) {
+            const errText = await response.text().catch(() => "");
+            return {
+              provider: this.name,
+              status: "error",
+              results: [],
+              durationMs: Date.now() - start,
+              error: `data.gov.in MCA API returned status ${response.status}${errText ? `: ${errText.slice(0, 120)}` : ""}`,
+            };
+          }
+          break;
+        }
+
+        const data = await response.json();
+        const records = Array.isArray(data?.records) ? data.records : [];
+        if (records.length === 0) break;
+
+        for (const rec of records) {
+          if (!rec?.CompanyName) continue;
+          const nameUpper = String(rec.CompanyName || "");
+          const classification = String(rec.CompanyIndustrialClassification || "");
+          const address = String(rec.Registered_Office_Address || "");
+          const roc = String(rec.CompanyROCcode || "");
+          const companyText = `${nameUpper} ${classification}`;
+
+          let keywordScore = 0;
+          for (const kw of keywords) {
+            const kwRegex = new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i");
+            if (kwRegex.test(companyText)) {
+              keywordScore += kwRegex.test(nameUpper) ? 5 : 2;
+            }
+          }
+
+          // Strict relevance: if user specified industry/prompt keywords, NEVER include unrelated score=0 companies
+          if (keywords.length > 0 && keywordScore === 0) {
+            continue;
+          }
+
+          let cityBonus = 0;
+          if (targetCity && (address.toLowerCase().includes(targetCity) || roc.toLowerCase().includes(targetCity))) {
+            cityBonus = 3;
+          }
+
+          matchedRecords.push({ rec, score: keywordScore + cityBonus });
+        }
+
+        if (matchedRecords.length >= requestedLimit || records.length < pageSize) {
+          break;
+        }
       }
 
-      const data = await response.json();
-      const records = Array.isArray(data?.records) ? data.records : [];
-      if (records.length === 0) {
+      const durationMs = Date.now() - start;
+      if (matchedRecords.length === 0) {
         return {
           provider: this.name,
           status: "success",
@@ -308,33 +356,8 @@ export class McaSearchProvider extends BaseSearchProvider {
         };
       }
 
-      const keywords = extractKeywords(filters);
-      const targetCity =
-        filters.city && filters.city !== "All" ? String(filters.city).toLowerCase().trim() : "";
       const retrievedAt = new Date().toISOString();
-
-      const scored = records
-        .filter((rec) => rec?.CompanyName)
-        .map((rec) => {
-          const nameUpper = String(rec.CompanyName || "");
-          const classification = String(rec.CompanyIndustrialClassification || "");
-          const address = String(rec.Registered_Office_Address || "");
-          const roc = String(rec.CompanyROCcode || "");
-          const haystack = `${nameUpper} ${classification} ${address}`.toLowerCase();
-
-          let score = 0;
-          if (targetCity && (address.toLowerCase().includes(targetCity) || roc.toLowerCase().includes(targetCity))) {
-            score += 5;
-          }
-          for (const kw of keywords) {
-            if (haystack.includes(kw)) {
-              score += nameUpper.toLowerCase().includes(kw) ? 4 : 2;
-            }
-          }
-
-          return { rec, score };
-        })
-        .sort((a, b) => b.score - a.score);
+      const scored = matchedRecords.sort((a, b) => b.score - a.score);
 
       const selected = scored.slice(0, requestedLimit).map(({ rec, score }) => {
         const companyName = toTitleCase(rec.CompanyName);

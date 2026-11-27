@@ -488,6 +488,10 @@ export const getProviderStatus = asyncHandler(async (req, res) => {
       },
       openStreetMap: {
         available: true,
+        overpass: true,
+      },
+      duckDuckGo: {
+        available: true,
       },
       mcaRegistry: {
         configured: true,
