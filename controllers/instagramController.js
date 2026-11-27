@@ -968,9 +968,15 @@ export const getInstagramMessages = async (req, res) => {
       _id: m._id,
       id: m._id.toString(),
       messageId: m.mid,
-      sender: m.direction === "outgoing" ? "You" : m.igsid,
-      senderName: m.direction === "outgoing" ? "Agent" : (contactDoc?.name || "Instagram User"),
+      sender: m.direction === "outgoing" ? (m.senderType === "ai_bot" ? "AI" : "You") : m.igsid,
+      senderName:
+        m.direction === "outgoing"
+          ? (m.senderType === "ai_bot" ? "SalesBuster AI" : "Agent")
+          : (contactDoc?.name || "Instagram User"),
       direction: m.direction,
+      senderType: m.senderType,
+      aiGenerated: m.senderType === "ai_bot",
+      isAutoDM: m.senderType === "auto_dm",
       messageType: m.mediaType !== "none" ? m.mediaType : "text",
       text: m.text,
       mediaUrl: m.mediaUrl,

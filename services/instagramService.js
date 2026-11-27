@@ -34,9 +34,11 @@ const emitInstagramRealtime = (io, organizationId, contact, message, leadId = nu
         message?.sender ||
         (message?.direction === "incoming"
           ? "Client"
-          : message?.senderType === "ai"
+          : message?.senderType === "ai_bot" || message?.senderType === "ai"
           ? "AI"
           : "Agent"),
+      aiGenerated: Boolean(message?.aiGenerated || message?.senderType === "ai_bot" || message?.senderType === "ai"),
+      isAutoDM: Boolean(message?.isAutoDM || message?.senderType === "auto_dm"),
     };
     activeIo.to(String(resolvedLeadId)).emit("new_message", normalized);
   }
@@ -1090,7 +1092,7 @@ export const handleIncomingInstagramMessage = async ({
         igsid,
         mid: confirmMid,
         direction: "outgoing",
-        senderType: "ai",
+        senderType: "ai_bot",
         text: confirmText,
         triggerSource: "direct_message",
         timestamp: new Date(),
@@ -1149,7 +1151,7 @@ export const handleIncomingInstagramMessage = async ({
         igsid,
         mid: invalidMid,
         direction: "outgoing",
-        senderType: "ai",
+        senderType: "ai_bot",
         text: invalidPhoneMsg,
         triggerSource: "direct_message",
         timestamp: new Date(),
@@ -1355,7 +1357,7 @@ export const handleIncomingInstagramMessage = async ({
             igsid,
             mid: replyMid,
             direction: "outgoing",
-            senderType: "ai",
+            senderType: "ai_bot",
             text: replyText,
             triggerSource: "direct_message",
             timestamp: new Date(),
