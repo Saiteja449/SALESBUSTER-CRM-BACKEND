@@ -16,6 +16,7 @@ import {
   fetchCashfreePgOrder,
   fetchCashfreePgPayments,
   verifyCashfreeWebhookSignature,
+  getCashfreeBaseUrl,
 } from "../services/cashfreeService.js";
 
 /**
@@ -887,14 +888,17 @@ export const createOrderHandler = async (req, res) => {
       returnUrl || `${appBaseUrl}/payment/status?order_id={order_id}`;
     let finalNotifyUrl = `${backendBaseUrl}/api/payment/cashfree/webhook`;
 
-    // Cashfree Production strictly enforces https:// on returnUrl and notifyUrl
-    if (finalReturnUrl.startsWith("http://")) {
+    // Cashfree Production strictly enforces https:// on returnUrl and notifyUrl.
+    // For sandbox checkout, keep localhost return URLs so local payment testing
+    // returns to the local CRM instead of the production website.
+    const isCashfreeSandbox = getCashfreeBaseUrl().includes("sandbox.cashfree.com");
+    if (!isCashfreeSandbox && finalReturnUrl.startsWith("http://")) {
       finalReturnUrl = finalReturnUrl.replace(
         /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
         "https://salesbuster.ai"
       );
     }
-    if (finalNotifyUrl.startsWith("http://")) {
+    if (!isCashfreeSandbox && finalNotifyUrl.startsWith("http://")) {
       finalNotifyUrl = finalNotifyUrl.replace(
         /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
         "https://betaapi.salesbuster.ai"
