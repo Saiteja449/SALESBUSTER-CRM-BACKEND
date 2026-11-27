@@ -732,15 +732,18 @@ export const getInstagramConversations = async (req, res) => {
         .lean();
 
       // Look up existing unified Conversation record if present
+      const leadObjId = c.leadId?._id || c.leadId;
       let convo = null;
       if (tenantModels.Conversation) {
         convo = await tenantModels.Conversation.findOne({
           $or: [
             { instagramContactId: { $in: contactObjectIds } },
             { instagramIgsid: { $in: group.allIgsids } },
-            ...(c.leadId ? [{ leadId: c.leadId }] : []),
+            ...(leadObjId ? [{ leadId: leadObjId }] : []),
           ],
-        }).lean();
+        })
+          .sort({ lastMessageTime: -1 })
+          .lean();
       }
 
       const isComment =
@@ -750,13 +753,36 @@ export const getInstagramConversations = async (req, res) => {
 
       const channel = isComment ? "instagram_comment" : (convo?.channel || "instagram");
 
-      // Compute unread count: prioritize Conversation unreadCount, fallback to contact lastReadAt
+      // Compute unread count: count incoming messages newer than lastReadAt so AI auto-replies don't mask unread incoming messages
       let unreadCount = 0;
-      if (typeof convo?.unreadCount === "number") {
-        unreadCount = convo.unreadCount;
-      } else if (lastMsg && lastMsg.direction === "incoming") {
-        unreadCount = (!c.lastReadAt || new Date(c.lastReadAt) < new Date(lastMsg.timestamp)) ? 1 : 0;
+      const incomingUnreadFilter = {
+        organizationId,
+        direction: "incoming",
+        $or: [
+          { contactId: { $in: contactObjectIds } },
+          { igsid: { $in: group.allIgsids } },
+        ],
+        ...(c.lastReadAt ? { timestamp: { $gt: new Date(c.lastReadAt) } } : {}),
+      };
+      const unreadIncomingCount = await tenantModels.InstagramMessage.countDocuments(incomingUnreadFilter).catch(() => 0);
+
+      if (typeof convo?.unreadCount === "number" && convo.unreadCount > 0) {
+        unreadCount = Math.max(convo.unreadCount, unreadIncomingCount);
+      } else {
+        unreadCount = unreadIncomingCount;
       }
+
+      // Always display whichever message is newer between Conversation cache and InstagramMessage
+      const convoTime = convo?.lastMessageTime ? new Date(convo.lastMessageTime).getTime() : 0;
+      const msgTime = lastMsg?.timestamp ? new Date(lastMsg.timestamp).getTime() : 0;
+      const latestMessageText =
+        msgTime >= convoTime
+          ? (lastMsg?.text || convo?.lastMessage || "Conversation started")
+          : (convo?.lastMessage || lastMsg?.text || "Conversation started");
+      const latestMessageTime =
+        msgTime >= convoTime
+          ? (lastMsg?.timestamp || convo?.lastMessageTime || c.lastInteractedAt)
+          : (convo?.lastMessageTime || lastMsg?.timestamp || c.lastInteractedAt);
 
       let leadDoc = null;
       if (c.leadId && tenantModels.Lead) {
@@ -786,8 +812,8 @@ export const getInstagramConversations = async (req, res) => {
         leadId: leadDoc || c.leadId,
         isLead: Boolean(leadDoc || c.leadId),
         unreadCount,
-        lastMessage: convo?.lastMessage || lastMsg?.text || "Conversation started",
-        lastMessageTime: convo?.lastMessageTime || lastMsg?.timestamp || c.lastInteractedAt,
+        lastMessage: latestMessageText,
+        lastMessageTime: latestMessageTime,
       });
     }
 
