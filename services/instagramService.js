@@ -1026,38 +1026,123 @@ export const handleIncomingInstagramMessage = async ({
       io,
     });
 
-    if (detectedPhone && dmLeadResult && (dmLeadResult.isNewLead || !hadPhoneBefore)) {
+    const isPurePhoneMsg = /^[\s+\-().\d]{7,20}$/.test((text || "").trim());
+
+    if (detectedPhone && dmLeadResult && (dmLeadResult.isNewLead || !hadPhoneBefore || isPurePhoneMsg)) {
       const confirmText =
-        "Thank you! We've received your mobile number and updated your details. Our team will get in touch shortly.";
-      await sendInstagramMessage({
+        "Thank you! We've received your mobile number and updated your details. Our team will get in touch shortly. How can we help you today?";
+      const dmResult = await sendInstagramMessage({
         pageAccessToken: account.pageAccessTokenEncrypted,
         pageId: account.facebookPageId,
         igsid,
         text: confirmText,
       });
-      // If the message was primarily just a phone number, no need for another AI reply
-      if (/^[\s+\-().\d]{7,20}$/.test(text.trim())) {
+      const confirmMid = dmResult?.message_id || `mid_phone_${Date.now()}`;
+      const confirmMsg = await InstagramMessage.create({
+        organizationId,
+        accountId: account._id,
+        contactId: contact._id,
+        igsid,
+        mid: confirmMid,
+        direction: "outgoing",
+        senderType: "ai",
+        text: confirmText,
+        triggerSource: "direct_message",
+        timestamp: new Date(),
+      });
+      if (Message && dmLeadResult?.lead?._id) {
+        await Message.create({
+          messageId: confirmMid,
+          leadId: dmLeadResult.lead._id,
+          contactPhone: dmLeadResult.lead.phone || detectedPhone,
+          sender: "AI",
+          senderName: "SalesBuster AI",
+          direction: "outgoing",
+          messageType: "text",
+          text: confirmText,
+          timestamp: new Date(),
+          rawPayload: { igsid, channel: "instagram" },
+        }).catch(() => {});
+      }
+      if (Conversation) {
+        await Conversation.findOneAndUpdate(
+          {
+            $or: [
+              { instagramContactId: contact._id },
+              { instagramIgsid: igsid },
+              ...(dmLeadResult?.lead?._id ? [{ leadId: dmLeadResult.lead._id }] : []),
+            ],
+          },
+          {
+            $set: {
+              lastMessage: confirmText,
+              lastMessageTime: new Date(),
+            },
+          }
+        ).catch(() => {});
+      }
+      if (io) {
+        io.to(`org_${organizationId}`).emit("instagram_new_message", {
+          contact,
+          message: confirmMsg,
+        });
+      }
+      // If the message was primarily just a phone number, do not trigger keyword auto-DM or a duplicate AI reply
+      if (isPurePhoneMsg) {
         ruleMatched = true;
       }
-    } else if (!detectedPhone && !dmLeadResult?.lead?.phone && /\d{5,}/.test(text)) {
+    } else if (!detectedPhone && !dmLeadResult?.lead?.phone && /\d{5,}/.test(text || "")) {
       // User attempted to share digits that aren't a valid 10-digit mobile number
       const invalidPhoneMsg =
         "Please share a valid 10-digit mobile number starting with 6-9 so our team can reach you.";
-      await sendInstagramMessage({
+      const dmResult = await sendInstagramMessage({
         pageAccessToken: account.pageAccessTokenEncrypted,
         pageId: account.facebookPageId,
         igsid,
         text: invalidPhoneMsg,
       });
+      const invalidMid = dmResult?.message_id || `mid_inv_${Date.now()}`;
+      const invalidMsg = await InstagramMessage.create({
+        organizationId,
+        accountId: account._id,
+        contactId: contact._id,
+        igsid,
+        mid: invalidMid,
+        direction: "outgoing",
+        senderType: "ai",
+        text: invalidPhoneMsg,
+        triggerSource: "direct_message",
+        timestamp: new Date(),
+      }).catch(() => null);
+      if (Message && dmLeadResult?.lead?._id) {
+        await Message.create({
+          messageId: invalidMid,
+          leadId: dmLeadResult.lead._id,
+          contactPhone: dmLeadResult.lead.phone || "",
+          sender: "AI",
+          senderName: "SalesBuster AI",
+          direction: "outgoing",
+          messageType: "text",
+          text: invalidPhoneMsg,
+          timestamp: new Date(),
+          rawPayload: { igsid, channel: "instagram" },
+        }).catch(() => {});
+      }
+      if (io && invalidMsg) {
+        io.to(`org_${organizationId}`).emit("instagram_new_message", {
+          contact,
+          message: invalidMsg,
+        });
+      }
       ruleMatched = true;
     }
   } catch (leadErr) {
     console.error("[InstagramLead] Failed to process DM lead:", leadErr.message);
   }
 
-  // 4. Keyword Auto-DM trigger check
-  if (!ruleMatched && (!detectedPhone || !dmLeadResult?.isNewLead)) {
-    const normalizedText = text.toLowerCase().trim();
+  // 4. Keyword Auto-DM trigger check (only when text is non-empty and not a phone-number message)
+  const normalizedText = (text || "").toLowerCase().trim();
+  if (!ruleMatched && normalizedText && !detectedPhone) {
     const rules = await InstagramAutomationRule.find({
       organizationId,
       triggerType: "dm_keyword",
@@ -1072,13 +1157,13 @@ export const handleIncomingInstagramMessage = async ({
         break;
       }
 
-      // 2. Keyword match (case-insensitive & supports exact or contains)
+      // 2. Keyword match (case-insensitive & supports exact or contains; never match empty strings)
       const matches = (r.keywords || []).some((kw) => {
         const cleanKw = kw.toLowerCase().trim();
         if (!cleanKw) return false;
         return r.matchType === "exact"
           ? normalizedText === cleanKw
-          : normalizedText.includes(cleanKw) || cleanKw.includes(normalizedText);
+          : normalizedText.includes(cleanKw);
       });
 
       if (matches) {
@@ -1189,7 +1274,9 @@ export const handleIncomingInstagramMessage = async ({
       const leadDoc = dmLeadResult.lead;
       const isAiPaused =
         leadDoc.aiPausedUntil && new Date(leadDoc.aiPausedUntil) > new Date();
-      const aiEnabled = org?.aiSettings?.aiAutoReplyEnabled !== false;
+      const aiEnabled =
+        leadDoc.aiEnabled !== false &&
+        org?.aiSettings?.aiAutoReplyEnabled !== false;
 
       if (aiEnabled && !isAiPaused) {
         let replyText = "";
