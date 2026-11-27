@@ -3,6 +3,44 @@ import { decryptApiKey } from "../utils/encryption.js";
 import { getMasterModels, getTenantModels } from "./tenantManager.js";
 import { toInternationalPhone } from "../utils/phoneUtils.js";
 import { generateAIResponse } from "../ai/aiService.js";
+import { getIO } from "../socket/socket.js";
+
+const emitInstagramRealtime = (io, organizationId, contact, message, leadId = null) => {
+  const activeIo = io || getIO();
+  if (!activeIo || !organizationId) return;
+
+  const orgRoom = `org_${organizationId}`;
+  activeIo.to(orgRoom).emit("instagram_new_message", {
+    contact,
+    message,
+  });
+  activeIo.to(orgRoom).emit("conversation_updated", {
+    channel: "instagram",
+    contactId: contact?._id || message?.contactId,
+    igsid: contact?.igsid || message?.igsid,
+    leadId: leadId || contact?.leadId || null,
+    lastMessage: message?.text,
+    lastMessageTime: message?.timestamp || new Date(),
+  });
+
+  const resolvedLeadId = leadId || contact?.leadId;
+  if (resolvedLeadId) {
+    const normalized = {
+      ...(typeof message?.toObject === "function" ? message.toObject() : message),
+      messageId: message?.messageId || message?.mid || message?._id,
+      leadId: resolvedLeadId,
+      conversationId: contact?._id,
+      sender:
+        message?.sender ||
+        (message?.direction === "incoming"
+          ? "Client"
+          : message?.senderType === "ai"
+          ? "AI"
+          : "Agent"),
+    };
+    activeIo.to(String(resolvedLeadId)).emit("new_message", normalized);
+  }
+};
 
 const getGraphApiVersion = () => process.env.META_GRAPH_API_VERSION || "v21.0";
 const getGraphApiBaseUrl = () => `https://graph.facebook.com/${getGraphApiVersion()}`;
@@ -331,9 +369,11 @@ export const createOrLinkInstagramLead = async ({
       }
     }
 
-    // 3. Link contact to lead and save detected phone
+    // 3. Link contact to lead and save detected phone (never wipe existing phone with empty string)
     if (contact) {
-      contact.phone = normalizedPhone;
+      if (normalizedPhone) {
+        contact.phone = normalizedPhone;
+      }
       contact.leadId = lead._id;
       await contact.save();
     }
@@ -1009,11 +1049,8 @@ export const handleIncomingInstagramMessage = async ({
   }
 
   // Emit incoming message immediately so the frontend inbox & unread count update without waiting for AI reply
-  if (io && incomingMsg) {
-    io.to(`org_${organizationId}`).emit("instagram_new_message", {
-      contact,
-      message: incomingMsg,
-    });
+  if (incomingMsg) {
+    emitInstagramRealtime(io, organizationId, contact, incomingMsg, contact?.leadId);
   }
 
   // 3. Always create/link Instagram Lead (with detected phone if shared, or by IGSID)
@@ -1089,12 +1126,7 @@ export const handleIncomingInstagramMessage = async ({
           }
         ).catch(() => {});
       }
-      if (io) {
-        io.to(`org_${organizationId}`).emit("instagram_new_message", {
-          contact,
-          message: confirmMsg,
-        });
-      }
+      emitInstagramRealtime(io, organizationId, contact, confirmMsg, dmLeadResult?.lead?._id);
       // If the message was primarily just a phone number, do not trigger keyword auto-DM or a duplicate AI reply
       if (isPurePhoneMsg) {
         ruleMatched = true;
@@ -1136,11 +1168,8 @@ export const handleIncomingInstagramMessage = async ({
           rawPayload: { igsid, channel: "instagram" },
         }).catch(() => {});
       }
-      if (io && invalidMsg) {
-        io.to(`org_${organizationId}`).emit("instagram_new_message", {
-          contact,
-          message: invalidMsg,
-        });
+      if (invalidMsg) {
+        emitInstagramRealtime(io, organizationId, contact, invalidMsg, dmLeadResult?.lead?._id);
       }
       ruleMatched = true;
     }
@@ -1256,16 +1285,7 @@ export const handleIncomingInstagramMessage = async ({
           } catch (_) {}
         }
 
-        if (io) {
-          io.to(`org_${organizationId}`).emit("instagram_new_message", {
-            contact,
-            message: autoReplyMsg,
-          });
-          io.to(`org_${organizationId}`).emit("conversation_updated", {
-            channel: "instagram",
-            contactId: contact._id,
-          });
-        }
+        emitInstagramRealtime(io, organizationId, contact, autoReplyMsg, dmLeadResult?.lead?._id || contact?.leadId);
       } catch (err) {
         console.warn("[InstagramService] DM Keyword response failed:", err.message);
       }
@@ -1284,9 +1304,14 @@ export const handleIncomingInstagramMessage = async ({
         leadDoc.aiPausedUntil && new Date(leadDoc.aiPausedUntil) > new Date();
       const aiEnabled =
         leadDoc.aiEnabled !== false &&
+        !leadDoc.disableAI &&
         org?.aiSettings?.aiAutoReplyEnabled !== false;
 
-      if (aiEnabled && !isAiPaused) {
+      if (!aiEnabled || isAiPaused) {
+        console.log(
+          `[InstagramService] Skipping AI reply for lead ${leadDoc._id} (aiEnabled=${aiEnabled}, isAiPaused=${Boolean(isAiPaused)})`
+        );
+      } else {
         let replyText = "";
         try {
           const aiReply = await generateAIResponse(
@@ -1369,12 +1394,7 @@ export const handleIncomingInstagramMessage = async ({
             ).catch(() => {});
           }
 
-          if (io) {
-            io.to(`org_${organizationId}`).emit("instagram_new_message", {
-              contact,
-              message: aiMsg,
-            });
-          }
+          emitInstagramRealtime(io, organizationId, contact, aiMsg, leadDoc._id);
         }
       }
     } catch (aiErr) {

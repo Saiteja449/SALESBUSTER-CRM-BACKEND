@@ -1242,6 +1242,18 @@ export const sendInstagramAgentMessage = async (req, res) => {
         contact,
         message: igMsg,
       });
+      io.to(`org_${organizationId}`).emit("conversation_updated", {
+        channel: "instagram",
+        contactId: contact?._id,
+        igsid: targetIgsid,
+        leadId: leadId || contact?.leadId || null,
+        lastMessage: text,
+        lastMessageTime: igMsg?.timestamp || new Date(),
+      });
+      const resolvedLeadId = leadId || contact?.leadId;
+      if (resolvedLeadId) {
+        io.to(String(resolvedLeadId)).emit("new_message", unifiedMsg || igMsg);
+      }
     }
 
     return res.status(200).json({ success: true, message: unifiedMsg || igMsg });
