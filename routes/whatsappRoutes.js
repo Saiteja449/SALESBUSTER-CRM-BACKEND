@@ -25,6 +25,7 @@ import {
   onboardCoexistenceAccount,
   disconnectCoexistenceAccount,
   getCoexistenceStatus,
+  triggerCoexistenceSync,
 } from "../controllers/whatsappCoexistenceController.js";
 import { extractLiveVoiceDetails } from "../controllers/managerLiveVoiceController.js";
 import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
@@ -203,6 +204,7 @@ router.post("/my-ai-toggle", toggleMyAIAutoReply);
 router.post("/coexistence/onboard", onboardCoexistenceAccount);
 router.post("/coexistence/disconnect", disconnectCoexistenceAccount);
 router.get("/coexistence/status", getCoexistenceStatus);
+router.post("/coexistence/sync", triggerCoexistenceSync);
 
 // WhatsApp Line Status & Logout (Official Meta Cloud API)
 router.get("/status", getStatus);

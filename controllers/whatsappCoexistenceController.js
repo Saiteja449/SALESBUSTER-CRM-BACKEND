@@ -1,7 +1,7 @@
 import fs from "fs";
 import WAAccount from "../models/WhatsAppAccount.js";
 import { encryptApiKey, decryptApiKey } from "../utils/encryption.js";
-import { enqueueSyncJob } from "../services/whatsappSyncService.js";
+import { enqueueSyncJob, processInitialSync } from "../services/whatsappSyncService.js";
 import { getMasterModels, getTenantModels } from "../services/tenantManager.js";
 
 const getGraphApiVersion = () => process.env.META_GRAPH_API_VERSION || "v26.0";
@@ -603,6 +603,44 @@ export const getCoexistenceStatus = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to retrieve WhatsApp coexistence status.",
+    });
+  }
+};
+
+/**
+ * Manually triggers or retries Coexistence contacts & chat history sync.
+ * POST /api/whatsapp/coexistence/sync
+ */
+export const triggerCoexistenceSync = async (req, res) => {
+  try {
+    const organizationId = req.user?.organizationId || req.organization?._id;
+    const { phoneNumberId } = req.body || {};
+
+    const query = { organizationId, status: { $ne: "disconnected" } };
+    if (phoneNumberId) query.phoneNumberId = phoneNumberId;
+
+    const account = await WAAccount.findOne(query).sort({ updatedAt: -1 });
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: "No connected WhatsApp Coexistence account found.",
+      });
+    }
+
+    const result = await processInitialSync({
+      accountId: account._id.toString(),
+      phoneNumberId: account.phoneNumberId,
+    });
+
+    return res.status(result?.rateLimited ? 429 : 200).json({
+      success: Boolean(result?.success),
+      ...result,
+    });
+  } catch (error) {
+    console.error("[CoexistenceSyncError]", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to trigger coexistence sync.",
     });
   }
 };

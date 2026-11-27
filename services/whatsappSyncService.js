@@ -9,12 +9,12 @@ const getGraphApiBaseUrl = () =>
  * Triggers initial synchronization of Contacts and Chat History with Meta Cloud API Coexistence.
  * Enforces single-trigger idempotency rules (contactsSyncRequested & historySyncRequested).
  */
-export const processInitialSync = async ({ accountId, phoneNumberId, accessToken }) => {
+export const processInitialSync = async ({ accountId, phoneNumberId, accessToken, attempt = 0 }) => {
   try {
     const account = await WAAccount.findById(accountId);
     if (!account) {
       console.warn(`[WhatsAppSync] Account ${accountId} not found.`);
-      return;
+      return { success: false, reason: "Account not found" };
     }
 
     const token = accessToken || decryptApiKey(account.accessTokenEncrypted);
@@ -22,8 +22,12 @@ export const processInitialSync = async ({ accountId, phoneNumberId, accessToken
 
     if (!token || !targetPhoneId) {
       console.warn(`[WhatsAppSync] Missing token or phoneNumberId for account ${accountId}`);
-      return;
+      return { success: false, reason: "Missing token or phoneNumberId" };
     }
+
+    let hitRateLimit = false;
+    const isRateLimitError = (errObj) =>
+      errObj?.code === 4 || /application request limit reached/i.test(errObj?.message || "");
 
     // 1. Sync Contacts (smb_app_state_sync) - only once
     if (!account.contactsSyncRequested || !account.contactsSyncRequestId) {
@@ -49,8 +53,9 @@ export const processInitialSync = async ({ accountId, phoneNumberId, accessToken
           console.log(`[WhatsAppSync] Contacts sync initiated. Request ID: ${account.contactsSyncRequestId}`);
         } else {
           console.warn(`[WhatsAppSync] Contacts sync API warning:`, data.error?.message || data);
-          // If already requested or feature unavailable for this tier, mark flag to avoid spamming
-          if (data.error?.code === 131000 || data.error?.message?.toLowerCase().includes("already")) {
+          if (isRateLimitError(data.error)) {
+            hitRateLimit = true;
+          } else if (data.error?.code === 131000 || data.error?.message?.toLowerCase().includes("already")) {
             account.contactsSyncRequested = true;
             await account.save();
           }
@@ -84,7 +89,9 @@ export const processInitialSync = async ({ accountId, phoneNumberId, accessToken
           console.log(`[WhatsAppSync] Chat history sync initiated. Request ID: ${account.historySyncRequestId}`);
         } else {
           console.warn(`[WhatsAppSync] Chat history sync API warning:`, data.error?.message || data);
-          if (data.error?.code === 131000 || data.error?.message?.toLowerCase().includes("already")) {
+          if (isRateLimitError(data.error)) {
+            hitRateLimit = true;
+          } else if (data.error?.code === 131000 || data.error?.message?.toLowerCase().includes("already")) {
             account.historySyncRequested = true;
             await account.save();
           }
@@ -93,8 +100,32 @@ export const processInitialSync = async ({ accountId, phoneNumberId, accessToken
         console.error(`[WhatsAppSync] Error initiating history sync for ${targetPhoneId}:`, err.message);
       }
     }
+
+    if (hitRateLimit && attempt < 3) {
+      const retryDelaysMs = [2 * 60 * 1000, 5 * 60 * 1000, 15 * 60 * 1000];
+      const delayMs = retryDelaysMs[attempt] || 15 * 60 * 1000;
+      console.warn(
+        `[WhatsAppSync] Meta rate limit (#4) hit for ${targetPhoneId}. Scheduling automatic retry #${attempt + 1} in ${Math.round(delayMs / 60000)}m.`
+      );
+      setTimeout(() => {
+        processInitialSync({
+          accountId,
+          phoneNumberId: targetPhoneId,
+          accessToken: token,
+          attempt: attempt + 1,
+        }).catch(() => {});
+      }, delayMs);
+    }
+
+    return {
+      success: !hitRateLimit,
+      rateLimited: hitRateLimit,
+      contactsSyncRequested: account.contactsSyncRequested,
+      historySyncRequested: account.historySyncRequested,
+    };
   } catch (error) {
     console.error("[WhatsAppSync] processInitialSync unexpected failure:", error);
+    return { success: false, reason: error.message };
   }
 };
 
