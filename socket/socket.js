@@ -173,6 +173,9 @@ export const initSocket = (server) => {
         Boolean(socket.user?.isOrgOwner) ||
         Boolean(socket.user?.isManager);
 
+      if (userOrgId) {
+        socket.join(`org_${userOrgId}`);
+      }
       if (userOrgId && isLeadership) {
         socket.join(`org_${userOrgId}_admins`);
       }
