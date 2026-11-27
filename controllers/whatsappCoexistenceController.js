@@ -265,43 +265,7 @@ export const onboardCoexistenceAccount = async (req, res) => {
     const displayPhone = primaryPhone.display_phone_number || primaryPhone.id;
 
     // -------------------------------------------------------------
-    // STEP 4: Register Phone Number with Cloud API (Standard Onboarding)
-    // -------------------------------------------------------------
-    try {
-      const regPin = process.env.META_TWO_STEP_VERIFICATION_PIN || "123456";
-      const regRes = await fetch(
-        `${getGraphApiBaseUrl()}/${phoneNumberId}/register`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            messaging_product: "whatsapp",
-            pin: regPin,
-          }),
-        }
-      );
-      const regData = await regRes.json();
-      console.log(`[WhatsAppOnboard] Phone registration response for ${phoneNumberId}:`, regData);
-      if (!regRes.ok || regData.error || regData.success === false) {
-        console.warn(`[WhatsAppOnboard] Phone registration notice: ${regData.error?.message || "Meta rejected registration"}`);
-        return res.status(502).json({
-          success: false,
-          message: regData.error?.message || "Meta rejected WhatsApp phone number registration.",
-        });
-      }
-    } catch (regErr) {
-      console.warn(`[WhatsAppOnboard] Phone registration call warning:`, regErr.message);
-      return res.status(502).json({
-        success: false,
-        message: "Could not register the WhatsApp phone number with Meta.",
-      });
-    }
-
-    // -------------------------------------------------------------
-    // STEP 5: Verify Capability Flags
+    // STEP 4: Verify Capability Flags (check SMB/Coexistence first)
     // -------------------------------------------------------------
     let isOnBizApp = false;
     let platformType = "CLOUD_API";
@@ -322,6 +286,59 @@ export const onboardCoexistenceAccount = async (req, res) => {
       }
     } catch (verifyErr) {
       console.warn(`[WhatsAppOnboard] Non-fatal check warning for ${phoneNumberId}:`, verifyErr.message);
+    }
+
+    // -------------------------------------------------------------
+    // STEP 5: Register Phone Number with Cloud API (Cloud API only; SMB/Coexistence numbers are already registered)
+    // -------------------------------------------------------------
+    const isSmbCoexistence =
+      isOnBizApp || String(platformType || "").toUpperCase().includes("SMB");
+
+    if (isSmbCoexistence) {
+      console.log(
+        `[WhatsAppOnboard] Skipping /register for SMB/Coexistence number ${phoneNumberId} (isOnBizApp=${isOnBizApp}, platformType=${platformType}).`
+      );
+    } else {
+      try {
+        const regPin = process.env.META_TWO_STEP_VERIFICATION_PIN || "123456";
+        const regRes = await fetch(
+          `${getGraphApiBaseUrl()}/${phoneNumberId}/register`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              messaging_product: "whatsapp",
+              pin: regPin,
+            }),
+          }
+        );
+        const regData = await regRes.json();
+        console.log(`[WhatsAppOnboard] Phone registration response for ${phoneNumberId}:`, regData);
+        if (!regRes.ok || regData.error || regData.success === false) {
+          const errMsg = regData.error?.message || "Meta rejected registration";
+          if (/not available for smb/i.test(errMsg)) {
+            console.log(
+              `[WhatsAppOnboard] Treating SMB registration notice as non-fatal for ${phoneNumberId}: ${errMsg}`
+            );
+            isOnBizApp = true;
+          } else {
+            console.warn(`[WhatsAppOnboard] Phone registration notice: ${errMsg}`);
+            return res.status(502).json({
+              success: false,
+              message: regData.error?.message || "Meta rejected WhatsApp phone number registration.",
+            });
+          }
+        }
+      } catch (regErr) {
+        console.warn(`[WhatsAppOnboard] Phone registration call warning:`, regErr.message);
+        return res.status(502).json({
+          success: false,
+          message: "Could not register the WhatsApp phone number with Meta.",
+        });
+      }
     }
 
     // -------------------------------------------------------------
