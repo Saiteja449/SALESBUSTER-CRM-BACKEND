@@ -489,6 +489,11 @@ export const getProviderStatus = asyncHandler(async (req, res) => {
       openStreetMap: {
         available: true,
       },
+      mcaRegistry: {
+        configured: true,
+        available: true,
+        source: "api.data.gov.in",
+      },
       rapidApi: {
         configured: rapidApiScraperProvider.isConfigured(),
         host: rapidApiScraperProvider.host,

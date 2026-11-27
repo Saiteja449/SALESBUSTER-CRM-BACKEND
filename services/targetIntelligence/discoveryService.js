@@ -1,11 +1,13 @@
 import TavilySearchProvider from "./providers/tavilyProvider.js";
 import OsmSearchProvider from "./providers/osmProvider.js";
+import McaSearchProvider from "./providers/mcaProvider.js";
 import GeminiSearchProvider from "./providers/geminiProvider.js";
 import rapidApiScraperProvider from "./providers/rapidApiScraperProvider.js";
 import { verifyEmail, normalizeAndVerifyPhone, normalizeDomain } from "./verificationService.js";
 
 const tavilyProvider = new TavilySearchProvider();
 const osmProvider = new OsmSearchProvider();
+const mcaProvider = new McaSearchProvider();
 const geminiProvider = new GeminiSearchProvider();
 
 /**
@@ -117,6 +119,12 @@ export class DiscoveryService {
         durationMs: 0,
         error: null,
       },
+      mcaRegistry: {
+        status: mcaProvider.isConfigured() ? "pending" : "unconfigured",
+        count: 0,
+        durationMs: 0,
+        error: mcaProvider.isConfigured() ? null : "DATA_GOV_IN_API_KEY not configured",
+      },
       rapidApi: {
         status: rapidApiScraperProvider.isConfigured() ? "pending" : "unconfigured",
         count: 0,
@@ -206,6 +214,21 @@ export class DiscoveryService {
         }))
     );
 
+    if (mcaProvider.isConfigured()) {
+      providerTasks.push(
+        mcaProvider
+          .searchBusinesses(filters)
+          .then((res) => ({ providerKey: "mcaRegistry", ...res }))
+          .catch((err) => ({
+            providerKey: "mcaRegistry",
+            status: "error",
+            results: [],
+            durationMs: 0,
+            error: err.message,
+          }))
+      );
+    }
+
     const providerStart = Date.now();
     const providerSettled = await Promise.allSettled(providerTasks);
     timings.providerSearchMs = Date.now() - providerStart;
@@ -282,7 +305,7 @@ export class DiscoveryService {
                 .filter(Boolean);
               rawCandidates.push(...mapped);
             }
-          } else if (pKey === "openStreetMap") {
+          } else if (pKey === "openStreetMap" || pKey === "mcaRegistry") {
             rawCandidates.push(...val.results);
           }
         }
@@ -652,7 +675,11 @@ export class DiscoveryService {
     }
 
     // 6. Determine high-level outcome state based on live discovery providers
-    const searchProviders = [providerStatuses.tavily, providerStatuses.openStreetMap];
+    const searchProviders = [
+      providerStatuses.tavily,
+      providerStatuses.openStreetMap,
+      providerStatuses.mcaRegistry,
+    ];
     const allProvidersFailed = searchProviders.every(
       (ps) => ps.status === "error" || ps.status === "timeout" || ps.status === "unconfigured"
     );
