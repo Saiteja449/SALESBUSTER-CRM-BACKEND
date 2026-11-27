@@ -1595,6 +1595,9 @@ export const updatePricingSettingsHandler = async (req, res) => {
  * Helper to ensure SystemSettings has an initialized mutable addonCatalog array
  */
 const loadOrInitAddonSettings = async (SystemSettings, user) => {
+  if (!SystemSettings || typeof SystemSettings.findOne !== "function") {
+    throw new Error("SystemSettings model unavailable in the master database.");
+  }
   let settings = await SystemSettings.findOne();
   if (!settings) {
     settings = new SystemSettings({});
@@ -1749,6 +1752,9 @@ export const deleteAdminAddonHandler = async (req, res) => {
 };
 
 const loadOrInitPlanSettings = async (SystemSettings, user) => {
+  if (!SystemSettings || typeof SystemSettings.findOne !== "function") {
+    throw new Error("SystemSettings model unavailable in the master database.");
+  }
   let settings = await SystemSettings.findOne();
   if (!settings) {
     settings = new SystemSettings({});

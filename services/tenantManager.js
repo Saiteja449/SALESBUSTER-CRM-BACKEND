@@ -115,6 +115,9 @@ export const getMasterModels = () => {
     CashfreeOrder:
       masterDb.models.CashfreeOrder ||
       masterDb.model("CashfreeOrder", cashfreeOrderSchema),
+    SystemSettings:
+      masterDb.models.SystemSettings ||
+      masterDb.model("SystemSettings", SystemSettings.schema),
     CashfreeWebhookEvent:
       masterDb.models.CashfreeWebhookEvent ||
       masterDb.model("CashfreeWebhookEvent", cashfreeWebhookEventSchema),
