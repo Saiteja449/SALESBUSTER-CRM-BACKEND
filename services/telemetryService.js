@@ -112,24 +112,27 @@ export const createUserSession = async ({ user, organization, req, platform }) =
 
     const userIdStr = String(user._id || user.id);
 
-    // Enforce single active session per platform (max 1 web + 1 mobile = 2 total)
-    const revokeResult = await UserSession.updateMany(
-      {
-        userId: userIdStr,
-        platform: resolvedPlatform,
-        isActive: true,
-      },
-      {
-        $set: {
-          isActive: false,
-          revokedAt: new Date(),
-          revokedBy: "system_single_session",
-          revokeReason: `New ${resolvedPlatform} login detected. Previous ${resolvedPlatform} session was automatically logged out.`,
+    // Enforce single active session only for non-web platforms (allow multiple concurrent web/frontend logins)
+    let revokedCount = 0;
+    if (resolvedPlatform !== "web") {
+      const revokeResult = await UserSession.updateMany(
+        {
+          userId: userIdStr,
+          platform: resolvedPlatform,
+          isActive: true,
         },
-      }
-    );
+        {
+          $set: {
+            isActive: false,
+            revokedAt: new Date(),
+            revokedBy: "system_single_session",
+            revokeReason: `New ${resolvedPlatform} login detected. Previous ${resolvedPlatform} session was automatically logged out.`,
+          },
+        }
+      );
 
-    const revokedCount = revokeResult?.modifiedCount ?? revokeResult?.nModified ?? 0;
+      revokedCount = revokeResult?.modifiedCount ?? revokeResult?.nModified ?? 0;
+    }
     if (revokedCount > 0) {
       recordApiActivityLog({
         method: "POST",

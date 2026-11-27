@@ -330,6 +330,19 @@ export const receiveWhatsAppWebhook = async (req, res) => {
     return res.status(200).send("EVENT_RECEIVED");
   }
 
+  console.log(
+    "[WhatsAppWebhook] Received:",
+    JSON.stringify(
+      (body.entry || []).map((e) => ({
+        id: e.id,
+        fields: (e.changes || []).map((c) => ({
+          field: c.field,
+          phoneNumberId: c.value?.metadata?.phone_number_id || c.value?.phone_number_id,
+        })),
+      }))
+    )
+  );
+
   const { Organization, WAAccount, WAWebhookEvent } =
     req.masterModels || getMasterModels();
 
@@ -443,6 +456,13 @@ export const processChangeItem = async (
       org = await Organization.findOne({
         "whatsappCloudSettings.phoneNumberId": phoneNumberId,
       });
+    }
+
+    if (!waAccount && entryId && entryId !== "entry") {
+      waAccount = await WAAccount.findOne({ wabaId: entryId });
+      if (waAccount && !org) {
+        org = await Organization.findById(waAccount.organizationId);
+      }
     }
 
     if (!org) {
