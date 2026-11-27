@@ -1008,6 +1008,14 @@ export const handleIncomingInstagramMessage = async ({
     } catch (_) {}
   }
 
+  // Emit incoming message immediately so the frontend inbox & unread count update without waiting for AI reply
+  if (io && incomingMsg) {
+    io.to(`org_${organizationId}`).emit("instagram_new_message", {
+      contact,
+      message: incomingMsg,
+    });
+  }
+
   // 3. Always create/link Instagram Lead (with detected phone if shared, or by IGSID)
   const detectedPhone = extractPhoneNumber(text);
   const hadPhoneBefore = Boolean(contact?.phone);
@@ -1372,13 +1380,6 @@ export const handleIncomingInstagramMessage = async ({
     } catch (aiErr) {
       console.warn("[InstagramService] AI auto-reply warning:", aiErr.message);
     }
-  }
-
-  if (io) {
-    io.to(`org_${organizationId}`).emit("instagram_new_message", {
-      contact,
-      message: incomingMsg,
-    });
   }
 };
 
