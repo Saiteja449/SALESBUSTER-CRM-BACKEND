@@ -80,89 +80,14 @@ export const CASHFREE_PRICING_CATALOG = {
   },
 };
 
-export const DEFAULT_ADDON_CATALOG = [
-  {
-    id: "whatsapp_campaigns",
-    title: "WhatsApp Campaigns",
-    price: 999,
-    quarterlyPrice: 2997,
-    yearlyPrice: 11988,
-    period: "quarterly",
-    description: "Bulk broadcast marketing, official template creation, and delivery analytics.",
-    icon: "Send",
-    features: [
-      "Bulk Campaign Broadcasts",
-      "Template Manager & Variables",
-      "Delivery & Read Rate Analytics",
-      "Opt-out & Unsubscribe Handlers",
-    ],
-    isActive: true,
-  },
-  {
-    id: "target_intelligence",
-    title: "AI Target Intelligence",
-    price: 1499,
-    quarterlyPrice: 4497,
-    yearlyPrice: 17988,
-    period: "quarterly",
-    description: "AI-powered web crawling, company dossier research, and executive decision maker mapping.",
-    icon: "Brain",
-    features: [
-      "Domain Dossier Extraction",
-      "Executive Decision Maker Finder",
-      "Automated Pitch Deck Briefings",
-      "Firmographic Enrichment",
-    ],
-    isActive: true,
-  },
-  {
-    id: "bi_analyst",
-    title: "AI BI Analyst",
-    price: 999,
-    quarterlyPrice: 2997,
-    yearlyPrice: 11988,
-    period: "quarterly",
-    description: "Conversational natural language SQL & revenue intelligence charts on demand.",
-    icon: "Bot",
-    features: [
-      "Natural Language Data Queries",
-      "Instant Trend Charts & Exports",
-      "Anomaly Detection Alerts",
-      "Custom Executive Summaries",
-    ],
-    isActive: true,
-  },
-  {
-    id: "instagram_automation",
-    title: "Instagram Automation",
-    price: 499,
-    quarterlyPrice: 1497,
-    yearlyPrice: 5988,
-    period: "quarterly",
-    description: "Auto-respond to post comments, DM keyword triggers, and capture high-intent buyers.",
-    icon: "Instagram",
-    features: [
-      "Comment-to-DM Auto Triggers",
-      "Story Mention Responder",
-      "Lead Capture directly to CRM",
-      "Keywords Filter & Safe Limits",
-    ],
-    isActive: true,
-  },
-];
+export const DEFAULT_ADDON_CATALOG = [];
 
 export const getEffectiveAddonCatalog = (sysSettings) => {
   const normalize = (addon) => {
     const legacyPrice = Number(addon.price) || 0;
     return {
       ...addon,
-      quarterlyPrice: Number.isFinite(Number(addon.quarterlyPrice))
-        ? Number(addon.quarterlyPrice)
-        : legacyPrice * 3,
-      yearlyPrice: Number.isFinite(Number(addon.yearlyPrice))
-        ? Number(addon.yearlyPrice)
-        : legacyPrice * 12,
-      period: "quarterly",
+      price: Number.isFinite(Number(addon.price)) ? Number(addon.price) : legacyPrice,
     };
   };
   if (Array.isArray(sysSettings?.addonCatalog)) {
@@ -247,10 +172,8 @@ const normalizeAddonTerm = (term) => {
 const addonTermDays = (term) => (term === "yearly" ? 365 : 90);
 
 const getAddonTermPrice = (addon, term) => {
-  const normalizedTerm = normalizeAddonTerm(term);
-  if (!normalizedTerm) throw new Error("Add-ons are available only on quarterly or yearly terms.");
-  const price = Number(addon?.[normalizedTerm === "yearly" ? "yearlyPrice" : "quarterlyPrice"]);
-  if (!Number.isFinite(price) || price < 0) throw new Error("This add-on is not priced for the selected term.");
+  const price = Number(addon?.price);
+  if (!Number.isFinite(price) || price < 0) throw new Error("This add-on is not configured with a valid one-time price.");
   return price;
 };
 
@@ -258,27 +181,16 @@ const getAddonTerm = (planId) => normalizeAddonTerm(planId);
 
 export const calculateAddonQuote = ({ addon, term, startsAt = new Date(), expiresAt, planStart, prorate = false }) => {
   const termPrice = getAddonTermPrice(addon, term);
-  const normalizedTerm = normalizeAddonTerm(term);
-  let daysCovered = addonTermDays(normalizedTerm);
-  let totalTermDays = daysCovered;
+  let daysCovered = 0;
+  let totalTermDays = 0;
   let baseAmount = termPrice;
   let endDate = expiresAt ? new Date(expiresAt) : null;
   const startDate = new Date(startsAt);
 
-  if (prorate) {
-    if (!endDate || Number.isNaN(endDate.getTime()) || endDate <= startDate) {
-      throw new Error("Your plan has no time remaining for an add-on purchase.");
-    }
-    const planStartDate = planStart ? new Date(planStart) : null;
-    if (!planStartDate || Number.isNaN(planStartDate.getTime()) || planStartDate >= endDate) {
-      throw new Error("Your subscription dates are incomplete. Contact support to purchase an add-on.");
-    }
-    totalTermDays = Math.max(1, Math.ceil((endDate.getTime() - planStartDate.getTime()) / 86400000));
-    daysCovered = Math.min(totalTermDays, Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000)));
-    baseAmount = Math.round((termPrice * daysCovered / totalTermDays) * 100) / 100;
+  if (!endDate || Number.isNaN(endDate.getTime()) || endDate <= startDate) {
+    throw new Error("Your plan has no time remaining for an add-on purchase.");
   }
-
-  return { term: normalizedTerm, termPrice, baseAmount, daysCovered, totalTermDays, startsAt: startDate, expiresAt: endDate };
+  return { term: "one_time", termPrice, baseAmount, daysCovered, totalTermDays, startsAt: startDate, expiresAt: endDate };
 };
 
 export const isOrganizationAddonActive = (org, addonId, now = new Date()) => {
@@ -427,15 +339,13 @@ export const resolveAuthoritativePrice = ({
     const dynamicMatch = Array.isArray(dynamicAddons)
       ? dynamicAddons.find((a) => a.id === addonType && a.isActive !== false)
       : null;
-    const addonConfig = dynamicMatch
-      ? dynamicMatch
-      : CASHFREE_PRICING_CATALOG.addon[addonType];
+    const addonConfig = dynamicMatch;
     if (!addonConfig) {
       throw new Error(`Invalid or unsupported addon type: '${addonType}'`);
     }
     basePlanAmount = addonItems.length
       ? addonItems.reduce((sum, item) => sum + Number(item.baseAmount || 0), 0)
-      : (normalizeAddonTerm(addonTerm) === "yearly" ? (addonConfig.yearlyPrice ?? addonConfig.yearlyAmount) : (addonConfig.quarterlyPrice ?? addonConfig.quarterlyAmount));
+      : Number(addonConfig.price);
     currency = "INR";
     title = addonItems.length > 1 ? `${addonItems.length} Add-ons` : addonConfig.title;
   } else if (normalizedPurpose === "subscription") {
@@ -453,7 +363,7 @@ export const resolveAuthoritativePrice = ({
           currency: "INR",
           title: dynamicPlan.title,
         }
-      : CASHFREE_PRICING_CATALOG.subscription[canonicalPlanId] || CASHFREE_PRICING_CATALOG.subscription[planId];
+      : null;
     if (!planConfig) {
       throw new Error(`Invalid or unsupported subscription plan: '${planId}'`);
     }
@@ -1703,12 +1613,10 @@ const loadOrInitAddonSettings = async (SystemSettings, user) => {
  */
 export const createAdminAddonHandler = async (req, res) => {
   try {
-    const { id, title, price, quarterlyPrice, yearlyPrice, description = "", icon = "Sparkles", features = [], isActive = true } = req.body;
-    const legacyMonthlyPrice = Number(price);
-    const quarterPrice = quarterlyPrice === undefined ? legacyMonthlyPrice * 3 : Number(quarterlyPrice);
-    const annualPrice = yearlyPrice === undefined ? legacyMonthlyPrice * 12 : Number(yearlyPrice);
-    if (!title || !Number.isFinite(quarterPrice) || quarterPrice < 0 || !Number.isFinite(annualPrice) || annualPrice < 0) {
-      return res.status(400).json({ success: false, message: "Title and valid quarterly and yearly prices are required." });
+    const { id, title, price, description = "", icon = "Sparkles", features = [], isActive = true } = req.body;
+    const oneTimePrice = Number(price);
+    if (!title || !Number.isFinite(oneTimePrice) || oneTimePrice < 0) {
+      return res.status(400).json({ success: false, message: "Title and a valid one-time price are required." });
     }
 
     const { SystemSettings } = getMasterModels();
@@ -1741,10 +1649,7 @@ export const createAdminAddonHandler = async (req, res) => {
     settings.addonCatalog.push({
       id: normalizedId,
       title: String(title).trim(),
-      price: Number.isFinite(legacyMonthlyPrice) ? legacyMonthlyPrice : quarterPrice / 3,
-      quarterlyPrice: quarterPrice,
-      yearlyPrice: annualPrice,
-      period: "quarterly",
+      price: oneTimePrice,
       description: String(description || "").trim(),
       icon: String(icon || "Sparkles").trim(),
       features: parsedFeatures,
@@ -1771,7 +1676,7 @@ export const createAdminAddonHandler = async (req, res) => {
 export const updateAdminAddonHandler = async (req, res) => {
   try {
     const { addonId } = req.params;
-    const { title, price, quarterlyPrice, yearlyPrice, description, icon, features, isActive } = req.body;
+    const { title, price, description, icon, features, isActive } = req.body;
 
     const { SystemSettings } = getMasterModels();
     const settings = await loadOrInitAddonSettings(SystemSettings, req.user);
@@ -1782,20 +1687,10 @@ export const updateAdminAddonHandler = async (req, res) => {
     }
 
     if (title !== undefined) target.title = String(title).trim();
-    if (quarterlyPrice !== undefined && Number.isFinite(Number(quarterlyPrice)) && Number(quarterlyPrice) >= 0) {
-      target.quarterlyPrice = Number(quarterlyPrice);
-    }
-    if (yearlyPrice !== undefined && Number.isFinite(Number(yearlyPrice)) && Number(yearlyPrice) >= 0) {
-      target.yearlyPrice = Number(yearlyPrice);
-    }
-    if (price !== undefined && quarterlyPrice === undefined && yearlyPrice === undefined && Number.isFinite(Number(price)) && Number(price) >= 0) {
+    if (price !== undefined) {
+      if (!Number.isFinite(Number(price)) || Number(price) < 0) return res.status(400).json({ success: false, message: "Enter a valid one-time add-on price." });
       target.price = Number(price);
-      target.quarterlyPrice = Number(price) * 3;
-      target.yearlyPrice = Number(price) * 12;
     }
-    if (target.quarterlyPrice === undefined) target.quarterlyPrice = Number(target.price || 0) * 3;
-    if (target.yearlyPrice === undefined) target.yearlyPrice = Number(target.price || 0) * 12;
-    target.period = "quarterly";
     if (description !== undefined) target.description = String(description).trim();
     if (icon !== undefined) target.icon = String(icon).trim();
     if (isActive !== undefined) target.isActive = Boolean(isActive);
