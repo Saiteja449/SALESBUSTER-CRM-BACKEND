@@ -165,13 +165,10 @@ export const getEffectiveAddonCatalog = (sysSettings) => {
       period: "quarterly",
     };
   };
-  if (sysSettings?.addonCatalogConfigured && Array.isArray(sysSettings.addonCatalog)) {
+  if (Array.isArray(sysSettings?.addonCatalog)) {
     return sysSettings.addonCatalog.map(normalize);
   }
-  if (Array.isArray(sysSettings?.addonCatalog) && sysSettings.addonCatalog.length > 0) {
-    return sysSettings.addonCatalog.map(normalize);
-  }
-  return DEFAULT_ADDON_CATALOG.map(normalize);
+  return [];
 };
 
 export const DEFAULT_PLAN_CATALOG = [
@@ -235,13 +232,10 @@ export const getEffectivePlanCatalog = (sysSettings) => {
       isActive: plan.isActive !== false,
     };
   };
-  if (sysSettings?.planCatalogConfigured && Array.isArray(sysSettings.planCatalog)) {
+  if (Array.isArray(sysSettings?.planCatalog)) {
     return sysSettings.planCatalog.map(normalize);
   }
-  if (Array.isArray(sysSettings?.planCatalog) && sysSettings.planCatalog.length > 0) {
-    return sysSettings.planCatalog.map(normalize);
-  }
-  return DEFAULT_PLAN_CATALOG.map(normalize);
+  return [];
 };
 
 const normalizeAddonTerm = (term) => {
@@ -1695,10 +1689,10 @@ const loadOrInitAddonSettings = async (SystemSettings, user) => {
   if (!settings) {
     settings = new SystemSettings({});
   }
-  if (!settings.addonCatalogConfigured && (!settings.addonCatalog || settings.addonCatalog.length === 0)) {
-    settings.addonCatalog = DEFAULT_ADDON_CATALOG.map((a) => ({ ...a }));
-    settings.addonCatalogConfigured = true;
+  if (!Array.isArray(settings.addonCatalog)) {
+    settings.addonCatalog = [];
   }
+  settings.addonCatalogConfigured = true;
   settings.updatedBy = user?.name || user?.email || "Admin";
   return settings;
 };
@@ -1864,10 +1858,10 @@ const loadOrInitPlanSettings = async (SystemSettings, user) => {
   if (!settings) {
     settings = new SystemSettings({});
   }
-  if (!settings.planCatalogConfigured && (!settings.planCatalog || settings.planCatalog.length === 0)) {
-    settings.planCatalog = DEFAULT_PLAN_CATALOG.map((p) => ({ ...p }));
-    settings.planCatalogConfigured = true;
+  if (!Array.isArray(settings.planCatalog)) {
+    settings.planCatalog = [];
   }
+  settings.planCatalogConfigured = true;
   settings.updatedBy = user?.name || user?.email || "Admin";
   return settings;
 };
