@@ -251,7 +251,7 @@ export const createOrLinkInstagramLead = async ({
   io = null,
 }) => {
   const { Lead, User, Notification, Conversation } = tenantModels;
-  if (!phone || !Lead) return null;
+  if (!Lead || (!phone && !contact?.igsid)) return null;
 
   try {
     const normalizedPhone = phone ? toInternationalPhone(phone) : "";
@@ -1090,11 +1090,19 @@ export const handleIncomingInstagramMessage = async ({
     if (matchedRule && matchedRule.dmMessageTemplate) {
       ruleMatched = true;
       try {
+        let outgoingRuleText = matchedRule.dmMessageTemplate;
+        if (
+          !dmLeadResult?.lead?.phone &&
+          !/(mobile|phone|number|contact)/i.test(outgoingRuleText)
+        ) {
+          outgoingRuleText = `${outgoingRuleText}\n\nCould you please share your 10-digit mobile number so our team can assist you faster?`;
+        }
+
         const dmResult = await sendInstagramMessage({
           pageAccessToken: account.pageAccessTokenEncrypted,
           pageId: account.facebookPageId,
           igsid,
-          text: matchedRule.dmMessageTemplate,
+          text: outgoingRuleText,
           callToAction: matchedRule.callToAction,
         });
 
@@ -1112,7 +1120,7 @@ export const handleIncomingInstagramMessage = async ({
           mid: replyMid,
           direction: "outgoing",
           senderType: "auto_dm",
-          text: matchedRule.dmMessageTemplate,
+          text: outgoingRuleText,
           triggerSource: "direct_message",
           ruleId: matchedRule._id,
           timestamp: new Date(),
@@ -1128,7 +1136,7 @@ export const handleIncomingInstagramMessage = async ({
               senderName: "SalesBuster AI",
               direction: "outgoing",
               messageType: "text",
-              text: matchedRule.dmMessageTemplate,
+              text: outgoingRuleText,
               timestamp: new Date(),
               rawPayload: { igsid, channel: "instagram" },
             });
@@ -1147,7 +1155,7 @@ export const handleIncomingInstagramMessage = async ({
               },
               {
                 $set: {
-                  lastMessage: matchedRule.dmMessageTemplate,
+                  lastMessage: outgoingRuleText,
                   lastMessageTime: new Date(),
                 },
               }
@@ -1184,18 +1192,26 @@ export const handleIncomingInstagramMessage = async ({
       const aiEnabled = org?.aiSettings?.aiAutoReplyEnabled !== false;
 
       if (aiEnabled && !isAiPaused) {
-        const aiReply = await generateAIResponse(
-          leadDoc._id,
-          text,
-          tenantModels,
-          org
-        );
-        let replyText =
-          typeof aiReply === "string"
-            ? aiReply.trim()
-            : (aiReply?.reply || aiReply?.text || "").trim();
+        let replyText = "";
+        try {
+          const aiReply = await generateAIResponse(
+            leadDoc._id,
+            text,
+            tenantModels,
+            org
+          );
+          replyText =
+            typeof aiReply === "string"
+              ? aiReply.trim()
+              : (aiReply?.reply || aiReply?.text || "").trim();
+        } catch (genErr) {
+          console.warn("[InstagramService] generateAIResponse warning:", genErr.message);
+        }
 
-        if (
+        if (!replyText && !leadDoc.phone) {
+          replyText =
+            "Hi! Thanks for reaching out to us on Instagram. Could you please share your 10-digit mobile number so our team can assist you faster?";
+        } else if (
           replyText &&
           !leadDoc.phone &&
           !/(mobile|phone|number|contact)/i.test(replyText)

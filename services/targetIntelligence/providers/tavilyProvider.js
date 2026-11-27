@@ -34,7 +34,10 @@ export class TavilySearchProvider extends BaseSearchProvider {
     }
 
     const desiredCount = limit ? Math.min(Math.max(parseInt(limit, 10), 1), 50) : 10;
-    const maxResults = Math.min(desiredCount + 5, 50);
+    const maxResults = Math.min(desiredCount * 2 + 10, 40);
+    const extraExcluded = Array.isArray(context.excludeDomains)
+      ? context.excludeDomains.filter(Boolean).slice(0, 25)
+      : [];
 
     const payload = {
       query,
@@ -72,6 +75,7 @@ export class TavilySearchProvider extends BaseSearchProvider {
         "apps.apple.com",
         "vocal.media",
         "leadstal.com",
+        ...extraExcluded,
       ],
     };
 

@@ -758,6 +758,14 @@ export const getInstagramConversations = async (req, res) => {
         unreadCount = (!c.lastReadAt || new Date(c.lastReadAt) < new Date(lastMsg.timestamp)) ? 1 : 0;
       }
 
+      let leadDoc = null;
+      if (c.leadId && tenantModels.Lead) {
+        leadDoc = await tenantModels.Lead.findById(c.leadId)
+          .select("_id name phone aiEnabled aiPausedUntil")
+          .lean()
+          .catch(() => null);
+      }
+
       formatted.push({
         _id: c._id,
         id: c._id.toString(),
@@ -773,10 +781,10 @@ export const getInstagramConversations = async (req, res) => {
         customerName: c.name || c.username || "Instagram User",
         username: c.username || "",
         instagramUsername: c.username || "",
-        phone: c.phone || "",
+        phone: leadDoc?.phone || c.phone || "",
         profilePic: c.profilePic || "",
-        leadId: c.leadId,
-        isLead: Boolean(c.leadId),
+        leadId: leadDoc || c.leadId,
+        isLead: Boolean(leadDoc || c.leadId),
         unreadCount,
         lastMessage: convo?.lastMessage || lastMsg?.text || "Conversation started",
         lastMessageTime: convo?.lastMessageTime || lastMsg?.timestamp || c.lastInteractedAt,

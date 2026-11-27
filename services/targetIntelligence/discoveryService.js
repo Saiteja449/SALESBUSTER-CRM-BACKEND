@@ -202,7 +202,10 @@ export class DiscoveryService {
     if (tavilyKey) {
       providerTasks.push(
         tavilyProvider
-          .searchBusinesses(filters, { tavilyKey })
+          .searchBusinesses(filters, {
+            tavilyKey,
+            excludeDomains: Array.from(resolvedDomainsSet),
+          })
           .then((res) => ({ providerKey: "tavily", ...res }))
           .catch((err) => ({
             providerKey: "tavily",
@@ -290,47 +293,62 @@ export class DiscoveryService {
               timings.extractionMs = Date.now() - extractionStart;
             }
 
+            const extractedDomains = new Set();
             if (Array.isArray(extracted) && extracted.length > 0) {
-              rawCandidates.push(
-                ...extracted.filter((item) => {
-                  const d = normalizeDomain(item.website || item.sourceUrl || "");
-                  return d && !NON_COMPANY_DOMAINS.has(d);
-                })
-              );
-            } else {
-              // Direct mapping of Tavily live search citations if AI extraction is unavailable or produced 0 items
-              const mapped = val.results
-                .map((r) => {
-                  const normDomain = normalizeDomain(r.url || "");
-                  if (!normDomain || NON_COMPANY_DOMAINS.has(normDomain)) return null;
+              const validExtracted = extracted.filter((item) => {
+                const d = normalizeDomain(item.website || item.sourceUrl || "");
+                if (d && !NON_COMPANY_DOMAINS.has(d)) {
+                  extractedDomains.add(d);
+                  return true;
+                }
+                return false;
+              });
+              rawCandidates.push(...validExtracted);
+            }
 
-                  const titleClean = (r.title || "")
-                    .split(/[-|–:•]/)[0]
+            // Supplement with direct Tavily web citations for any remaining domains not already extracted
+            const mapped = val.results
+              .map((r) => {
+                const normDomain = normalizeDomain(r.url || "");
+                if (!normDomain || NON_COMPANY_DOMAINS.has(normDomain) || extractedDomains.has(normDomain)) {
+                  return null;
+                }
+                extractedDomains.add(normDomain);
+
+                const titleClean =
+                  (r.title || "")
+                    .split(/\s+[-|–—:•]\s+|[|–—•]/)[0]
                     ?.replace(/\b(home|best|top|official website|welcome to|services|page)\b/gi, "")
                     ?.trim() || normDomain;
 
-                  return {
-                    companyName: titleClean,
-                    website: `https://${normDomain}`,
-                    industry: filters.industry && filters.industry !== "All" ? filters.industry : null,
-                    description: r.content || r.snippet || null,
-                    location: null,
-                    city: filters.city && filters.city !== "All" ? filters.city : null,
-                    phone: null,
-                    email: null,
-                    decisionMaker: null,
-                    founders: [],
-                    sources: [{ url: r.url, field: "companyName", accessedAt: new Date().toISOString(), provider: "Tavily" }],
-                    sourceUrl: r.url,
-                    source: "Tavily Web Search",
-                    confidenceScore: 75,
-                    matchReasons: ["Direct live web citation from Tavily search index"],
-                    retrievedAt: new Date().toISOString(),
-                  };
-                })
-                .filter(Boolean);
-              rawCandidates.push(...mapped);
-            }
+                return {
+                  companyName: titleClean,
+                  website: `https://${normDomain}`,
+                  industry: filters.industry && filters.industry !== "All" ? filters.industry : null,
+                  description: r.content || r.snippet || null,
+                  location: null,
+                  city: filters.city && filters.city !== "All" ? filters.city : null,
+                  phone: null,
+                  email: null,
+                  decisionMaker: null,
+                  founders: [],
+                  sources: [
+                    {
+                      url: r.url,
+                      field: "companyName",
+                      accessedAt: new Date().toISOString(),
+                      provider: "Tavily",
+                    },
+                  ],
+                  sourceUrl: r.url,
+                  source: "Tavily Web Search",
+                  confidenceScore: 75,
+                  matchReasons: ["Direct live web citation from Tavily search index"],
+                  retrievedAt: new Date().toISOString(),
+                };
+              })
+              .filter(Boolean);
+            rawCandidates.push(...mapped);
           } else if (pKey === "openStreetMap" || pKey === "mcaRegistry" || pKey === "duckDuckGo") {
             rawCandidates.push(...val.results);
           }
