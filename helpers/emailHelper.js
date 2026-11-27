@@ -114,7 +114,7 @@ export const sendTenantWelcomeEmail = async ({
     <div style="padding: 32px 30px;">
       <h2 style="margin: 0 0 12px 0; color: #0f172a; font-size: 20px; font-weight: 700;">Welcome to SalesBuster, ${organization.name}! 🎉</h2>
       <p style="margin: 0 0 24px 0; color: #475569; font-size: 14px; line-height: 1.6;">
-        Your organization workspace has been successfully provisioned. You can now manage leads, track team activities, and accelerate your sales pipeline.
+        ${organization.isTrial ? `Your 3-day free trial workspace is ready${organization.trialEndsAt ? ` through ${new Date(organization.trialEndsAt).toLocaleDateString("en-IN")}` : ""}.` : "Your organization workspace has been successfully provisioned."} You can now manage leads, track team activities, and accelerate your sales pipeline.
       </p>
 
       <!-- Workspace Details Box -->
@@ -130,6 +130,11 @@ export const sendTenantWelcomeEmail = async ({
             <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Licensed Sales Rep Seats:</td>
             <td style="padding: 6px 0; color: #0f172a; font-weight: 700; text-align: right;">${organization.seats} Representatives</td>
           </tr>
+          ${organization.isTrial ? `
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Account:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 700; text-align: right;">3-day free trial</td>
+          </tr>` : ""}
         </table>
       </div>
 
@@ -177,8 +182,10 @@ export const sendTenantWelcomeEmail = async ({
 
   return await sendEmail({
     email: ownerEmail,
-    subject: `Welcome to SalesBuster! Your ${organization.name} Workspace is Ready`,
-    message: `Welcome to SalesBuster!\n\nYour organization ${organization.name} has been provisioned.\nSeats: ${organization.seats}\n\nLogin URL: ${appLoginUrl}\nEmail: ${ownerEmail}\nPassword: ${temporaryPassword}\n\nPlease change your password upon first login.`,
+    subject: organization.isTrial
+      ? `Your SalesBuster free trial is ready`
+      : `Welcome to SalesBuster! Your ${organization.name} Workspace is Ready`,
+    message: `Welcome to SalesBuster!\n\nYour organization ${organization.name} has been provisioned.${organization.isTrial ? ` Your 3-day free trial ends on ${organization.trialEndsAt ? new Date(organization.trialEndsAt).toLocaleDateString("en-IN") : "the date shown in your workspace"}.` : ""}\nSeats: ${organization.seats}\n\nLogin URL: ${appLoginUrl}\nEmail: ${ownerEmail}\nPassword: ${temporaryPassword}\n\nPlease change your password upon first login.`,
     htmlMessage,
   });
 };

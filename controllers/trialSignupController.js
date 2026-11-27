@@ -1,12 +1,14 @@
 import bcrypt from "bcryptjs";
+import { randomBytes } from "node:crypto";
 import Otp from "../models/Otp.js";
 import { getMasterModels, getTenantModels, generateTenantDbName } from "../services/tenantManager.js";
 import { TRIAL_LIMITS } from "../middleware/trialLimitMiddleware.js";
+import { sendTenantWelcomeEmail } from "../helpers/emailHelper.js";
 
 /** Creates a CRM trial workspace after a phone OTP has been verified. */
 export const registerTrialWorkspace = async (req, res) => {
   try {
-    const { phone, otp, name, email, password, companyName } = req.body || {};
+    const { phone, otp, name, email, companyName } = req.body || {};
     const cleanPhone = String(phone || "").replace(/\D/g, "").slice(-10);
     const cleanEmail = String(email || "").trim().toLowerCase();
     const cleanName = String(name || "").trim();
@@ -14,8 +16,8 @@ export const registerTrialWorkspace = async (req, res) => {
     if (cleanPhone.length !== 10 || String(otp || "").trim().length !== 4) {
       return res.status(400).json({ success: false, message: "Enter a valid mobile number and 4-digit verification code." });
     }
-    if (cleanName.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail) || String(password || "").length < 8) {
-      return res.status(400).json({ success: false, message: "Enter your name, a valid email address, and a password with at least 8 characters." });
+    if (cleanName.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ success: false, message: "Enter your name and a valid email address." });
     }
 
     const otpRecord = await Otp.findOne({ phone: cleanPhone, expiresAt: { $gt: new Date() }, verified: false }).sort({ createdAt: -1 });
@@ -45,7 +47,8 @@ export const registerTrialWorkspace = async (req, res) => {
     }
     const now = new Date();
     const trialEndsAt = new Date(now.getTime() + TRIAL_LIMITS.durationDays * 86400000);
-    const hashedPassword = await bcrypt.hash(password, await bcrypt.genSalt(10));
+    const temporaryPassword = randomBytes(18).toString("base64url");
+    const hashedPassword = await bcrypt.hash(temporaryPassword, await bcrypt.genSalt(10));
     let org;
     let user;
     try {
@@ -101,9 +104,24 @@ export const registerTrialWorkspace = async (req, res) => {
       throw provisionError;
     }
 
+    let emailSent = false;
+    try {
+      emailSent = await sendTenantWelcomeEmail({
+        organization: org,
+        ownerEmail: cleanEmail,
+        temporaryPassword,
+        loginUrl: process.env.CRM_APP_URL || "https://app.salesbuster.ai/login",
+      });
+    } catch (emailError) {
+      console.error("[TrialSignup] Failed to send trial credentials email:", emailError);
+    }
+
     return res.status(201).json({
       success: true,
-      message: "Your 3-day free trial is ready. Sign in to open your workspace.",
+      message: emailSent
+        ? "Your 3-day free trial is ready. Login details have been sent to your email."
+        : "Your 3-day free trial is ready, but we could not send the login email. Please contact support.",
+      emailSent,
       trialEndsAt,
       account: { email: cleanEmail },
     });
