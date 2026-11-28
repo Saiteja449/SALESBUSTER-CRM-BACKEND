@@ -1039,6 +1039,18 @@ export const createOrderHandler = async (req, res) => {
         now: periodStart,
         cycle: { startsAt: periodStart, expiresAt: periodEnd, durationMonths: resolvedAddonTermDurationMonths },
       });
+    } else if (purpose === "extra_reps") {
+      const orgTerm = getAddonTerm(billingOrganization?.subscriptionPlan || billingOrganization?.plan);
+      if (
+        !billingOrganization ||
+        billingOrganization.isTrial ||
+        billingOrganization.status !== "active" ||
+        !orgTerm ||
+        !billingOrganization.subscriptionEndDate ||
+        new Date(billingOrganization.subscriptionEndDate) <= new Date()
+      ) {
+        throw new Error("Extra seats are available after starting a paid quarterly or yearly plan.");
+      }
     }
 
     // 1. Authoritative Server-Side Price Resolution (prevents parameter tampering)
