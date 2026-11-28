@@ -164,9 +164,48 @@ export const getEffectivePlanCatalog = (sysSettings) => {
 };
 
 const normalizeAddonTerm = (term) => {
-  if (term === "annual" || term === "annually" || term === "yearly") return "yearly";
-  if (term === "quarterly") return "quarterly";
+  const normalized = String(term || "").trim().toLowerCase();
+  if (normalized === "annual" || normalized === "annually" || normalized === "yearly" || normalized === "yearly_plan") return "yearly";
+  if (normalized === "quarterly" || normalized === "quarterly_plan") return "quarterly";
   return "";
+};
+
+const findPlanInCatalog = (planId, catalog = []) => {
+  const normalizedId = String(planId || "").trim().toLowerCase();
+  if (!normalizedId || !Array.isArray(catalog)) return null;
+  const activePlans = catalog.filter((p) => p && p.isActive !== false);
+  const directMatch = activePlans.find((p) => String(p.id || "").trim().toLowerCase() === normalizedId);
+  if (directMatch) return directMatch;
+
+  const canonicalTerm = normalizeAddonTerm(normalizedId);
+  if (!canonicalTerm) return null;
+  return (
+    activePlans.find((p) => {
+      const pId = String(p.id || "").trim().toLowerCase();
+      if (pId === canonicalTerm) return true;
+      const months = Number(p.durationMonths);
+      return canonicalTerm === "yearly" ? months >= 12 : months > 0 && months < 12;
+    }) || null
+  );
+};
+
+const resolvePlanTermAndMonths = (plan, planId = "") => {
+  if (plan) {
+    const months = Number(plan.durationMonths);
+    const term =
+      (Number.isFinite(months) && months >= 12) || normalizeAddonTerm(plan.id) === "yearly"
+        ? "yearly"
+        : "quarterly";
+    return {
+      term,
+      durationMonths: Number.isFinite(months) && months > 0 ? months : term === "yearly" ? 12 : 3,
+    };
+  }
+  const fallbackTerm = normalizeAddonTerm(planId);
+  return {
+    term: fallbackTerm,
+    durationMonths: fallbackTerm === "yearly" ? 12 : fallbackTerm === "quarterly" ? 3 : 1,
+  };
 };
 
 const getAddonTermPrice = (addon, term, durationMonths = null) => {
@@ -340,12 +379,16 @@ export const resolveAuthoritativePrice = ({
   let additionalRepsCost = 0;
   const parsedAdditionalReps = Math.max(0, parseInt(additionalReps, 10) || 0);
 
+  let resolvedSubscriptionTerm = "";
+  let resolvedSubscriptionMonths = 3;
+
   if (normalizedPurpose === "extra_reps") {
     const repsToAdd = Math.max(1, parsedAdditionalReps);
-    if (planId === "yearly" || planId === "annual") {
+    const extraRepTerm = normalizeAddonTerm(planId);
+    if (extraRepTerm === "yearly") {
       additionalRepsCost = repsToAdd * extraRepPriceYearly * 12;
       title = `${repsToAdd} Additional Sales Rep${repsToAdd > 1 ? "s" : ""} (Annual)`;
-    } else if (planId === "quarterly") {
+    } else if (extraRepTerm === "quarterly") {
       additionalRepsCost = repsToAdd * extraRepPriceQuarterly * 3;
       title = `${repsToAdd} Additional Sales Rep${repsToAdd > 1 ? "s" : ""} (Quarterly)`;
     } else {
@@ -367,14 +410,8 @@ export const resolveAuthoritativePrice = ({
     currency = "INR";
     title = addonItems.length > 1 ? `${addonItems.length} Add-ons` : addonConfig.title;
   } else if (normalizedPurpose === "subscription") {
-    const normalizedPlanId = String(planId || "").toLowerCase();
-    const canonicalPlanId = ["annual", "annually"].includes(normalizedPlanId) ? "yearly" : normalizedPlanId;
-    if (!["quarterly", "yearly"].includes(canonicalPlanId)) {
-      throw new Error("New subscriptions are available only quarterly or yearly.");
-    }
-    const dynamicPlan = Array.isArray(dynamicPlans)
-      ? dynamicPlans.find((p) => p.id === canonicalPlanId && p.isActive !== false)
-      : null;
+    const plansSource = Array.isArray(dynamicPlans) ? dynamicPlans : DEFAULT_PLAN_CATALOG;
+    const dynamicPlan = findPlanInCatalog(planId, plansSource);
     const planConfig = dynamicPlan
       ? {
           amount: Number(dynamicPlan.price),
@@ -385,6 +422,9 @@ export const resolveAuthoritativePrice = ({
     if (!planConfig) {
       throw new Error(`Invalid or unsupported subscription plan: '${planId}'`);
     }
+    const resolvedMeta = resolvePlanTermAndMonths(dynamicPlan, planId);
+    resolvedSubscriptionTerm = resolvedMeta.term;
+    resolvedSubscriptionMonths = resolvedMeta.durationMonths;
     basePlanAmount = planConfig.amount + addonItems.reduce((sum, item) => sum + Number(item.baseAmount || 0), 0);
     currency = planConfig.currency;
     title = planConfig.title;
@@ -402,12 +442,12 @@ export const resolveAuthoritativePrice = ({
 
   // Calculate additional sales representatives cost for subscription bundles
   if (normalizedPurpose === "subscription" && parsedAdditionalReps > 0) {
-    if (planId === "yearly" || planId === "annual") {
-      const repYearlyCost = extraRepPriceYearly * 12; // 899 * 12 = 10,788
+    if (resolvedSubscriptionTerm === "yearly") {
+      const repYearlyCost = extraRepPriceYearly * resolvedSubscriptionMonths;
       additionalRepsCost = parsedAdditionalReps * repYearlyCost;
       title += ` + ${parsedAdditionalReps} Extra Sales Reps`;
-    } else if (planId === "quarterly") {
-      const repQuarterlyCost = extraRepPriceQuarterly * 3; // 1,199 * 3 = 3,597
+    } else if (resolvedSubscriptionTerm === "quarterly") {
+      const repQuarterlyCost = extraRepPriceQuarterly * resolvedSubscriptionMonths;
       additionalRepsCost = parsedAdditionalReps * repQuarterlyCost;
       title += ` + ${parsedAdditionalReps} Extra Sales Reps`;
     }
@@ -474,7 +514,12 @@ export const fulfillOrderBenefits = async (order) => {
     if (lockKey) _activeOrderFulfillments.add(lockKey);
     if (provisionLockKey) _activeOrgProvisionKeys.add(provisionLockKey);
 
-    const { Organization, AuthUser, CashfreeOrder } = getMasterModels();
+    const { Organization, AuthUser, CashfreeOrder, SystemSettings } = getMasterModels();
+    let fulfillPlanCatalog = [];
+    if (SystemSettings && typeof SystemSettings.findOne === "function") {
+      const sysSettings = await SystemSettings.findOne().lean().catch(() => null);
+      fulfillPlanCatalog = getEffectivePlanCatalog(sysSettings);
+    }
 
     // Atomic DB claim on isFulfilled so concurrent webhook + status poll never double-provision
     if (order._id && typeof CashfreeOrder?.findOneAndUpdate === "function") {
@@ -516,10 +561,15 @@ export const fulfillOrderBenefits = async (order) => {
       const cleanEmail = (order.customerDetails?.customerEmail || "").toLowerCase().trim();
       const cleanPhone = (order.customerDetails?.customerPhone || "").trim();
 
+      const matchedFulfillPlan = findPlanInCatalog(order.planId, fulfillPlanCatalog);
+      const { term: fulfilledTerm, durationMonths: fulfilledMonths } = resolvePlanTermAndMonths(
+        matchedFulfillPlan,
+        order.planId
+      );
       const normalizedPlan =
-        order.planId === "yearly" || order.planId === "annual" || order.planId === "annually"
+        fulfilledTerm === "yearly"
           ? "annual"
-          : order.planId === "quarterly"
+          : fulfilledTerm === "quarterly"
           ? "quarterly"
           : "monthly";
 
@@ -535,11 +585,8 @@ export const fulfillOrderBenefits = async (order) => {
       const extraReps = Number(order.additionalReps) || 0;
       let seatCount = 5 + extraReps;
       let durationMonths = 1;
-      if (order.planId === "yearly" || order.planId === "annual") {
-        durationMonths = 12;
-        seatCount = 5 + extraReps;
-      } else if (order.planId === "quarterly") {
-        durationMonths = 3;
+      if (matchedFulfillPlan || fulfilledTerm === "yearly" || fulfilledTerm === "quarterly") {
+        durationMonths = fulfilledMonths;
         seatCount = 5 + extraReps;
       } else if (order.planId === "enterprise") {
         durationMonths = 1;
@@ -646,19 +693,22 @@ export const fulfillOrderBenefits = async (order) => {
         org.amountPaid = (org.amountPaid || 0) + (order.orderAmount || 0);
       } else if (order.purpose === "subscription") {
         if (order.planId) {
+          const matchedRenewPlan = findPlanInCatalog(order.planId, fulfillPlanCatalog);
+          const { term: renewTerm, durationMonths: renewMonths } = resolvePlanTermAndMonths(
+            matchedRenewPlan,
+            order.planId
+          );
           const normalizedPlan =
-            order.planId === "yearly" || order.planId === "annual" || order.planId === "annually"
+            renewTerm === "yearly"
               ? "annual"
-              : order.planId === "quarterly"
+              : renewTerm === "quarterly"
               ? "quarterly"
               : "monthly";
           org.subscriptionPlan = normalizedPlan;
           org.plan = order.planId;
           org.status = "active";
 
-          let extensionMonths = 1;
-          if (order.planId === "yearly" || order.planId === "annual") extensionMonths = 12;
-          else if (order.planId === "quarterly") extensionMonths = 3;
+          const extensionMonths = matchedRenewPlan || renewTerm ? renewMonths : 1;
 
           const currentEnd =
             !org.isTrial && org.subscriptionEndDate && new Date(org.subscriptionEndDate) > new Date()
@@ -969,9 +1019,13 @@ export const createOrderHandler = async (req, res) => {
         prorate: true,
       });
     } else if (purpose === "subscription" && Array.isArray(addonIds) && addonIds.length) {
-      resolvedAddonTerm = getAddonTerm(planId);
-      if (!resolvedAddonTerm) throw new Error("Subscriptions are available only quarterly or yearly.");
-      resolvedAddonTermDurationMonths = configuredDuration(resolvedAddonTerm);
+      const matchedSubPlan = findPlanInCatalog(planId, planCatalog);
+      if (!matchedSubPlan) {
+        throw new Error(`Invalid or unsupported subscription plan: '${planId}'`);
+      }
+      const { term, durationMonths } = resolvePlanTermAndMonths(matchedSubPlan, planId);
+      resolvedAddonTerm = term;
+      resolvedAddonTermDurationMonths = durationMonths;
       const periodStart = !billingOrganization?.isTrial && billingOrganization?.subscriptionEndDate && new Date(billingOrganization.subscriptionEndDate) > new Date()
         ? new Date(billingOrganization.subscriptionEndDate)
         : new Date();
