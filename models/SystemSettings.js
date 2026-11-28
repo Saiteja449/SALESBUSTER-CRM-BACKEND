@@ -54,7 +54,7 @@ const systemSettingsSchema = new mongoose.Schema(
       {
         id: { type: String, required: true, trim: true },
         title: { type: String, required: true, trim: true },
-        price: { type: Number, min: 0 },
+        price: { type: Number, min: 0 }, // Monthly add-on rate; checkout multiplies by plan months.
         description: { type: String, default: "", trim: true },
         icon: { type: String, default: "Sparkles", trim: true },
         features: [{ type: String, trim: true }],

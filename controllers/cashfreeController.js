@@ -169,20 +169,20 @@ const normalizeAddonTerm = (term) => {
   return "";
 };
 
-const addonTermDays = (term) => (term === "yearly" ? 365 : 90);
-
-const getAddonTermPrice = (addon, term) => {
-  const price = Number(addon?.price);
-  if (!Number.isFinite(price) || price < 0) throw new Error("This add-on is not configured with a valid one-time price.");
-  return price;
+const getAddonTermPrice = (addon, term, durationMonths = null) => {
+  const normalizedTerm = normalizeAddonTerm(term);
+  if (!normalizedTerm) throw new Error("Choose a quarterly or yearly plan to price this add-on.");
+  const months = Number(durationMonths);
+  const termMonths = Number.isFinite(months) && months > 0 ? months : normalizedTerm === "yearly" ? 12 : 3;
+  const monthlyPrice = Number(addon?.price);
+  if (!Number.isFinite(monthlyPrice) || monthlyPrice < 0) throw new Error("This add-on is not configured with a valid monthly price.");
+  return Math.round(monthlyPrice * termMonths * 100) / 100;
 };
 
 const getAddonTerm = (planId) => normalizeAddonTerm(planId);
 
-export const calculateAddonQuote = ({ addon, term, startsAt = new Date(), expiresAt, planStart, prorate = false }) => {
-  const termPrice = getAddonTermPrice(addon, term);
-  let daysCovered = 0;
-  let totalTermDays = 0;
+export const calculateAddonQuote = ({ addon, term, durationMonths, startsAt = new Date(), expiresAt, planStart, prorate = false }) => {
+  const termPrice = getAddonTermPrice(addon, term, durationMonths);
   let baseAmount = termPrice;
   let endDate = expiresAt ? new Date(expiresAt) : null;
   const startDate = new Date(startsAt);
@@ -190,7 +190,19 @@ export const calculateAddonQuote = ({ addon, term, startsAt = new Date(), expire
   if (!endDate || Number.isNaN(endDate.getTime()) || endDate <= startDate) {
     throw new Error("Your plan has no time remaining for an add-on purchase.");
   }
-  return { term: "one_time", termPrice, baseAmount, daysCovered, totalTermDays, startsAt: startDate, expiresAt: endDate };
+  const planStartDate = planStart ? new Date(planStart) : new Date(startDate);
+  if (Number.isNaN(planStartDate.getTime()) || planStartDate >= endDate) {
+    throw new Error("Your subscription dates are incomplete. Contact support to purchase an add-on.");
+  }
+  const totalTermDays = Math.max(1, Math.ceil((endDate.getTime() - planStartDate.getTime()) / 86400000));
+  const daysCovered = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000));
+  if (prorate) {
+    const totalTermMs = endDate.getTime() - planStartDate.getTime();
+    const remainingMs = Math.min(totalTermMs, endDate.getTime() - startDate.getTime());
+    baseAmount = Math.round((termPrice * remainingMs / totalTermMs) * 100) / 100;
+  }
+  const normalizedTerm = normalizeAddonTerm(term);
+  return { term: normalizedTerm, termPrice, baseAmount, daysCovered, totalTermDays, startsAt: startDate, expiresAt: endDate };
 };
 
 export const isOrganizationAddonActive = (org, addonId, now = new Date()) => {
@@ -246,26 +258,30 @@ const applyPaidAddonItems = (org, order) => {
   }
 }
 
-const termPeriod = (term) => (term === "yearly" ? 12 : 3);
+const termPeriod = (term, durationMonths = null) => {
+  const months = Number(durationMonths);
+  return Number.isFinite(months) && months > 0 ? months : term === "yearly" ? 12 : 3;
+};
 
-const getActivePlanCycle = (org, now = new Date()) => {
+const getActivePlanCycle = (org, now = new Date(), durationMonths = null) => {
   const term = getAddonTerm(org?.subscriptionPlan || org?.plan);
   const end = org?.subscriptionEndDate ? new Date(org.subscriptionEndDate) : null;
   if (!term || !org || org.isTrial || org.status !== "active" || !end || end <= now) {
     throw new Error("An active quarterly or yearly subscription is required to purchase add-ons.");
   }
+  const planMonths = termPeriod(term, durationMonths);
   const start = new Date(end);
   const endDay = start.getDate();
   start.setDate(1);
-  start.setMonth(start.getMonth() - termPeriod(term));
+  start.setMonth(start.getMonth() - planMonths);
   const lastDay = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate();
   start.setDate(Math.min(endDay, lastDay));
   const recordedStart = org.subscriptionStartDate ? new Date(org.subscriptionStartDate) : null;
   if (recordedStart && recordedStart < end && Math.abs(recordedStart - start) < 4 * 86400000) start.setTime(recordedStart.getTime());
-  return { term, startsAt: start, expiresAt: end, organization: org };
+  return { term, durationMonths: planMonths, startsAt: start, expiresAt: end, organization: org };
 };
 
-const buildAddonOrderItems = ({ addonIds, term, catalog, now = new Date(), cycle = null, prorate = false }) => {
+const buildAddonOrderItems = ({ addonIds, term, durationMonths, catalog, now = new Date(), cycle = null, prorate = false }) => {
   const uniqueIds = [...new Set((addonIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
   if (!uniqueIds.length) return [];
   return uniqueIds.map((addonId) => {
@@ -277,6 +293,7 @@ const buildAddonOrderItems = ({ addonIds, term, catalog, now = new Date(), cycle
     const quote = calculateAddonQuote({
       addon,
       term,
+      durationMonths: durationMonths || cycle?.durationMonths,
       startsAt: now,
       expiresAt: cycle?.expiresAt,
       planStart: cycle?.startsAt,
@@ -311,6 +328,7 @@ export const resolveAuthoritativePrice = ({
   dynamicAddons = null,
   dynamicPlans = null,
   addonTerm = "",
+  addonTermDurationMonths = null,
   addonItems = [],
 }) => {
   const normalizedPurpose = purpose === "plan" ? "subscription" : purpose;
@@ -345,7 +363,7 @@ export const resolveAuthoritativePrice = ({
     }
     basePlanAmount = addonItems.length
       ? addonItems.reduce((sum, item) => sum + Number(item.baseAmount || 0), 0)
-      : Number(addonConfig.price);
+      : getAddonTermPrice(addonConfig, addonTerm, addonTermDurationMonths);
     currency = "INR";
     title = addonItems.length > 1 ? `${addonItems.length} Add-ons` : addonConfig.title;
   } else if (normalizedPurpose === "subscription") {
@@ -398,7 +416,7 @@ export const resolveAuthoritativePrice = ({
   const finalAdditionalReps =
     normalizedPurpose === "extra_reps" ? Math.max(1, parsedAdditionalReps) : parsedAdditionalReps;
 
-  const subtotal = basePlanAmount + additionalRepsCost;
+  const subtotal = Math.round((basePlanAmount + additionalRepsCost) * 100) / 100;
 
   // Resolve configurable GST rate (support percentage e.g. 18 or decimal e.g. 0.18)
   let gstPercent = DEFAULT_GST_PERCENT;
@@ -790,16 +808,26 @@ export const createOrderHandler = async (req, res) => {
       billingOrganization = await Organization.findById(organizationId).catch(() => null);
     }
     const catalog = getEffectiveAddonCatalog(sysSettings).filter((a) => a.isActive !== false);
+    const planCatalog = getEffectivePlanCatalog(sysSettings).filter((p) => p.isActive !== false);
+    const configuredDuration = (term) => {
+      const plan = planCatalog.find((item) => item.id === term);
+      const months = Number(plan?.durationMonths);
+      return Number.isFinite(months) && months > 0 ? months : term === "yearly" ? 12 : 3;
+    };
     let resolvedAddonTerm = normalizeAddonTerm(addonTerm);
+    let resolvedAddonTermDurationMonths = null;
     let addonItems = [];
     let cycle = null;
     if (purpose === "addon") {
       if (!billingOrganization) throw new Error("An active subscription is required to purchase add-ons.");
-      cycle = getActivePlanCycle(billingOrganization);
+      const organizationTerm = getAddonTerm(billingOrganization.subscriptionPlan || billingOrganization.plan);
+      cycle = getActivePlanCycle(billingOrganization, new Date(), configuredDuration(organizationTerm));
       resolvedAddonTerm = cycle.term;
+      resolvedAddonTermDurationMonths = cycle.durationMonths;
       addonItems = buildAddonOrderItems({
         addonIds: addonIds.length ? addonIds : [addonType],
         term: cycle.term,
+        durationMonths: cycle.durationMonths,
         catalog,
         cycle,
         prorate: true,
@@ -807,21 +835,21 @@ export const createOrderHandler = async (req, res) => {
     } else if (purpose === "subscription" && Array.isArray(addonIds) && addonIds.length) {
       resolvedAddonTerm = getAddonTerm(planId);
       if (!resolvedAddonTerm) throw new Error("Subscriptions are available only quarterly or yearly.");
+      resolvedAddonTermDurationMonths = configuredDuration(resolvedAddonTerm);
       const periodStart = !billingOrganization?.isTrial && billingOrganization?.subscriptionEndDate && new Date(billingOrganization.subscriptionEndDate) > new Date()
         ? new Date(billingOrganization.subscriptionEndDate)
         : new Date();
       const periodEnd = new Date(periodStart);
-      periodEnd.setMonth(periodEnd.getMonth() + termPeriod(resolvedAddonTerm));
+      periodEnd.setMonth(periodEnd.getMonth() + resolvedAddonTermDurationMonths);
       addonItems = buildAddonOrderItems({
         addonIds,
         term: resolvedAddonTerm,
+        durationMonths: resolvedAddonTermDurationMonths,
         catalog,
         now: periodStart,
-        cycle: { startsAt: periodStart, expiresAt: periodEnd },
+        cycle: { startsAt: periodStart, expiresAt: periodEnd, durationMonths: resolvedAddonTermDurationMonths },
       });
     }
-
-    const planCatalog = getEffectivePlanCatalog(sysSettings).filter((p) => p.isActive !== false);
 
     // 1. Authoritative Server-Side Price Resolution (prevents parameter tampering)
     const priceResolution = resolveAuthoritativePrice({
@@ -836,6 +864,7 @@ export const createOrderHandler = async (req, res) => {
       dynamicAddons: catalog,
       dynamicPlans: planCatalog,
       addonTerm: resolvedAddonTerm,
+      addonTermDurationMonths: resolvedAddonTermDurationMonths,
       addonItems,
     });
     const finalAmount = priceResolution.amount;
@@ -1408,15 +1437,30 @@ export const getAddonQuoteHandler = async (req, res) => {
     if (!org || org.isTrial) {
       return res.status(400).json({ success: false, message: "Add-ons are available after starting a paid quarterly or yearly plan." });
     }
-    const cycle = getActivePlanCycle(org);
     const { SystemSettings } = getMasterModels();
     const settings = SystemSettings ? await SystemSettings.findOne().lean().catch(() => null) : null;
     const catalog = getEffectiveAddonCatalog(settings).filter((item) => item.isActive !== false);
-    const addonItems = buildAddonOrderItems({ addonIds: [req.body.addonId], term: cycle.term, catalog, cycle, prorate: true });
+    const planCatalog = getEffectivePlanCatalog(settings).filter((plan) => plan.isActive !== false);
+    const orgTerm = getAddonTerm(org.subscriptionPlan || org.plan);
+    const configuredPlan = planCatalog.find((plan) => plan.id === orgTerm);
+    const configuredMonths = Number(configuredPlan?.durationMonths);
+    const durationMonths = Number.isFinite(configuredMonths) && configuredMonths > 0
+      ? configuredMonths
+      : orgTerm === "yearly" ? 12 : 3;
+    const cycle = getActivePlanCycle(org, new Date(), durationMonths);
+    const addonItems = buildAddonOrderItems({
+      addonIds: [req.body.addonId],
+      term: cycle.term,
+      durationMonths: cycle.durationMonths,
+      catalog,
+      cycle,
+      prorate: true,
+    });
     const resolution = resolveAuthoritativePrice({
       purpose: "addon",
       addonType: req.body.addonId,
       addonTerm: cycle.term,
+      addonTermDurationMonths: cycle.durationMonths,
       addonItems,
       dynamicGstRate: settings?.gstRate,
       dynamicAddons: catalog,
@@ -1619,7 +1663,7 @@ export const createAdminAddonHandler = async (req, res) => {
     const { id, title, price, description = "", icon = "Sparkles", features = [], isActive = true } = req.body;
     const oneTimePrice = Number(price);
     if (!title || !Number.isFinite(oneTimePrice) || oneTimePrice < 0) {
-      return res.status(400).json({ success: false, message: "Title and a valid one-time price are required." });
+      return res.status(400).json({ success: false, message: "Title and a valid monthly price are required." });
     }
 
     const { SystemSettings } = getMasterModels();
@@ -1691,7 +1735,7 @@ export const updateAdminAddonHandler = async (req, res) => {
 
     if (title !== undefined) target.title = String(title).trim();
     if (price !== undefined) {
-      if (!Number.isFinite(Number(price)) || Number(price) < 0) return res.status(400).json({ success: false, message: "Enter a valid one-time add-on price." });
+      if (!Number.isFinite(Number(price)) || Number(price) < 0) return res.status(400).json({ success: false, message: "Enter a valid monthly add-on price." });
       target.price = Number(price);
     }
     if (description !== undefined) target.description = String(description).trim();
