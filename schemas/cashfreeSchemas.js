@@ -8,6 +8,8 @@ export const createCashfreeOrderSchema = z.object({
     purpose: z.enum(["subscription", "addon", "extra_reps", "wallet_credits", "service"]).optional().default("addon"),
     planId: z.string().trim().optional().default(""),
     addonType: z.string().trim().optional().default(""),
+    addonTerm: z.enum(["quarterly", "yearly"]).optional(),
+    addonIds: z.array(z.string().trim()).optional().default([]),
     additionalReps: z.union([z.number(), z.string()]).optional().default(0),
     orderAmount: z.union([z.number(), z.string()]).optional(),
     orderNote: z.string().trim().optional().default(""),
@@ -22,6 +24,10 @@ export const createCashfreeOrderSchema = z.object({
       .default({}),
     returnUrl: z.string().trim().optional().default(""),
   }),
+});
+
+export const addonQuoteSchema = z.object({
+  body: z.object({ addonId: z.string().trim().min(1) }),
 });
 
 export const queryOrdersSchema = z.object({
@@ -39,4 +45,5 @@ export const queryOrdersSchema = z.object({
 export default {
   createCashfreeOrderSchema,
   queryOrdersSchema,
+  addonQuoteSchema,
 };

@@ -23,7 +23,7 @@ export const enforceTrialLimits = (resource = "general") => {
           success: false,
           code: "TRIAL_EXPIRED",
           message:
-            "Your 3-day free trial has expired. Please upgrade to a paid plan or enable Autopay to continue.",
+            "Your 3-day free trial has expired. Please upgrade to a paid plan to continue.",
         });
       }
 
@@ -40,14 +40,12 @@ export const enforceTrialLimits = (resource = "general") => {
       }
 
       if (resource === "seats" && req.tenantModels?.User) {
-        const repCount = await req.tenantModels.User.countDocuments({
-          role: "sales person",
-        });
-        if (repCount >= TRIAL_LIMITS.maxSeats) {
+        const userCount = await req.tenantModels.User.countDocuments({ status: { $ne: "deleted" } });
+        if (userCount >= TRIAL_LIMITS.maxSeats) {
           return res.status(403).json({
             success: false,
             code: "TRIAL_LIMIT_REACHED",
-            message: `Free trial is limited to ${TRIAL_LIMITS.maxSeats} sales rep seats. Upgrade your plan to add more reps.`,
+            message: `Free trial includes ${TRIAL_LIMITS.maxSeats} seats total. Upgrade your plan to add more team members.`,
           });
         }
       }
@@ -55,6 +53,9 @@ export const enforceTrialLimits = (resource = "general") => {
       next();
     } catch (error) {
       console.error("[TrialLimitMiddleware] Error:", error.message);
+      if (req.organization?.isTrial) {
+        return res.status(500).json({ success: false, message: "Could not verify the trial workspace limits. Please retry." });
+      }
       next();
     }
   };

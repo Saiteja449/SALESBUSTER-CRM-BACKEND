@@ -4,6 +4,7 @@ import validateRequest from "../middleware/validateRequest.js";
 import {
   createCashfreeOrderSchema,
   queryOrdersSchema,
+  addonQuoteSchema,
 } from "../schemas/cashfreeSchemas.js";
 import {
   createOrderHandler,
@@ -18,15 +19,15 @@ import {
   createAdminAddonHandler,
   updateAdminAddonHandler,
   deleteAdminAddonHandler,
+  createAdminPlanHandler,
+  updateAdminPlanHandler,
+  deleteAdminPlanHandler,
+  getAddonQuoteHandler,
   downloadInvoiceHandler,
   resendInvoiceHandler,
 } from "../controllers/cashfreeController.js";
 import {
   startFreeTrialHandler,
-  startPublicFreeTrialHandler,
-  createAutopaySubscriptionHandler,
-  getAutopayStatusHandler,
-  cancelAutopaySubscriptionHandler,
 } from "../controllers/trialAutopayController.js";
 
 const router = express.Router();
@@ -39,6 +40,8 @@ router.post(
   validateRequest(createCashfreeOrderSchema),
   createOrderHandler
 );
+
+router.post("/addon-quote", protect, requireCrmAccount, validateRequest(addonQuoteSchema), getAddonQuoteHandler);
 
 // 1b. Public Website Order Creation (No auth required for marketing web checkout)
 router.post(
@@ -59,6 +62,9 @@ router.put("/admin/pricing-settings", verifySuperAdmin, updatePricingSettingsHan
 router.post("/admin/addons", verifySuperAdmin, createAdminAddonHandler);
 router.put("/admin/addons/:addonId", verifySuperAdmin, updateAdminAddonHandler);
 router.delete("/admin/addons/:addonId", verifySuperAdmin, deleteAdminAddonHandler);
+router.post("/admin/plans", verifySuperAdmin, createAdminPlanHandler);
+router.put("/admin/plans/:planId", verifySuperAdmin, updateAdminPlanHandler);
+router.delete("/admin/plans/:planId", verifySuperAdmin, deleteAdminPlanHandler);
 
 // 2. Fetch / Verify Order Status & Download Tax Invoice
 router.get("/order/:orderId", protect, getOrderStatusHandler);
@@ -70,12 +76,8 @@ router.post("/admin/orders/:orderId/resend-invoice", protect, requireCrmAccount,
 // 3. Webhook Ingestion (Public S2S callback, verified via HMAC-SHA256 signature)
 router.post("/webhook", handleCashfreeWebhook);
 
-// 3b. 3-Day Free Trial & Cashfree Autopay Subscriptions
-router.post("/public/trial/start", startPublicFreeTrialHandler);
+// 3b. 3-Day Free Trial
 router.post("/trial/start", protect, startFreeTrialHandler);
-router.post("/autopay/create", protect, createAutopaySubscriptionHandler);
-router.get("/autopay/status", protect, getAutopayStatusHandler);
-router.post("/autopay/cancel", protect, cancelAutopaySubscriptionHandler);
 
 // 4. Payment History for Tenant Organization (Auth required)
 router.get("/history", protect, requireCrmAccount, getOrderHistoryHandler);

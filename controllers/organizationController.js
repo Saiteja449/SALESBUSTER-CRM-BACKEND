@@ -20,6 +20,24 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { encryptApiKey, decryptApiKey } from "../utils/encryption.js";
 import { invalidateVectorStoreForOrg } from "../ai/aiService.js";
 import { checkAndResetDailyAiUsage } from "../services/aiUsageService.js";
+import { isAddonActive } from "../services/addonEntitlementService.js";
+
+const syncAdminAddonEntitlement = (org, addonId, enabled) => {
+  org.addonEntitlements = org.addonEntitlements || [];
+  const latest = [...org.addonEntitlements].reverse().find((item) => item.addonId === addonId);
+  if (!enabled) {
+    if (latest) latest.expiresAt = new Date();
+    return;
+  }
+  const end = org.subscriptionEndDate ? new Date(org.subscriptionEndDate) : null;
+  if (!end || end <= new Date()) return;
+  if (latest && new Date(latest.expiresAt) > new Date()) {
+    latest.expiresAt = end;
+    latest.source = "admin";
+  } else {
+    org.addonEntitlements.push({ addonId, startsAt: new Date(), expiresAt: end, source: "admin" });
+  }
+};
 
 /**
  * Calculates subscription end date given a start date and duration in months.
@@ -113,11 +131,11 @@ export const provisionOrganization = async (req, res) => {
     }
 
     // Validate and normalize subscriptionPlan
-    let normalizedPlan = (subscriptionPlan || "monthly").toLowerCase().trim();
+    let normalizedPlan = (subscriptionPlan || "quarterly").toLowerCase().trim();
     if (normalizedPlan === "annual") {
       normalizedPlan = "annually";
     }
-    const allowedPlans = ["monthly", "quarterly", "annually"];
+    const allowedPlans = ["quarterly", "annually"];
     if (!allowedPlans.includes(normalizedPlan)) {
       return res.status(400).json({
         success: false,
@@ -157,11 +175,8 @@ export const provisionOrganization = async (req, res) => {
       });
     }
 
-    // 3. Compute Subscription Dates based on selected plan or explicit months
-    const durationMonths =
-      months != null && !isNaN(parseInt(months, 10))
-        ? Math.max(1, parseInt(months, 10))
-        : getDurationMonthsForPlan(normalizedPlan);
+    // New organizations are provisioned only on fixed quarterly or annual terms.
+    const durationMonths = getDurationMonthsForPlan(normalizedPlan);
 
     const startDate = subscriptionStartDate
       ? new Date(subscriptionStartDate)
@@ -217,6 +232,11 @@ export const provisionOrganization = async (req, res) => {
         biAnalyst: Boolean(addons?.biAnalyst),
         targetIntelligence: Boolean(addons?.targetIntelligence),
       },
+      addonEntitlements: [
+        ["whatsappCampaigns", "whatsapp_campaigns"],
+        ["biAnalyst", "bi_analyst"],
+        ["targetIntelligence", "target_intelligence"],
+      ].filter(([key]) => Boolean(addons?.[key])).map(([, addonId]) => ({ addonId, startsAt: startDate, expiresAt: endDate, source: "admin" })),
       aiSettings: getDefaultAISettings(name.trim()),
       createdBy: req.user?._id || null,
     });
@@ -504,11 +524,11 @@ export const renewSubscription = async (req, res) => {
       });
     }
 
-    let targetPlan = org.subscriptionPlan || "monthly";
+    let targetPlan = org.subscriptionPlan === "annually" ? "annually" : "quarterly";
     if (subscriptionPlan) {
       let normalizedPlan = subscriptionPlan.toLowerCase().trim();
       if (normalizedPlan === "annual") normalizedPlan = "annually";
-      const allowedPlans = ["monthly", "quarterly", "annually"];
+      const allowedPlans = ["quarterly", "annually"];
       if (!allowedPlans.includes(normalizedPlan)) {
         return res.status(400).json({
           success: false,
@@ -518,10 +538,7 @@ export const renewSubscription = async (req, res) => {
       targetPlan = normalizedPlan;
     }
 
-    const renewalMonths =
-      months != null && !isNaN(parseInt(months, 10))
-        ? Math.max(1, parseInt(months, 10))
-        : getDurationMonthsForPlan(targetPlan);
+    const renewalMonths = getDurationMonthsForPlan(targetPlan);
 
     // If existing subscription is already expired, start from today
     // Otherwise extend from current subscriptionEndDate
@@ -534,6 +551,7 @@ export const renewSubscription = async (req, res) => {
     const newEndDate = calculateSubscriptionEndDate(baseDate, renewalMonths);
 
     org.subscriptionPlan = targetPlan;
+    org.subscriptionStartDate = baseDate;
     org.subscriptionEndDate = newEndDate;
     org.status = "active";
     if (amountPaid != null) {
@@ -717,12 +735,15 @@ export const updateOrganizationAddons = async (req, res) => {
 
     if (whatsappCampaigns !== undefined) {
       org.addons.whatsappCampaigns = Boolean(whatsappCampaigns);
+      syncAdminAddonEntitlement(org, "whatsapp_campaigns", Boolean(whatsappCampaigns));
     }
     if (biAnalyst !== undefined) {
       org.addons.biAnalyst = Boolean(biAnalyst);
+      syncAdminAddonEntitlement(org, "bi_analyst", Boolean(biAnalyst));
     }
     if (targetIntelligence !== undefined) {
       org.addons.targetIntelligence = Boolean(targetIntelligence);
+      syncAdminAddonEntitlement(org, "target_intelligence", Boolean(targetIntelligence));
     }
 
     org.markModified("addons");
@@ -1254,7 +1275,7 @@ export const updateMyAISettings = async (req, res) => {
       checkAndResetDailyAiUsage(org);
       const calls = Math.max(0, parseInt(quotaSplit.calls, 10) || 0);
       const whatsappAi = Math.max(0, parseInt(quotaSplit.whatsappAi, 10) || 0);
-      const isBiActive = Boolean(org.addons?.biAnalyst);
+      const isBiActive = isAddonActive(org, "biAnalyst");
 
       if (!isBiActive && quotaSplit.biAnalyst && parseInt(quotaSplit.biAnalyst, 10) > 0) {
         return res.status(400).json({
@@ -1983,7 +2004,7 @@ export const updateQuotaSplit = async (req, res) => {
 
     const parsedCalls = Math.max(0, parseInt(calls, 10) || 0);
     const parsedWhatsApp = Math.max(0, parseInt(whatsappAi, 10) || 0);
-    const isBiActive = Boolean(org.addons?.biAnalyst);
+    const isBiActive = isAddonActive(org, "biAnalyst");
 
     if (!isBiActive && biAnalyst && parseInt(biAnalyst, 10) > 0) {
       return res.status(400).json({
@@ -2052,7 +2073,7 @@ export const upgradeGuestOrganization = async (req, res) => {
     const { id } = req.params;
     const {
       seats = 1,
-      subscriptionPlan = "monthly",
+      subscriptionPlan = "quarterly",
       months,
       subscriptionStartDate,
       amountPaid = 0,
@@ -2102,9 +2123,9 @@ export const upgradeGuestOrganization = async (req, res) => {
       });
     }
 
-    let normalizedPlan = (subscriptionPlan || "monthly").toLowerCase().trim();
+    let normalizedPlan = (subscriptionPlan || "quarterly").toLowerCase().trim();
     if (normalizedPlan === "annual") normalizedPlan = "annually";
-    const allowedPlans = ["monthly", "quarterly", "annually"];
+    const allowedPlans = ["quarterly", "annually"];
     if (!allowedPlans.includes(normalizedPlan)) {
       return res.status(400).json({
         success: false,
@@ -2113,10 +2134,7 @@ export const upgradeGuestOrganization = async (req, res) => {
       });
     }
 
-    const durationMonths =
-      months != null && !isNaN(parseInt(months, 10))
-        ? Math.max(1, parseInt(months, 10))
-        : getDurationMonthsForPlan(normalizedPlan);
+    const durationMonths = getDurationMonthsForPlan(normalizedPlan);
 
     const startDate = subscriptionStartDate
       ? new Date(subscriptionStartDate)
@@ -2152,6 +2170,9 @@ export const upgradeGuestOrganization = async (req, res) => {
         biAnalyst: Boolean(addons.biAnalyst ?? org.addons?.biAnalyst),
         targetIntelligence: Boolean(addons.targetIntelligence ?? org.addons?.targetIntelligence),
       };
+      for (const [key, addonId] of [["whatsappCampaigns", "whatsapp_campaigns"], ["biAnalyst", "bi_analyst"], ["targetIntelligence", "target_intelligence"]]) {
+        if (addons[key] !== undefined) syncAdminAddonEntitlement(org, addonId, Boolean(addons[key]));
+      }
     }
 
     await org.save();
@@ -2251,7 +2272,6 @@ export const deleteOrganization = async (req, res) => {
       InstagramAccount,
       MarketingCampaign,
       CashfreeOrder,
-      CashfreeSubscription,
       ApiActivityLog,
     } = masterModels;
 
@@ -2296,7 +2316,6 @@ export const deleteOrganization = async (req, res) => {
       InstagramAccount?.deleteMany({ organizationId: org._id }),
       MarketingCampaign?.deleteMany({ organizationId: org._id }),
       CashfreeOrder?.deleteMany({ organizationId: org._id }),
-      CashfreeSubscription?.deleteMany({ organizationId: org._id }),
       ApiActivityLog?.deleteMany({ organizationId: orgIdStr }),
     ]);
 

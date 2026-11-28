@@ -54,10 +54,27 @@ const systemSettingsSchema = new mongoose.Schema(
       {
         id: { type: String, required: true, trim: true },
         title: { type: String, required: true, trim: true },
-        price: { type: Number, required: true, min: 0 },
-        period: { type: String, default: "monthly", trim: true },
+        price: { type: Number, min: 0 }, // Monthly add-on rate; checkout multiplies by plan months.
         description: { type: String, default: "", trim: true },
         icon: { type: String, default: "Sparkles", trim: true },
+        features: [{ type: String, trim: true }],
+        isActive: { type: Boolean, default: true },
+      },
+    ],
+    planCatalogConfigured: {
+      type: Boolean,
+      default: false,
+    },
+    planCatalog: [
+      {
+        id: { type: String, required: true, trim: true },
+        title: { type: String, required: true, trim: true },
+        price: { type: Number, required: true, min: 0 },
+        period: { type: String, default: "year", trim: true },
+        durationMonths: { type: Number, default: 12, min: 1 },
+        description: { type: String, default: "", trim: true },
+        popular: { type: Boolean, default: false },
+        saveBadge: { type: String, default: "", trim: true },
         features: [{ type: String, trim: true }],
         isActive: { type: Boolean, default: true },
       },

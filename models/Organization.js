@@ -280,21 +280,6 @@ const organizationSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    autopayEnabled: {
-      type: Boolean,
-      default: false,
-      index: true,
-    },
-    cashfreeSubscriptionId: {
-      type: String,
-      default: null,
-      index: true,
-    },
-    autopayStatus: {
-      type: String,
-      enum: ["none", "initialized", "active", "paused", "cancelled", "completed"],
-      default: "none",
-    },
     nextBillingDate: {
       type: Date,
       default: null,
@@ -346,6 +331,15 @@ const organizationSchema = new mongoose.Schema(
         index: true,
       },
     },
+    addonEntitlements: [
+      {
+        addonId: { type: String, required: true, trim: true },
+        startsAt: { type: Date, required: true },
+        expiresAt: { type: Date, required: true, index: true },
+        orderId: { type: String, default: "" },
+        source: { type: String, enum: ["payment", "admin"], default: "payment" },
+      },
+    ],
     aiSettings: {
       geminiApiKey: {
         type: String,

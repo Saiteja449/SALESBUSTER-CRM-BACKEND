@@ -1,0 +1,119 @@
+import bcrypt from "bcryptjs";
+import { randomBytes } from "node:crypto";
+import { getMasterModels, getTenantModels, generateTenantDbName } from "../services/tenantManager.js";
+import { TRIAL_LIMITS } from "../middleware/trialLimitMiddleware.js";
+import { sendTenantWelcomeEmail } from "../helpers/emailHelper.js";
+
+/** Creates a CRM trial workspace and emails generated login credentials. */
+export const registerTrialWorkspace = async (req, res) => {
+  try {
+    const { phone, name, email, companyName } = req.body || {};
+    const cleanPhone = String(phone || "").replace(/\D/g, "").slice(-10);
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    const cleanName = String(name || "").trim();
+    const cleanCompany = String(companyName || cleanName).trim();
+    if (cleanPhone.length !== 10) {
+      return res.status(400).json({ success: false, message: "Enter a valid 10-digit mobile number." });
+    }
+    if (cleanName.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ success: false, message: "Enter your name and a valid email address." });
+    }
+
+    const { AuthUser, Organization } = getMasterModels();
+    const duplicate = await AuthUser.findOne({ $or: [{ email: cleanEmail }, { phone: cleanPhone }] }).lean();
+    const phoneOrg = await Organization.findOne({ mobile: new RegExp(`${cleanPhone}$`) }).lean();
+    if (duplicate || phoneOrg) {
+      return res.status(409).json({ success: false, message: "An account already uses this email or phone number. Please sign in instead." });
+    }
+
+    let tenantDbName = generateTenantDbName(cleanCompany);
+    let attempt = 0;
+    while (await Organization.findOne({ tenantDbName })) {
+      tenantDbName = generateTenantDbName(`${cleanCompany}_${attempt++}`);
+      if (attempt > 5) throw new Error("Could not allocate a workspace. Please contact support.");
+    }
+    const now = new Date();
+    const trialEndsAt = new Date(now.getTime() + TRIAL_LIMITS.durationDays * 86400000);
+    const temporaryPassword = randomBytes(18).toString("base64url");
+    const hashedPassword = await bcrypt.hash(temporaryPassword, await bcrypt.genSalt(10));
+    let org;
+    let user;
+    try {
+      org = await Organization.create({
+        name: cleanCompany,
+        email: cleanEmail,
+        mobile: cleanPhone,
+        accountType: "crm",
+        seats: TRIAL_LIMITS.maxSeats,
+        amountPaid: 0,
+        pricingPerSeat: 0,
+        subscriptionPlan: "quarterly",
+        subscriptionStartDate: now,
+        subscriptionEndDate: trialEndsAt,
+        isTrial: true,
+        trialStartDate: now,
+        trialEndsAt,
+        trialConverted: false,
+        status: "active",
+        tenantDbName,
+        notes: "Self-serve 3-day free CRM trial started from the website.",
+      });
+      user = await AuthUser.create({
+        email: cleanEmail,
+        phone: cleanPhone,
+        password: hashedPassword,
+        name: cleanName,
+        role: "sales manager",
+        organizationId: org._id,
+        tenantDbName,
+        isOrgOwner: true,
+        status: "active",
+        accountType: "crm",
+      });
+      org.ownerId = user._id;
+      await org.save();
+      const tenantModels = getTenantModels(tenantDbName);
+      await tenantModels.User.create({
+        _id: user._id,
+        name: cleanName,
+        email: cleanEmail,
+        phone: cleanPhone,
+        password: hashedPassword,
+        role: "sales manager",
+        organizationId: org._id,
+        isOrgOwner: true,
+        status: "active",
+        accountType: "crm",
+      });
+    } catch (provisionError) {
+      if (org?._id) await Organization.findByIdAndDelete(org._id).catch(() => {});
+      if (user?._id) await AuthUser.findByIdAndDelete(user._id).catch(() => {});
+      throw provisionError;
+    }
+
+    let emailSent = false;
+    try {
+      emailSent = await sendTenantWelcomeEmail({
+        organization: org,
+        ownerEmail: cleanEmail,
+        temporaryPassword,
+        loginUrl: process.env.CRM_APP_URL || "https://app.salesbuster.ai/login",
+      });
+    } catch (emailError) {
+      console.error("[TrialSignup] Failed to send trial credentials email:", emailError);
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: emailSent
+        ? "Your 3-day free trial is ready. Login details have been sent to your email."
+        : "Your 3-day free trial is ready, but we could not send the login email. Please contact support.",
+      emailSent,
+      trialEndsAt,
+      account: { email: cleanEmail },
+    });
+  } catch (error) {
+    console.error("[TrialSignup] Workspace creation failed:", error);
+    return res.status(500).json({ success: false, message: error.message || "Could not create the trial workspace." });
+  }
+};

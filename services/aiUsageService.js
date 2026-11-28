@@ -1,5 +1,6 @@
 import { getMasterModels } from "./tenantManager.js";
 import { getIO } from "../socket/socket.js";
+import { isAddonActive } from "./addonEntitlementService.js";
 
 export const DEFAULT_DAILY_QUOTA_LIMIT = 500;
 
@@ -42,7 +43,7 @@ export const checkAndResetDailyAiUsage = (org) => {
     org.aiSettings = {};
   }
 
-  const isBiActive = Boolean(org.addons?.biAnalyst);
+  const isBiActive = isAddonActive(org, "biAnalyst");
 
   if (!org.aiSettings.dailyAiUsage) {
     const defaultSplit = getDefaultQuotaSplit(isBiActive);
@@ -153,7 +154,7 @@ export const checkAiQuotaAvailable = async (orgOrId, type = "whatsapp", count = 
     const normalizedType =
       type === "chat" ? "whatsapp" : type === "audio" ? "calls" : type === "assistant" ? "biAnalyst" : type;
 
-    const split = usage?.quotaSplit || getDefaultQuotaSplit(Boolean(org.addons?.biAnalyst));
+    const split = usage?.quotaSplit || getDefaultQuotaSplit(isAddonActive(org, "biAnalyst"));
 
     let channelLimit = 0;
     let channelUsed = 0;
@@ -165,7 +166,7 @@ export const checkAiQuotaAvailable = async (orgOrId, type = "whatsapp", count = 
       channelLimit = Number(split.calls) || 0;
       channelUsed = Number(usage?.callsApiCalls ?? usage?.audioApiCalls) || 0;
     } else if (normalizedType === "biAnalyst") {
-      if (!org.addons?.biAnalyst) {
+      if (!isAddonActive(org, "biAnalyst")) {
         return {
           allowed: false,
           reason: "BI Analyst add-on is not active for this organization.",
@@ -283,7 +284,7 @@ export const reserveAiQuota = async (orgOrId, type = "whatsapp", count = 1) => {
         };
       }
 
-      const split = usage?.quotaSplit || getDefaultQuotaSplit(Boolean(org.addons?.biAnalyst));
+      const split = usage?.quotaSplit || getDefaultQuotaSplit(isAddonActive(org, "biAnalyst"));
       let channelLimit = 0;
       let channelUsed = 0;
 
@@ -294,7 +295,7 @@ export const reserveAiQuota = async (orgOrId, type = "whatsapp", count = 1) => {
         channelLimit = Number(split.calls) || 0;
         channelUsed = Number(usage?.callsApiCalls ?? usage?.audioApiCalls) || 0;
       } else if (normalizedType === "biAnalyst") {
-        if (!org.addons?.biAnalyst) {
+        if (!isAddonActive(org, "biAnalyst")) {
           return {
             allowed: false,
             reason: "BI Analyst add-on is not active for this organization.",
@@ -359,7 +360,7 @@ export const reserveAiQuota = async (orgOrId, type = "whatsapp", count = 1) => {
       return { allowed: false, reason: "Organization not found" };
     }
 
-    const isBiActive = Boolean(org.addons?.biAnalyst);
+    const isBiActive = isAddonActive(org, "biAnalyst");
     if (normalizedType === "biAnalyst" && !isBiActive) {
       return {
         allowed: false,

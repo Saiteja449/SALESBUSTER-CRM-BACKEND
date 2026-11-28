@@ -77,7 +77,7 @@ export const login = async (req, res) => {
           org.accountType !== "guest" &&
           org.subscriptionEndDate && new Date(org.subscriptionEndDate) < now;
 
-        if (isExpired) {
+        if (isExpired && org.status !== "active") {
           return res.status(403).json({
             success: false,
             subscriptionExpired: true,

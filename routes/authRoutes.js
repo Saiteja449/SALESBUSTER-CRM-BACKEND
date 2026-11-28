@@ -12,6 +12,7 @@ import {
   completeProfile,
 } from '../controllers/otpAuthController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { registerTrialWorkspace } from '../controllers/trialSignupController.js';
 
 const router = express.Router();
 
@@ -24,6 +25,7 @@ router.post('/guest-register', guestRegister);
 
 // Phone Number & Fast2SMS 4-Digit OTP routes
 router.post('/send-otp', sendOtp);
+router.post('/trial-signup', registerTrialWorkspace);
 router.post('/verify-otp', verifyOtp);
 router.post('/complete-profile', protect, completeProfile);
 

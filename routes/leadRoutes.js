@@ -19,6 +19,7 @@ import {
 import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
 import { validateRequest } from "../middleware/validateRequest.js";
 import { createLeadSchema } from "../schemas/leadSchemas.js";
+import { enforceTrialLimits } from "../middleware/trialLimitMiddleware.js";
 
 const router = express.Router();
 
@@ -97,7 +98,7 @@ const handleExcelUpload = (req, res, next) => {
 };
 
 // 1. Bulk import (Protected)
-router.post("/import-excel", protect, requireCrmAccount, handleExcelUpload, importExcelLeads);
+router.post("/import-excel", protect, requireCrmAccount, enforceTrialLimits("leads"), handleExcelUpload, importExcelLeads);
 
 // 2. Leads listing & creation (Protected)
 router
@@ -106,6 +107,7 @@ router
   .post(
     protect,
     requireCrmAccount,
+    enforceTrialLimits("leads"),
     handleRecordingUpload,
     validateRequest(createLeadSchema),
     createLead
@@ -118,10 +120,10 @@ router.route("/paginated").get(protect, requireCrmAccount, getPaginatedLeads);
 router.post("/webhook/status", updateStatusByWebhook);
 
 // 5. Missed Call Background Handler (Protected - Auto-schedules in Today's Follow-up & sends WhatsApp)
-router.post("/missed-call", protect, requireCrmAccount, handleMissedCall);
+router.post("/missed-call", protect, requireCrmAccount, enforceTrialLimits("leads"), handleMissedCall);
 
 // 6. Inbound Call Lead Handler (Protected - Auto-resolves/reassigns to receiving sales rep)
-router.post("/inbound-call", protect, requireCrmAccount, handleInboundCall);
+router.post("/inbound-call", protect, requireCrmAccount, enforceTrialLimits("leads"), handleInboundCall);
 
 // 6. Individual lead management & recording operations (Protected)
 router

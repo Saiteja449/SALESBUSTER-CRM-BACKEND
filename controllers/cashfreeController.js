@@ -1,7 +1,6 @@
 import crypto from "crypto";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import { handleSubscriptionWebhookEvent } from "./trialAutopayController.js";
 import {
   getTenantModels,
   getMasterModels,
@@ -16,6 +15,7 @@ import {
   fetchCashfreePgOrder,
   fetchCashfreePgPayments,
   verifyCashfreeWebhookSignature,
+  getCashfreeBaseUrl,
 } from "../services/cashfreeService.js";
 
 /**
@@ -27,24 +27,28 @@ export const GST_RATE = 0.18; // Statutory 18% Goods & Services Tax (GST) fallba
 export const CASHFREE_PRICING_CATALOG = {
   addon: {
     whatsapp_campaigns: {
-      amount: 999,
+      quarterlyAmount: 2997,
+      yearlyAmount: 11988,
       currency: "INR",
-      title: "WhatsApp Campaigns Monthly Addon",
+      title: "WhatsApp Campaigns Add-on",
     },
     target_intelligence: {
-      amount: 1499,
+      quarterlyAmount: 4497,
+      yearlyAmount: 17988,
       currency: "INR",
-      title: "AI Target Intelligence Monthly Addon",
+      title: "AI Target Intelligence Add-on",
     },
     bi_analyst: {
-      amount: 999,
+      quarterlyAmount: 2997,
+      yearlyAmount: 11988,
       currency: "INR",
-      title: "AI BI Analyst Monthly Addon",
+      title: "AI BI Analyst Add-on",
     },
     instagram_automation: {
-      amount: 499,
+      quarterlyAmount: 1497,
+      yearlyAmount: 5988,
       currency: "INR",
-      title: "Instagram Auto DM & Lead Gen Addon",
+      title: "Instagram Auto DM & Lead Gen Add-on",
     },
   },
   subscription: {
@@ -76,77 +80,236 @@ export const CASHFREE_PRICING_CATALOG = {
   },
 };
 
-export const DEFAULT_ADDON_CATALOG = [
+export const DEFAULT_ADDON_CATALOG = [];
+
+export const getEffectiveAddonCatalog = (sysSettings) => {
+  const normalize = (addon) => {
+    const legacyPrice = Number(addon.price) || 0;
+    return {
+      ...addon,
+      price: Number.isFinite(Number(addon.price)) ? Number(addon.price) : legacyPrice,
+    };
+  };
+  if (Array.isArray(sysSettings?.addonCatalog)) {
+    return sysSettings.addonCatalog.map(normalize);
+  }
+  return [];
+};
+
+export const DEFAULT_PLAN_CATALOG = [
   {
-    id: "whatsapp_campaigns",
-    title: "WhatsApp Campaigns",
-    price: 999,
-    period: "monthly",
-    description: "Bulk broadcast marketing, official template creation, and delivery analytics.",
-    icon: "Send",
+    id: "yearly",
+    title: "Yearly Plan",
+    price: 53940,
+    period: "year (₹4,495/mo)",
+    durationMonths: 12,
+    description: "Annual commitment for teams committed to steady sales growth.",
+    popular: true,
+    saveBadge: "Save 25%",
     features: [
-      "Bulk Campaign Broadcasts",
-      "Template Manager & Variables",
-      "Delivery & Read Rate Analytics",
-      "Opt-out & Unsubscribe Handlers",
+      "Up to 5 Sales Rep Seats Included",
+      "Unified WhatsApp & CRM Pipeline",
+      "AI Follow-up Scheduling & Tracking",
+      "Meta Cloud Broadcast Engine",
+      "Priority Onboarding & Tech Support",
     ],
     isActive: true,
   },
   {
-    id: "target_intelligence",
-    title: "AI Target Intelligence",
-    price: 1499,
-    period: "monthly",
-    description: "AI-powered web crawling, company dossier research, and executive decision maker mapping.",
-    icon: "Brain",
+    id: "quarterly",
+    title: "Quarterly Plan",
+    price: 17985,
+    period: "quarter (₹5,995/mo)",
+    durationMonths: 3,
+    description: "Standard flexibility with quarterly billing cycles.",
+    popular: false,
+    saveBadge: "3-Month Cycle",
     features: [
-      "Domain Dossier Extraction",
-      "Executive Decision Maker Finder",
-      "Automated Pitch Deck Briefings",
-      "Firmographic Enrichment",
-    ],
-    isActive: true,
-  },
-  {
-    id: "bi_analyst",
-    title: "AI BI Analyst",
-    price: 999,
-    period: "monthly",
-    description: "Conversational natural language SQL & revenue intelligence charts on demand.",
-    icon: "Bot",
-    features: [
-      "Natural Language Data Queries",
-      "Instant Trend Charts & Exports",
-      "Anomaly Detection Alerts",
-      "Custom Executive Summaries",
-    ],
-    isActive: true,
-  },
-  {
-    id: "instagram_automation",
-    title: "Instagram Automation",
-    price: 499,
-    period: "monthly",
-    description: "Auto-respond to post comments, DM keyword triggers, and capture high-intent buyers.",
-    icon: "Instagram",
-    features: [
-      "Comment-to-DM Auto Triggers",
-      "Story Mention Responder",
-      "Lead Capture directly to CRM",
-      "Keywords Filter & Safe Limits",
+      "Up to 5 Sales Rep Seats Included",
+      "Unified WhatsApp & CRM Pipeline",
+      "AI Follow-up Tracking",
+      "Flexible 3-Month Renewal Cycle",
     ],
     isActive: true,
   },
 ];
 
-export const getEffectiveAddonCatalog = (sysSettings) => {
-  if (sysSettings?.addonCatalogConfigured && Array.isArray(sysSettings.addonCatalog)) {
-    return sysSettings.addonCatalog;
+export const getEffectivePlanCatalog = (sysSettings) => {
+  const normalize = (plan) => {
+    const id = String(plan.id || "").trim().toLowerCase();
+    const durationMonths = Number.isFinite(Number(plan.durationMonths)) && Number(plan.durationMonths) > 0
+      ? Number(plan.durationMonths)
+      : id === "yearly" || id === "annual"
+      ? 12
+      : 3;
+    const price = Number(plan.price) || 0;
+    const monthly = Math.round(price / durationMonths);
+    const defaultPeriod = durationMonths === 12
+      ? `year (₹${monthly.toLocaleString("en-IN")}/mo)`
+      : `quarter (₹${monthly.toLocaleString("en-IN")}/mo)`;
+    return {
+      ...plan,
+      id,
+      price,
+      durationMonths,
+      period: plan.period || defaultPeriod,
+      features: Array.isArray(plan.features) ? plan.features : [],
+      isActive: plan.isActive !== false,
+    };
+  };
+  if (Array.isArray(sysSettings?.planCatalog)) {
+    return sysSettings.planCatalog.map(normalize);
   }
-  if (Array.isArray(sysSettings?.addonCatalog) && sysSettings.addonCatalog.length > 0) {
-    return sysSettings.addonCatalog;
+  return [];
+};
+
+const normalizeAddonTerm = (term) => {
+  if (term === "annual" || term === "annually" || term === "yearly") return "yearly";
+  if (term === "quarterly") return "quarterly";
+  return "";
+};
+
+const getAddonTermPrice = (addon, term, durationMonths = null) => {
+  const normalizedTerm = normalizeAddonTerm(term);
+  if (!normalizedTerm) throw new Error("Choose a quarterly or yearly plan to price this add-on.");
+  const months = Number(durationMonths);
+  const termMonths = Number.isFinite(months) && months > 0 ? months : normalizedTerm === "yearly" ? 12 : 3;
+  const monthlyPrice = Number(addon?.price);
+  if (!Number.isFinite(monthlyPrice) || monthlyPrice < 0) throw new Error("This add-on is not configured with a valid monthly price.");
+  return Math.round(monthlyPrice * termMonths * 100) / 100;
+};
+
+const getAddonTerm = (planId) => normalizeAddonTerm(planId);
+
+export const calculateAddonQuote = ({ addon, term, durationMonths, startsAt = new Date(), expiresAt, planStart, prorate = false }) => {
+  const termPrice = getAddonTermPrice(addon, term, durationMonths);
+  let baseAmount = termPrice;
+  let endDate = expiresAt ? new Date(expiresAt) : null;
+  const startDate = new Date(startsAt);
+
+  if (!endDate || Number.isNaN(endDate.getTime()) || endDate <= startDate) {
+    throw new Error("Your plan has no time remaining for an add-on purchase.");
   }
-  return DEFAULT_ADDON_CATALOG;
+  const planStartDate = planStart ? new Date(planStart) : new Date(startDate);
+  if (Number.isNaN(planStartDate.getTime()) || planStartDate >= endDate) {
+    throw new Error("Your subscription dates are incomplete. Contact support to purchase an add-on.");
+  }
+  const totalTermDays = Math.max(1, Math.ceil((endDate.getTime() - planStartDate.getTime()) / 86400000));
+  const daysCovered = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000));
+  if (prorate) {
+    const totalTermMs = endDate.getTime() - planStartDate.getTime();
+    const remainingMs = Math.min(totalTermMs, endDate.getTime() - startDate.getTime());
+    baseAmount = Math.round((termPrice * remainingMs / totalTermMs) * 100) / 100;
+  }
+  const normalizedTerm = normalizeAddonTerm(term);
+  return { term: normalizedTerm, termPrice, baseAmount, daysCovered, totalTermDays, startsAt: startDate, expiresAt: endDate };
+};
+
+export const isOrganizationAddonActive = (org, addonId, now = new Date()) => {
+  const entitlement = Array.isArray(org?.addonEntitlements)
+    ? [...org.addonEntitlements].reverse().find((item) => item.addonId === addonId)
+    : null;
+  if (entitlement) return (!entitlement.startsAt || new Date(entitlement.startsAt) <= now) && Boolean(entitlement.expiresAt && new Date(entitlement.expiresAt) > now);
+  const legacyKey = {
+    whatsapp_campaigns: "whatsappCampaigns",
+    bi_analyst: "biAnalyst",
+    target_intelligence: "targetIntelligence",
+    instagram_automation: "instagramAutomation",
+  }[addonId] || addonId;
+  return Boolean(org?.addons?.[legacyKey] ||
+    (addonId === "whatsapp_campaigns" && org?.hasWhatsAppCampaignsAddon) ||
+    (addonId === "instagram_automation" && org?.hasInstagramAddon));
+};
+
+const setOrganizationAddon = (org, addonId, enabled) => {
+  const key = {
+    whatsapp_campaigns: "whatsappCampaigns",
+    bi_analyst: "biAnalyst",
+    target_intelligence: "targetIntelligence",
+    instagram_automation: "instagramAutomation",
+  }[addonId] || addonId;
+  org.addons = org.addons || {};
+  org.addons[key] = enabled;
+  if (addonId === "whatsapp_campaigns") org.hasWhatsAppCampaignsAddon = enabled;
+  if (addonId === "instagram_automation") org.hasInstagramAddon = enabled;
+  org.markModified?.("addons");
+};
+
+const applyPaidAddonItems = (org, order) => {
+  const items = Array.isArray(order.addonItems) ? order.addonItems : [];
+  if (!items.length) {
+    // Historical orders carried only a boolean entitlement and remain grandfathered.
+    if (order.purpose === "addon" && order.addonType) setOrganizationAddon(org, order.addonType, true);
+    return;
+  }
+  org.addonEntitlements = org.addonEntitlements || [];
+  for (const item of items) {
+    if (!item.addonId || !item.expiresAt) continue;
+    const alreadyApplied = org.addonEntitlements.some((entitlement) => entitlement.orderId === order.orderId && entitlement.addonId === item.addonId);
+    if (alreadyApplied) continue;
+    setOrganizationAddon(org, item.addonId, true);
+    org.addonEntitlements.push({
+      addonId: item.addonId,
+      startsAt: item.startsAt || new Date(),
+      expiresAt: item.expiresAt,
+      orderId: order.orderId,
+      source: "payment",
+    });
+  }
+}
+
+const termPeriod = (term, durationMonths = null) => {
+  const months = Number(durationMonths);
+  return Number.isFinite(months) && months > 0 ? months : term === "yearly" ? 12 : 3;
+};
+
+const getActivePlanCycle = (org, now = new Date(), durationMonths = null) => {
+  const term = getAddonTerm(org?.subscriptionPlan || org?.plan);
+  const end = org?.subscriptionEndDate ? new Date(org.subscriptionEndDate) : null;
+  if (!term || !org || org.isTrial || org.status !== "active" || !end || end <= now) {
+    throw new Error("An active quarterly or yearly subscription is required to purchase add-ons.");
+  }
+  const planMonths = termPeriod(term, durationMonths);
+  const start = new Date(end);
+  const endDay = start.getDate();
+  start.setDate(1);
+  start.setMonth(start.getMonth() - planMonths);
+  const lastDay = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate();
+  start.setDate(Math.min(endDay, lastDay));
+  const recordedStart = org.subscriptionStartDate ? new Date(org.subscriptionStartDate) : null;
+  if (recordedStart && recordedStart < end && Math.abs(recordedStart - start) < 4 * 86400000) start.setTime(recordedStart.getTime());
+  return { term, durationMonths: planMonths, startsAt: start, expiresAt: end, organization: org };
+};
+
+const buildAddonOrderItems = ({ addonIds, term, durationMonths, catalog, now = new Date(), cycle = null, prorate = false }) => {
+  const uniqueIds = [...new Set((addonIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!uniqueIds.length) return [];
+  return uniqueIds.map((addonId) => {
+    const addon = catalog.find((item) => item.id === addonId && item.isActive !== false);
+    if (!addon) throw new Error(`Add-on '${addonId}' is unavailable.`);
+    if (cycle && isOrganizationAddonActive(cycle.organization, addonId, now)) {
+      throw new Error(`${addon.title} is already active for your organization.`);
+    }
+    const quote = calculateAddonQuote({
+      addon,
+      term,
+      durationMonths: durationMonths || cycle?.durationMonths,
+      startsAt: now,
+      expiresAt: cycle?.expiresAt,
+      planStart: cycle?.startsAt,
+      prorate,
+    });
+    return {
+      addonId,
+      title: addon.title,
+      term: quote.term,
+      baseAmount: quote.baseAmount,
+      daysCovered: quote.daysCovered,
+      totalTermDays: quote.totalTermDays,
+      startsAt: quote.startsAt,
+      expiresAt: quote.expiresAt,
+    };
+  });
 };
 
 /**
@@ -163,6 +326,10 @@ export const resolveAuthoritativePrice = ({
   extraRepPriceYearly = 899,
   extraRepPriceQuarterly = 1199,
   dynamicAddons = null,
+  dynamicPlans = null,
+  addonTerm = "",
+  addonTermDurationMonths = null,
+  addonItems = [],
 }) => {
   const normalizedPurpose = purpose === "plan" ? "subscription" : purpose;
   let basePlanAmount = 0;
@@ -182,8 +349,7 @@ export const resolveAuthoritativePrice = ({
       additionalRepsCost = repsToAdd * extraRepPriceQuarterly * 3;
       title = `${repsToAdd} Additional Sales Rep${repsToAdd > 1 ? "s" : ""} (Quarterly)`;
     } else {
-      additionalRepsCost = repsToAdd * extraRepPriceQuarterly;
-      title = `${repsToAdd} Additional Sales Rep${repsToAdd > 1 ? "s" : ""} (Monthly)`;
+      throw new Error("Extra seats are available only on quarterly or yearly terms.");
     }
     basePlanAmount = 0;
     currency = "INR";
@@ -191,21 +357,35 @@ export const resolveAuthoritativePrice = ({
     const dynamicMatch = Array.isArray(dynamicAddons)
       ? dynamicAddons.find((a) => a.id === addonType && a.isActive !== false)
       : null;
-    const addonConfig = dynamicMatch
-      ? { amount: Number(dynamicMatch.price), currency: "INR", title: dynamicMatch.title }
-      : CASHFREE_PRICING_CATALOG.addon[addonType];
+    const addonConfig = dynamicMatch;
     if (!addonConfig) {
       throw new Error(`Invalid or unsupported addon type: '${addonType}'`);
     }
-    basePlanAmount = addonConfig.amount;
-    currency = addonConfig.currency;
-    title = addonConfig.title;
+    basePlanAmount = addonItems.length
+      ? addonItems.reduce((sum, item) => sum + Number(item.baseAmount || 0), 0)
+      : getAddonTermPrice(addonConfig, addonTerm, addonTermDurationMonths);
+    currency = "INR";
+    title = addonItems.length > 1 ? `${addonItems.length} Add-ons` : addonConfig.title;
   } else if (normalizedPurpose === "subscription") {
-    const planConfig = CASHFREE_PRICING_CATALOG.subscription[planId];
+    const normalizedPlanId = String(planId || "").toLowerCase();
+    const canonicalPlanId = ["annual", "annually"].includes(normalizedPlanId) ? "yearly" : normalizedPlanId;
+    if (!["quarterly", "yearly"].includes(canonicalPlanId)) {
+      throw new Error("New subscriptions are available only quarterly or yearly.");
+    }
+    const dynamicPlan = Array.isArray(dynamicPlans)
+      ? dynamicPlans.find((p) => p.id === canonicalPlanId && p.isActive !== false)
+      : null;
+    const planConfig = dynamicPlan
+      ? {
+          amount: Number(dynamicPlan.price),
+          currency: "INR",
+          title: dynamicPlan.title,
+        }
+      : null;
     if (!planConfig) {
       throw new Error(`Invalid or unsupported subscription plan: '${planId}'`);
     }
-    basePlanAmount = planConfig.amount;
+    basePlanAmount = planConfig.amount + addonItems.reduce((sum, item) => sum + Number(item.baseAmount || 0), 0);
     currency = planConfig.currency;
     title = planConfig.title;
   } else if (normalizedPurpose === "wallet_credits" || normalizedPurpose === "service") {
@@ -236,7 +416,7 @@ export const resolveAuthoritativePrice = ({
   const finalAdditionalReps =
     normalizedPurpose === "extra_reps" ? Math.max(1, parsedAdditionalReps) : parsedAdditionalReps;
 
-  const subtotal = basePlanAmount + additionalRepsCost;
+  const subtotal = Math.round((basePlanAmount + additionalRepsCost) * 100) / 100;
 
   // Resolve configurable GST rate (support percentage e.g. 18 or decimal e.g. 0.18)
   let gstPercent = DEFAULT_GST_PERCENT;
@@ -259,6 +439,7 @@ export const resolveAuthoritativePrice = ({
     amount: totalAmount, // Authoritative total payable amount charged via Cashfree
     currency,
     title,
+    addonItems,
   };
 };
 
@@ -274,10 +455,10 @@ export const fulfillOrderBenefits = async (order) => {
   const phoneKey = String(order?.customerDetails?.customerPhone || "").replace(/\D/g, "").slice(-10);
   const provisionLockKey = emailKey || phoneKey || null;
   try {
-    if (!order) return;
+    if (!order || order.orderStatus !== "PAID") return;
 
-    // Idempotency: skip if already fulfilled and email sent
-    if (order.isFulfilled && order.receiptEmailSent) {
+    // Receipt delivery must never cause paid benefits to be applied twice.
+    if (order.isFulfilled) {
       console.log(`[CashfreeFulfillment] Order ${order.orderId} already fulfilled and receipt email sent. Skipping.`);
       return;
     }
@@ -452,29 +633,14 @@ export const fulfillOrderBenefits = async (order) => {
       );
 
       org.ownerId = masterAuthUser._id;
+      applyPaidAddonItems(org, order);
       await org.save();
 
       order.organizationId = org._id;
       console.log(`[CashfreeFulfillment] Auto-provisioned new tenant organization: ${org._id} (${org.name})`);
     } else {
       // Existing Organization: fulfill addon, extra_reps, or subscription
-      if (order.purpose === "addon") {
-        org.addons = org.addons || {};
-        if (order.addonType === "whatsapp_campaigns") {
-          org.hasWhatsAppCampaignsAddon = true;
-          org.addons.whatsappCampaigns = true;
-        } else if (order.addonType === "target_intelligence") {
-          org.addons.targetIntelligence = true;
-        } else if (order.addonType === "bi_analyst") {
-          org.addons.biAnalyst = true;
-        } else if (order.addonType === "instagram_automation") {
-          org.hasInstagramAddon = true;
-          org.addons.instagramAutomation = true;
-        } else if (order.addonType) {
-          org.addons[order.addonType] = true;
-        }
-        org.markModified("addons");
-      } else if (order.purpose === "extra_reps") {
+      if (order.purpose === "extra_reps") {
         const repsAdded = Math.max(1, Number(order.additionalReps) || 1);
         org.seats = (Number(org.seats) || 1) + repsAdded;
         org.amountPaid = (org.amountPaid || 0) + (order.orderAmount || 0);
@@ -495,13 +661,18 @@ export const fulfillOrderBenefits = async (order) => {
           else if (order.planId === "quarterly") extensionMonths = 3;
 
           const currentEnd =
-            org.subscriptionEndDate && new Date(org.subscriptionEndDate) > new Date()
+            !org.isTrial && org.subscriptionEndDate && new Date(org.subscriptionEndDate) > new Date()
               ? new Date(org.subscriptionEndDate)
               : new Date();
 
           const newEnd = new Date(currentEnd);
           newEnd.setMonth(newEnd.getMonth() + extensionMonths);
+          org.subscriptionStartDate = currentEnd;
           org.subscriptionEndDate = newEnd;
+          org.isTrial = false;
+          org.trialConverted = true;
+          org.accountType = "crm";
+          org.seats = Math.max(Number(org.seats) || 0, 5 + (Number(order.additionalReps) || 0));
           org.amountPaid = (org.amountPaid || 0) + (order.orderAmount || 0);
           const totalSeats = 5 + (Number(order.additionalReps) || 0);
           org.seats = Math.max(org.seats || 1, totalSeats);
@@ -624,6 +795,7 @@ export const fulfillOrderBenefits = async (order) => {
         }
       }
 
+      applyPaidAddonItems(org, order);
       await org.save();
       console.log(`[CashfreeFulfillment] Benefits successfully applied for org: ${org._id}`);
     }
@@ -747,6 +919,8 @@ export const createOrderHandler = async (req, res) => {
       purpose = "addon",
       planId = "",
       addonType = "",
+      addonIds = [],
+      addonTerm = "",
       additionalReps = 0,
       orderNote = "",
       customerDetails = {},
@@ -764,6 +938,55 @@ export const createOrderHandler = async (req, res) => {
     const extraRepPriceYearly = typeof sysSettings?.extraRepMonthlyPriceYearly === "number" ? sysSettings.extraRepMonthlyPriceYearly : 899;
     const extraRepPriceQuarterly = typeof sysSettings?.extraRepMonthlyPriceQuarterly === "number" ? sysSettings.extraRepMonthlyPriceQuarterly : 1199;
 
+    const { Organization } = getMasterModels();
+    let billingOrganization = req.organization || null;
+    if (!billingOrganization && organizationId && Organization) {
+      billingOrganization = await Organization.findById(organizationId).catch(() => null);
+    }
+    const catalog = getEffectiveAddonCatalog(sysSettings).filter((a) => a.isActive !== false);
+    const planCatalog = getEffectivePlanCatalog(sysSettings).filter((p) => p.isActive !== false);
+    const configuredDuration = (term) => {
+      const plan = planCatalog.find((item) => item.id === term);
+      const months = Number(plan?.durationMonths);
+      return Number.isFinite(months) && months > 0 ? months : term === "yearly" ? 12 : 3;
+    };
+    let resolvedAddonTerm = normalizeAddonTerm(addonTerm);
+    let resolvedAddonTermDurationMonths = null;
+    let addonItems = [];
+    let cycle = null;
+    if (purpose === "addon") {
+      if (!billingOrganization) throw new Error("An active subscription is required to purchase add-ons.");
+      const organizationTerm = getAddonTerm(billingOrganization.subscriptionPlan || billingOrganization.plan);
+      cycle = getActivePlanCycle(billingOrganization, new Date(), configuredDuration(organizationTerm));
+      resolvedAddonTerm = cycle.term;
+      resolvedAddonTermDurationMonths = cycle.durationMonths;
+      addonItems = buildAddonOrderItems({
+        addonIds: addonIds.length ? addonIds : [addonType],
+        term: cycle.term,
+        durationMonths: cycle.durationMonths,
+        catalog,
+        cycle,
+        prorate: true,
+      });
+    } else if (purpose === "subscription" && Array.isArray(addonIds) && addonIds.length) {
+      resolvedAddonTerm = getAddonTerm(planId);
+      if (!resolvedAddonTerm) throw new Error("Subscriptions are available only quarterly or yearly.");
+      resolvedAddonTermDurationMonths = configuredDuration(resolvedAddonTerm);
+      const periodStart = !billingOrganization?.isTrial && billingOrganization?.subscriptionEndDate && new Date(billingOrganization.subscriptionEndDate) > new Date()
+        ? new Date(billingOrganization.subscriptionEndDate)
+        : new Date();
+      const periodEnd = new Date(periodStart);
+      periodEnd.setMonth(periodEnd.getMonth() + resolvedAddonTermDurationMonths);
+      addonItems = buildAddonOrderItems({
+        addonIds,
+        term: resolvedAddonTerm,
+        durationMonths: resolvedAddonTermDurationMonths,
+        catalog,
+        now: periodStart,
+        cycle: { startsAt: periodStart, expiresAt: periodEnd, durationMonths: resolvedAddonTermDurationMonths },
+      });
+    }
+
     // 1. Authoritative Server-Side Price Resolution (prevents parameter tampering)
     const priceResolution = resolveAuthoritativePrice({
       purpose,
@@ -774,7 +997,11 @@ export const createOrderHandler = async (req, res) => {
       dynamicGstRate,
       extraRepPriceYearly,
       extraRepPriceQuarterly,
-      dynamicAddons: getEffectiveAddonCatalog(sysSettings),
+      dynamicAddons: catalog,
+      dynamicPlans: planCatalog,
+      addonTerm: resolvedAddonTerm,
+      addonTermDurationMonths: resolvedAddonTermDurationMonths,
+      addonItems,
     });
     const finalAmount = priceResolution.amount;
     const finalCurrency = priceResolution.currency;
@@ -817,14 +1044,17 @@ export const createOrderHandler = async (req, res) => {
       returnUrl || `${appBaseUrl}/payment/status?order_id={order_id}`;
     let finalNotifyUrl = `${backendBaseUrl}/api/payment/cashfree/webhook`;
 
-    // Cashfree Production strictly enforces https:// on returnUrl and notifyUrl
-    if (finalReturnUrl.startsWith("http://")) {
+    // Cashfree Production strictly enforces https:// on returnUrl and notifyUrl.
+    // For sandbox checkout, keep localhost return URLs so local payment testing
+    // returns to the local CRM instead of the production website.
+    const isCashfreeSandbox = getCashfreeBaseUrl().includes("sandbox.cashfree.com");
+    if (!isCashfreeSandbox && finalReturnUrl.startsWith("http://")) {
       finalReturnUrl = finalReturnUrl.replace(
         /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
         "https://salesbuster.ai"
       );
     }
-    if (finalNotifyUrl.startsWith("http://")) {
+    if (!isCashfreeSandbox && finalNotifyUrl.startsWith("http://")) {
       finalNotifyUrl = finalNotifyUrl.replace(
         /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
         "https://betaapi.salesbuster.ai"
@@ -876,6 +1106,8 @@ export const createOrderHandler = async (req, res) => {
       purpose,
       planId,
       addonType,
+      addonTerm: resolvedAddonTerm,
+      addonItems: priceResolution.addonItems,
       customerDetails: {
         customerId,
         customerName,
@@ -914,6 +1146,7 @@ export const createOrderHandler = async (req, res) => {
       additionalReps: newOrder.additionalReps || 0,
       totalSeats: newOrder.totalSeats || 5,
       orderCurrency: newOrder.orderCurrency,
+      addonItems: newOrder.addonItems || [],
       isDevMock: Boolean(cfResult.isDevMock),
       environment: process.env.CASHFREE_ENV || "SANDBOX",
     };
@@ -926,7 +1159,8 @@ export const createOrderHandler = async (req, res) => {
     });
   } catch (error) {
     console.error("[CashfreeCreateOrder] Error:", error);
-    return res.status(error.status || 500).json({
+    const clientValidationError = /only quarterly or yearly|quarterly.*yearly|yearly.*quarterly|required to purchase add-ons|already active|add-on .* unavailable|no time remaining|subscription dates are incomplete|extra seats are available only|invalid or unsupported (subscription plan|addon type)/i.test(error.message || "");
+    return res.status(error.status || (clientValidationError ? 400 : 500)).json({
       success: false,
       message: error.message || "Failed to create Cashfree order.",
       error: error.data || null,
@@ -1073,10 +1307,6 @@ export const handleCashfreeWebhook = async (req, res) => {
     const paymentData = data.payment || {};
 
     const orderId = orderData.order_id || payload.order_id;
-    if (String(eventType || "").startsWith("SUBSCRIPTION_")) {
-      await handleSubscriptionWebhookEvent(eventType, payload.data || payload);
-      return res.status(200).json({ status: "SUBSCRIPTION_PROCESSED" });
-    }
 
     if (!orderId) {
       return res.status(200).json({ status: "IGNORED_NO_ORDER_ID" });
@@ -1342,6 +1572,56 @@ export const devSimulateSuccessHandler = async (req, res) => {
  * GET /api/payment/cashfree/public/pricing-config
  * Public endpoint to fetch configured GST rate and extra rep rates for web checkout
  */
+export const getAddonQuoteHandler = async (req, res) => {
+  try {
+    const org = req.organization;
+    if (!org || org.isTrial) {
+      return res.status(400).json({ success: false, message: "Add-ons are available after starting a paid quarterly or yearly plan." });
+    }
+    const { SystemSettings } = getMasterModels();
+    const settings = SystemSettings ? await SystemSettings.findOne().lean().catch(() => null) : null;
+    const catalog = getEffectiveAddonCatalog(settings).filter((item) => item.isActive !== false);
+    const planCatalog = getEffectivePlanCatalog(settings).filter((plan) => plan.isActive !== false);
+    const orgTerm = getAddonTerm(org.subscriptionPlan || org.plan);
+    const configuredPlan = planCatalog.find((plan) => plan.id === orgTerm);
+    const configuredMonths = Number(configuredPlan?.durationMonths);
+    const durationMonths = Number.isFinite(configuredMonths) && configuredMonths > 0
+      ? configuredMonths
+      : orgTerm === "yearly" ? 12 : 3;
+    const cycle = getActivePlanCycle(org, new Date(), durationMonths);
+    const addonItems = buildAddonOrderItems({
+      addonIds: [req.body.addonId],
+      term: cycle.term,
+      durationMonths: cycle.durationMonths,
+      catalog,
+      cycle,
+      prorate: true,
+    });
+    const resolution = resolveAuthoritativePrice({
+      purpose: "addon",
+      addonType: req.body.addonId,
+      addonTerm: cycle.term,
+      addonTermDurationMonths: cycle.durationMonths,
+      addonItems,
+      dynamicGstRate: settings?.gstRate,
+      dynamicAddons: catalog,
+    });
+    return res.status(200).json({
+      success: true,
+      quote: {
+        ...addonItems[0],
+        baseAmount: resolution.baseAmount,
+        gstRate: resolution.gstPercent,
+        gstAmount: resolution.gstAmount,
+        totalAmount: resolution.amount,
+        currency: resolution.currency,
+      },
+    });
+  } catch (error) {
+    return res.status(400).json({ success: false, message: error.message || "Could not calculate add-on price." });
+  }
+};
+
 export const getPublicPricingConfigHandler = async (req, res) => {
   try {
     const { SystemSettings } = getMasterModels();
@@ -1360,6 +1640,18 @@ export const getPublicPricingConfigHandler = async (req, res) => {
         : 1199;
 
     const effectiveAddons = getEffectiveAddonCatalog(settings).filter((a) => a.isActive !== false);
+    const effectivePlans = getEffectivePlanCatalog(settings).filter((p) => p.isActive !== false);
+    const plansById = Object.fromEntries(
+      effectivePlans.map((p) => [
+        p.id,
+        {
+          ...p,
+          amount: p.price,
+          basePrice: p.price,
+          currency: "INR",
+        },
+      ])
+    );
 
     return res.status(200).json({
       success: true,
@@ -1369,7 +1661,8 @@ export const getPublicPricingConfigHandler = async (req, res) => {
         extraRepMonthlyPriceYearly,
         extraRepMonthlyPriceQuarterly,
         baseRepsIncluded: 5,
-        plans: CASHFREE_PRICING_CATALOG.subscription,
+        plans: plansById,
+        planCatalog: effectivePlans,
         addons: effectiveAddons,
       },
     });
@@ -1400,6 +1693,7 @@ export const getAdminPricingSettingsHandler = async (req, res) => {
         ? settings.extraRepMonthlyPriceQuarterly
         : 1199;
     const addons = getEffectiveAddonCatalog(settings);
+    const plans = getEffectivePlanCatalog(settings);
 
     return res.status(200).json({
       success: true,
@@ -1408,6 +1702,7 @@ export const getAdminPricingSettingsHandler = async (req, res) => {
         extraRepMonthlyPriceYearly,
         extraRepMonthlyPriceQuarterly,
         addons,
+        plans,
         updatedBy: settings?.updatedBy || "System",
         updatedAt: settings?.updatedAt || null,
       },
@@ -1470,6 +1765,7 @@ export const updatePricingSettingsHandler = async (req, res) => {
         extraRepMonthlyPriceYearly: settings.extraRepMonthlyPriceYearly,
         extraRepMonthlyPriceQuarterly: settings.extraRepMonthlyPriceQuarterly,
         addons: getEffectiveAddonCatalog(settings),
+        plans: getEffectivePlanCatalog(settings),
         updatedBy: settings.updatedBy,
         updatedAt: settings.updatedAt,
       },
@@ -1484,14 +1780,17 @@ export const updatePricingSettingsHandler = async (req, res) => {
  * Helper to ensure SystemSettings has an initialized mutable addonCatalog array
  */
 const loadOrInitAddonSettings = async (SystemSettings, user) => {
+  if (!SystemSettings || typeof SystemSettings.findOne !== "function") {
+    throw new Error("SystemSettings model unavailable in the master database.");
+  }
   let settings = await SystemSettings.findOne();
   if (!settings) {
     settings = new SystemSettings({});
   }
-  if (!settings.addonCatalogConfigured && (!settings.addonCatalog || settings.addonCatalog.length === 0)) {
-    settings.addonCatalog = DEFAULT_ADDON_CATALOG.map((a) => ({ ...a }));
-    settings.addonCatalogConfigured = true;
+  if (!Array.isArray(settings.addonCatalog)) {
+    settings.addonCatalog = [];
   }
+  settings.addonCatalogConfigured = true;
   settings.updatedBy = user?.name || user?.email || "Admin";
   return settings;
 };
@@ -1502,9 +1801,10 @@ const loadOrInitAddonSettings = async (SystemSettings, user) => {
  */
 export const createAdminAddonHandler = async (req, res) => {
   try {
-    const { id, title, price, period = "monthly", description = "", icon = "Sparkles", features = [], isActive = true } = req.body;
-    if (!title || price === undefined || isNaN(Number(price)) || Number(price) < 0) {
-      return res.status(400).json({ success: false, message: "Valid title and non-negative price are required." });
+    const { id, title, price, description = "", icon = "Sparkles", features = [], isActive = true } = req.body;
+    const oneTimePrice = Number(price);
+    if (!title || !Number.isFinite(oneTimePrice) || oneTimePrice < 0) {
+      return res.status(400).json({ success: false, message: "Title and a valid monthly price are required." });
     }
 
     const { SystemSettings } = getMasterModels();
@@ -1537,8 +1837,7 @@ export const createAdminAddonHandler = async (req, res) => {
     settings.addonCatalog.push({
       id: normalizedId,
       title: String(title).trim(),
-      price: Number(price),
-      period: String(period || "monthly").trim(),
+      price: oneTimePrice,
       description: String(description || "").trim(),
       icon: String(icon || "Sparkles").trim(),
       features: parsedFeatures,
@@ -1565,7 +1864,7 @@ export const createAdminAddonHandler = async (req, res) => {
 export const updateAdminAddonHandler = async (req, res) => {
   try {
     const { addonId } = req.params;
-    const { title, price, period, description, icon, features, isActive } = req.body;
+    const { title, price, description, icon, features, isActive } = req.body;
 
     const { SystemSettings } = getMasterModels();
     const settings = await loadOrInitAddonSettings(SystemSettings, req.user);
@@ -1576,10 +1875,10 @@ export const updateAdminAddonHandler = async (req, res) => {
     }
 
     if (title !== undefined) target.title = String(title).trim();
-    if (price !== undefined && !isNaN(Number(price)) && Number(price) >= 0) {
+    if (price !== undefined) {
+      if (!Number.isFinite(Number(price)) || Number(price) < 0) return res.status(400).json({ success: false, message: "Enter a valid monthly add-on price." });
       target.price = Number(price);
     }
-    if (period !== undefined) target.period = String(period).trim();
     if (description !== undefined) target.description = String(description).trim();
     if (icon !== undefined) target.icon = String(icon).trim();
     if (isActive !== undefined) target.isActive = Boolean(isActive);
@@ -1633,6 +1932,166 @@ export const deleteAdminAddonHandler = async (req, res) => {
     });
   } catch (error) {
     console.error("[DeleteAdminAddon] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const loadOrInitPlanSettings = async (SystemSettings, user) => {
+  if (!SystemSettings || typeof SystemSettings.findOne !== "function") {
+    throw new Error("SystemSettings model unavailable in the master database.");
+  }
+  let settings = await SystemSettings.findOne();
+  if (!settings) {
+    settings = new SystemSettings({});
+  }
+  if (!Array.isArray(settings.planCatalog)) {
+    settings.planCatalog = [];
+  }
+  settings.planCatalogConfigured = true;
+  settings.updatedBy = user?.name || user?.email || "Admin";
+  return settings;
+};
+
+const parseFeaturesList = (features) =>
+  Array.isArray(features)
+    ? features.map((f) => String(f).trim()).filter(Boolean)
+    : String(features || "")
+        .split(/[\n,]+/)
+        .map((f) => f.trim())
+        .filter(Boolean);
+
+/**
+ * POST /api/payment/cashfree/admin/plans
+ * Create a subscription plan in SystemSettings
+ */
+export const createAdminPlanHandler = async (req, res) => {
+  try {
+    const {
+      id,
+      title,
+      price,
+      period = "",
+      durationMonths,
+      description = "",
+      popular = false,
+      saveBadge = "",
+      features = [],
+      isActive = true,
+    } = req.body;
+    const numericPrice = Number(price);
+    if (!title || !Number.isFinite(numericPrice) || numericPrice < 0) {
+      return res.status(400).json({ success: false, message: "Title and valid price are required." });
+    }
+    const normalizedId = String(
+      id || title.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")
+    ).trim();
+    if (!normalizedId) {
+      return res.status(400).json({ success: false, message: "Valid plan ID is required." });
+    }
+
+    const { SystemSettings } = getMasterModels();
+    const settings = await loadOrInitPlanSettings(SystemSettings, req.user);
+    if (settings.planCatalog.some((p) => p.id === normalizedId)) {
+      return res.status(409).json({ success: false, message: `Plan '${normalizedId}' already exists.` });
+    }
+
+    const months = Number.isFinite(Number(durationMonths)) && Number(durationMonths) > 0
+      ? Number(durationMonths)
+      : normalizedId === "yearly" ? 12 : 3;
+
+    settings.planCatalog.push({
+      id: normalizedId,
+      title: String(title).trim(),
+      price: numericPrice,
+      period: String(period || "").trim(),
+      durationMonths: months,
+      description: String(description || "").trim(),
+      popular: Boolean(popular),
+      saveBadge: String(saveBadge || "").trim(),
+      features: parseFeaturesList(features),
+      isActive: Boolean(isActive),
+    });
+    await settings.save();
+
+    return res.status(201).json({
+      success: true,
+      message: "Plan created successfully.",
+      plans: getEffectivePlanCatalog(settings),
+    });
+  } catch (error) {
+    console.error("[CreateAdminPlan] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * PUT /api/payment/cashfree/admin/plans/:planId
+ * Update an existing subscription plan in SystemSettings
+ */
+export const updateAdminPlanHandler = async (req, res) => {
+  try {
+    const { planId } = req.params;
+    const { title, price, period, durationMonths, description, popular, saveBadge, features, isActive } = req.body;
+
+    const { SystemSettings } = getMasterModels();
+    const settings = await loadOrInitPlanSettings(SystemSettings, req.user);
+    const target = settings.planCatalog.find((p) => p.id === planId);
+    if (!target) {
+      return res.status(404).json({ success: false, message: `Plan '${planId}' not found.` });
+    }
+
+    if (title !== undefined) target.title = String(title).trim();
+    if (price !== undefined && Number.isFinite(Number(price)) && Number(price) >= 0) {
+      target.price = Number(price);
+    }
+    if (period !== undefined) target.period = String(period).trim();
+    if (durationMonths !== undefined && Number.isFinite(Number(durationMonths)) && Number(durationMonths) > 0) {
+      target.durationMonths = Number(durationMonths);
+    }
+    if (description !== undefined) target.description = String(description).trim();
+    if (popular !== undefined) target.popular = Boolean(popular);
+    if (saveBadge !== undefined) target.saveBadge = String(saveBadge).trim();
+    if (isActive !== undefined) target.isActive = Boolean(isActive);
+    if (features !== undefined) target.features = parseFeaturesList(features);
+
+    settings.markModified("planCatalog");
+    await settings.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Plan updated successfully.",
+      plans: getEffectivePlanCatalog(settings),
+    });
+  } catch (error) {
+    console.error("[UpdateAdminPlan] Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * DELETE /api/payment/cashfree/admin/plans/:planId
+ */
+export const deleteAdminPlanHandler = async (req, res) => {
+  try {
+    const { planId } = req.params;
+    const { SystemSettings } = getMasterModels();
+    const settings = await loadOrInitPlanSettings(SystemSettings, req.user);
+    const prevLen = settings.planCatalog.length;
+    settings.planCatalog = settings.planCatalog.filter((p) => p.id !== planId);
+    if (settings.planCatalog.length === prevLen) {
+      return res.status(404).json({ success: false, message: `Plan '${planId}' not found.` });
+    }
+    settings.planCatalogConfigured = true;
+    settings.markModified("planCatalog");
+    await settings.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Plan deleted successfully.",
+      plans: getEffectivePlanCatalog(settings),
+    });
+  } catch (error) {
+    console.error("[DeleteAdminPlan] Error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
