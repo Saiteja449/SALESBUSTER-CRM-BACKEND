@@ -68,3 +68,63 @@ test("enforceTrialLimits blocks leads beyond 50 during active trial", async () =
   assert.equal(res.statusCode, 403);
   assert.equal(res.body.code, "TRIAL_LIMIT_REACHED");
 });
+
+test("enforceTrialLimits('seats') allows 2 salespeople plus owner/manager and blocks 3rd salesperson", async () => {
+  const middleware = enforceTrialLimits("seats");
+  const tenantUsers = [
+    { _id: "u_owner", role: "sales manager", status: "active" },
+  ];
+  const countMatchingUsers = async (query = {}) =>
+    tenantUsers.filter((u) => {
+      if (query.role && u.role !== query.role) return false;
+      if (query.status?.$ne && u.status === query.status.$ne) return false;
+      return true;
+    }).length;
+
+  const makeReq = () => ({
+    organization: {
+      isTrial: true,
+      seats: TRIAL_LIMITS.maxSeats,
+      trialEndsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    },
+    tenantModels: {
+      User: {
+        countDocuments: countMatchingUsers,
+      },
+    },
+  });
+
+  // 1st salesperson (owner + 0 salespeople -> allowed)
+  {
+    const res = createMockRes();
+    let nextCalled = false;
+    await middleware(makeReq(), res, () => {
+      nextCalled = true;
+    });
+    assert.equal(nextCalled, true);
+    tenantUsers.push({ _id: "u_rep1", role: "sales person", status: "active" });
+  }
+
+  // 2nd salesperson (owner + 1 salesperson -> allowed)
+  {
+    const res = createMockRes();
+    let nextCalled = false;
+    await middleware(makeReq(), res, () => {
+      nextCalled = true;
+    });
+    assert.equal(nextCalled, true);
+    tenantUsers.push({ _id: "u_rep2", role: "sales person", status: "active" });
+  }
+
+  // 3rd salesperson (owner + 2 salespeople -> blocked)
+  {
+    const res = createMockRes();
+    let nextCalled = false;
+    await middleware(makeReq(), res, () => {
+      nextCalled = true;
+    });
+    assert.equal(nextCalled, false);
+    assert.equal(res.statusCode, 403);
+    assert.equal(res.body.code, "TRIAL_LIMIT_REACHED");
+  }
+});

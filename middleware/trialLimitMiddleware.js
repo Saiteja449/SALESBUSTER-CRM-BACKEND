@@ -40,12 +40,15 @@ export const enforceTrialLimits = (resource = "general") => {
       }
 
       if (resource === "seats" && req.tenantModels?.User) {
-        const userCount = await req.tenantModels.User.countDocuments({ status: { $ne: "deleted" } });
-        if (userCount >= TRIAL_LIMITS.maxSeats) {
+        const salesPersonCount = await req.tenantModels.User.countDocuments({
+          role: "sales person",
+          status: { $ne: "deleted" },
+        });
+        if (salesPersonCount >= TRIAL_LIMITS.maxSeats) {
           return res.status(403).json({
             success: false,
             code: "TRIAL_LIMIT_REACHED",
-            message: `Free trial includes ${TRIAL_LIMITS.maxSeats} seats total. Upgrade your plan to add more team members.`,
+            message: `Free trial includes ${TRIAL_LIMITS.maxSeats} salesperson seats. Upgrade your plan to add more team members.`,
           });
         }
       }
