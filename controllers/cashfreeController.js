@@ -226,6 +226,13 @@ const getAddonTermPrice = (addon, term, durationMonths = null) => {
 
 const getAddonTerm = (planId) => normalizeAddonTerm(planId);
 
+const MS_PER_DAY = 86400000;
+
+const toUtcCalendarDayMs = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+};
+
 export const calculateAddonQuote = ({ addon, term, durationMonths, startsAt = new Date(), expiresAt, planStart, prorate = false }) => {
   const termPrice = getAddonTermPrice(addon, term, durationMonths);
   let baseAmount = termPrice;
@@ -239,12 +246,14 @@ export const calculateAddonQuote = ({ addon, term, durationMonths, startsAt = ne
   if (Number.isNaN(planStartDate.getTime()) || planStartDate >= endDate) {
     throw new Error("Your subscription dates are incomplete. Contact support to purchase an add-on.");
   }
-  const totalTermDays = Math.max(1, Math.ceil((endDate.getTime() - planStartDate.getTime()) / 86400000));
-  const daysCovered = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000));
+  const endDayMs = toUtcCalendarDayMs(endDate);
+  const startDayMs = toUtcCalendarDayMs(startDate);
+  const planStartDayMs = toUtcCalendarDayMs(planStartDate);
+
+  const totalTermDays = Math.max(1, Math.round((endDayMs - planStartDayMs) / MS_PER_DAY));
+  const daysCovered = Math.min(totalTermDays, Math.max(1, Math.round((endDayMs - startDayMs) / MS_PER_DAY)));
   if (prorate) {
-    const totalTermMs = endDate.getTime() - planStartDate.getTime();
-    const remainingMs = Math.min(totalTermMs, endDate.getTime() - startDate.getTime());
-    baseAmount = Math.round((termPrice * remainingMs / totalTermMs) * 100) / 100;
+    baseAmount = Math.round(((termPrice * daysCovered) / totalTermDays) * 100) / 100;
   }
   const normalizedTerm = normalizeAddonTerm(term);
   return { term: normalizedTerm, termPrice, baseAmount, daysCovered, totalTermDays, startsAt: startDate, expiresAt: endDate };
