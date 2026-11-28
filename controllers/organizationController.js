@@ -231,11 +231,13 @@ export const provisionOrganization = async (req, res) => {
         whatsappCampaigns: Boolean(addons?.whatsappCampaigns),
         biAnalyst: Boolean(addons?.biAnalyst),
         targetIntelligence: Boolean(addons?.targetIntelligence),
+        marketingRoi: Boolean(addons?.marketingRoi),
       },
       addonEntitlements: [
         ["whatsappCampaigns", "whatsapp_campaigns"],
         ["biAnalyst", "bi_analyst"],
         ["targetIntelligence", "target_intelligence"],
+        ["marketingRoi", "marketing_roi"],
       ].filter(([key]) => Boolean(addons?.[key])).map(([, addonId]) => ({ addonId, startsAt: startDate, expiresAt: endDate, source: "admin" })),
       aiSettings: getDefaultAISettings(name.trim()),
       createdBy: req.user?._id || null,
@@ -717,7 +719,7 @@ export const updateOrganizationWhatsAppLimit = async (req, res) => {
 // @access  Protected (Super Admin)
 export const updateOrganizationAddons = async (req, res) => {
   try {
-    const { whatsappCampaigns, biAnalyst, targetIntelligence } = req.body;
+    const { whatsappCampaigns, biAnalyst, targetIntelligence, marketingRoi } = req.body;
 
     const { Organization } = getMasterModels();
     const org = await Organization.findById(req.params.id);
@@ -730,7 +732,7 @@ export const updateOrganizationAddons = async (req, res) => {
     }
 
     if (!org.addons) {
-      org.addons = { whatsappCampaigns: false, biAnalyst: false, targetIntelligence: false };
+      org.addons = { whatsappCampaigns: false, biAnalyst: false, targetIntelligence: false, marketingRoi: false };
     }
 
     if (whatsappCampaigns !== undefined) {
@@ -744,6 +746,10 @@ export const updateOrganizationAddons = async (req, res) => {
     if (targetIntelligence !== undefined) {
       org.addons.targetIntelligence = Boolean(targetIntelligence);
       syncAdminAddonEntitlement(org, "target_intelligence", Boolean(targetIntelligence));
+    }
+    if (marketingRoi !== undefined) {
+      org.addons.marketingRoi = Boolean(marketingRoi);
+      syncAdminAddonEntitlement(org, "marketing_roi", Boolean(marketingRoi));
     }
 
     org.markModified("addons");
@@ -2170,7 +2176,7 @@ export const upgradeGuestOrganization = async (req, res) => {
         biAnalyst: Boolean(addons.biAnalyst ?? org.addons?.biAnalyst),
         targetIntelligence: Boolean(addons.targetIntelligence ?? org.addons?.targetIntelligence),
       };
-      for (const [key, addonId] of [["whatsappCampaigns", "whatsapp_campaigns"], ["biAnalyst", "bi_analyst"], ["targetIntelligence", "target_intelligence"]]) {
+      for (const [key, addonId] of [["whatsappCampaigns", "whatsapp_campaigns"], ["biAnalyst", "bi_analyst"], ["targetIntelligence", "target_intelligence"], ["marketingRoi", "marketing_roi"]]) {
         if (addons[key] !== undefined) syncAdminAddonEntitlement(org, addonId, Boolean(addons[key]));
       }
     }

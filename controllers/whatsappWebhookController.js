@@ -5,6 +5,7 @@ import { sendTextMessage } from "../services/whatsappCloudService.js";
 import { generateAIResponse } from "../ai/aiService.js";
 import { getIO } from "../socket/socket.js";
 import { handleInstagramWebhook } from "./instagramController.js";
+import { isOrganizationSubscriptionActive } from "../services/addonEntitlementService.js";
 
 /**
  * Validates Meta X-Hub-Signature-256 HMAC-SHA256 signature using raw request buffer.
@@ -485,6 +486,14 @@ export const processChangeItem = async (
         changeLevelEventId,
         "Organization not found"
       );
+      return;
+    }
+
+    if (!isOrganizationSubscriptionActive(org)) {
+      console.warn(
+        `[WhatsAppWebhook] Skipping event for inactive/expired organization ${org._id} (field: ${field})`
+      );
+      await markEventProcessed(WAWebhookEvent, changeLevelEventId);
       return;
     }
 

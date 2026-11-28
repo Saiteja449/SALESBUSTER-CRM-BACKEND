@@ -49,6 +49,7 @@ export const requireAddon = (addonKey) => async (req, res, next) => {
         whatsappCampaigns: "WhatsApp Campaigns",
         biAnalyst: "BI Analyst",
         targetIntelligence: "AI Target Intelligence",
+        marketingRoi: "Marketing ROI",
       };
       const label = addonLabels[addonKey] || addonKey;
       return res.status(403).json({

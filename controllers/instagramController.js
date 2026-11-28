@@ -2,6 +2,7 @@ import crypto from "crypto";
 import mongoose from "mongoose";
 import { encryptApiKey, decryptApiKey } from "../utils/encryption.js";
 import { getMasterModels, getTenantModels } from "../services/tenantManager.js";
+import { isOrganizationSubscriptionActive } from "../services/addonEntitlementService.js";
 import {
   sendInstagramMessage,
   handleIncomingInstagramComment,
@@ -57,7 +58,8 @@ export const handleInstagramWebhook = async (req, res) => {
       if (!pageOrIgId) continue;
 
       // Fast O(1) indexed lookup from Master DB cache first
-      const { Organization, InstagramAccount: MasterInstagramAccount } = getMasterModels();
+      const { Organization, InstagramAccount: MasterInstagramAccount } =
+        req.masterModels || getMasterModels();
       let matchedOrg = null;
       let tenantModels = null;
       let matchedAccount = null;
@@ -72,17 +74,19 @@ export const handleInstagramWebhook = async (req, res) => {
           const org = await Organization.findById(cachedMasterAcc.organizationId).lean();
           if (org && org.status !== "suspended" && org.tenantDbName) {
             matchedOrg = org;
-            tenantModels = getTenantModels(org.tenantDbName);
-            matchedAccount = await tenantModels.InstagramAccount.findOne({
-              organizationId: org._id,
-              status: "connected",
-            });
+            if (isOrganizationSubscriptionActive(org)) {
+              tenantModels = getTenantModels(org.tenantDbName);
+              matchedAccount = await tenantModels.InstagramAccount.findOne({
+                organizationId: org._id,
+                status: "connected",
+              });
+            }
           }
         }
       }
 
       // Fallback: Scan active organizations if not yet indexed in master cache
-      if (!matchedOrg || !tenantModels) {
+      if (!matchedOrg) {
         const orgs = await Organization.find({ status: { $ne: "suspended" } }).lean();
         for (const org of orgs) {
           if (!org.tenantDbName) continue;
@@ -101,8 +105,20 @@ export const handleInstagramWebhook = async (req, res) => {
         }
       }
 
-      if (!matchedOrg || !tenantModels) {
+      if (!matchedOrg) {
         console.warn(`[InstagramWebhook] No organization found for ID: ${pageOrIgId}`);
+        continue;
+      }
+
+      if (!isOrganizationSubscriptionActive(matchedOrg)) {
+        console.warn(
+          `[InstagramWebhook] Skipping event for inactive/expired organization ${matchedOrg._id} (ID: ${pageOrIgId})`
+        );
+        continue;
+      }
+
+      if (!tenantModels) {
+        console.warn(`[InstagramWebhook] Tenant models unavailable for org: ${matchedOrg._id}`);
         continue;
       }
 

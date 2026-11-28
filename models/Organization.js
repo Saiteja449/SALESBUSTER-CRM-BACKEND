@@ -330,6 +330,11 @@ const organizationSchema = new mongoose.Schema(
         default: false,
         index: true,
       },
+      marketingRoi: {
+        type: Boolean,
+        default: false,
+        index: true,
+      },
     },
     addonEntitlements: [
       {

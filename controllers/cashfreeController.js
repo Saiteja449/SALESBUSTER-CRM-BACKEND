@@ -50,6 +50,12 @@ export const CASHFREE_PRICING_CATALOG = {
       currency: "INR",
       title: "Instagram Auto DM & Lead Gen Add-on",
     },
+    marketing_roi: {
+      quarterlyAmount: 2997,
+      yearlyAmount: 11988,
+      currency: "INR",
+      title: "Marketing ROI Analytics Add-on",
+    },
   },
   subscription: {
     starter: {
@@ -254,6 +260,7 @@ export const isOrganizationAddonActive = (org, addonId, now = new Date()) => {
     bi_analyst: "biAnalyst",
     target_intelligence: "targetIntelligence",
     instagram_automation: "instagramAutomation",
+    marketing_roi: "marketingRoi",
   }[addonId] || addonId;
   return Boolean(org?.addons?.[legacyKey] ||
     (addonId === "whatsapp_campaigns" && org?.hasWhatsAppCampaignsAddon) ||
@@ -266,6 +273,7 @@ const setOrganizationAddon = (org, addonId, enabled) => {
     bi_analyst: "biAnalyst",
     target_intelligence: "targetIntelligence",
     instagram_automation: "instagramAutomation",
+    marketing_roi: "marketingRoi",
   }[addonId] || addonId;
   org.addons = org.addons || {};
   org.addons[key] = enabled;

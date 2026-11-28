@@ -9,12 +9,14 @@ import {
   exportRoiCsv,
 } from "../controllers/marketingRoiController.js";
 import { protect, requireCrmAccount } from "../middleware/authMiddleware.js";
+import { requireAddon } from "../middleware/addonMiddleware.js";
 
 const router = express.Router();
 
-// Apply auth to all ROI endpoints
+// Apply auth and marketingRoi add-on authorization to all ROI endpoints
 router.use(protect);
 router.use(requireCrmAccount);
+router.use(requireAddon("marketingRoi"));
 
 // Dashboard KPI metrics, timelines & platform breakdowns
 router.get("/dashboard", getRoiDashboardData);
