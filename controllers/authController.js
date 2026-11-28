@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import { getMasterModels, getTenantModels, generateTenantDbName } from "../services/tenantManager.js";
+import { getEffectiveOrganizationSeats } from "../services/addonEntitlementService.js";
 import { sendLoginAlertEmail, sendPasswordResetEmail } from "../helpers/emailHelper.js";
 import {
   createUserSession,
@@ -118,9 +119,9 @@ export const login = async (req, res) => {
               : [],
           },
           accountType: org.accountType || "crm",
-          seats: org.seats,
+          seats: getEffectiveOrganizationSeats(org),
           usedSeats,
-          remainingSeats: Math.max(0, org.seats - usedSeats),
+          remainingSeats: Math.max(0, getEffectiveOrganizationSeats(org) - usedSeats),
           amountPaid: org.amountPaid,
           subscriptionPlan: org.subscriptionPlan,
           plan: org.plan,

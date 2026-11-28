@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateAddonQuote, resolveAuthoritativePrice } from '../controllers/cashfreeController.js';
-import { isAddonActive } from '../services/addonEntitlementService.js';
+import {
+  calculateAddonQuote,
+  calculateExtraSeatQuote,
+  applyPaidSeatEntitlement,
+  resolveAuthoritativePrice,
+} from '../controllers/cashfreeController.js';
+import {
+  isAddonActive,
+  getEffectiveOrganizationSeats,
+} from '../services/addonEntitlementService.js';
 
 test('mid-cycle add-on uses remaining days and adds GST once', () => {
   const addon = { id: 'whatsapp_campaigns', price: 1000, isActive: true };
@@ -75,4 +83,77 @@ test('dated access expires while legacy grants stay active', () => {
   assert.equal(isAddonActive(org, 'biAnalyst', now), false);
   org.addonEntitlements = [{ addonId: 'bi_analyst', startsAt: '2026-04-01', expiresAt: '2026-07-01' }];
   assert.equal(isAddonActive(org, 'biAnalyst', now), false);
+});
+
+test('extra seat quote prorates quarterly and yearly rates across remaining subscription days and preserves GST', () => {
+  const quarterlyQuote = calculateExtraSeatQuote({
+    quantity: 2,
+    monthlyRate: 1199,
+    term: 'quarterly',
+    durationMonths: 3,
+    planStart: new Date('2026-01-01T00:00:00Z'),
+    startsAt: new Date('2026-02-15T00:00:00Z'),
+    expiresAt: new Date('2026-04-01T00:00:00Z'),
+    prorate: true,
+  });
+  assert.equal(quarterlyQuote.totalTermDays, 90);
+  assert.equal(quarterlyQuote.daysCovered, 45);
+  assert.equal(quarterlyQuote.baseAmount, 3597);
+  assert.equal(quarterlyQuote.expiresAt.toISOString(), '2026-04-01T00:00:00.000Z');
+
+  const quarterlyPrice = resolveAuthoritativePrice({
+    purpose: 'extra_reps',
+    planId: 'quarterly',
+    additionalReps: 2,
+    dynamicGstRate: 18,
+    seatQuote: quarterlyQuote,
+  });
+  assert.equal(quarterlyPrice.baseAmount, 3597);
+  assert.equal(quarterlyPrice.gstAmount, 647.46);
+  assert.equal(quarterlyPrice.amount, 4244.46);
+
+  const yearlyQuote = calculateExtraSeatQuote({
+    quantity: 1,
+    monthlyRate: 899,
+    term: 'yearly',
+    durationMonths: 12,
+    planStart: new Date('2026-01-01T00:00:00Z'),
+    startsAt: new Date('2026-07-02T00:00:00Z'),
+    expiresAt: new Date('2027-01-01T00:00:00Z'),
+    prorate: true,
+  });
+  assert.equal(yearlyQuote.totalTermDays, 365);
+  assert.equal(yearlyQuote.daysCovered, 183);
+  assert.equal(yearlyQuote.baseAmount, 5408.78);
+});
+
+test('extra seat fulfillment records dated entitlement and expired entitlements stop adding capacity while preserving base seats', () => {
+  const org = {
+    seats: 5,
+    subscriptionEndDate: new Date('2026-04-01T00:00:00Z'),
+    seatEntitlements: [],
+  };
+
+  const order = {
+    orderId: 'sb_ord_test_1',
+    purpose: 'extra_reps',
+    additionalReps: 3,
+    seatEntitlement: {
+      quantity: 3,
+      startsAt: new Date('2026-02-15T00:00:00Z'),
+      expiresAt: new Date('2026-04-01T00:00:00Z'),
+    },
+  };
+
+  applyPaidSeatEntitlement(org, order);
+  // Idempotent on duplicate fulfillment
+  applyPaidSeatEntitlement(org, order);
+
+  assert.equal(org.seats, 5);
+  assert.equal(org.seatEntitlements.length, 1);
+  assert.equal(org.seatEntitlements[0].quantity, 3);
+  assert.equal(getEffectiveOrganizationSeats(org, new Date('2026-03-01T00:00:00Z')), 8);
+
+  // After expiry, only base plan seats remain usable
+  assert.equal(getEffectiveOrganizationSeats(org, new Date('2026-04-02T00:00:00Z')), 5);
 });

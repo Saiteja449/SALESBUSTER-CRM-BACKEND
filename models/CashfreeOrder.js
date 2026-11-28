@@ -90,6 +90,15 @@ export const cashfreeOrderSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    seatEntitlement: {
+      quantity: { type: Number, min: 0 },
+      term: { type: String, enum: ["quarterly", "yearly", ""] },
+      baseAmount: { type: Number, min: 0 },
+      daysCovered: { type: Number, min: 0 },
+      totalTermDays: { type: Number, min: 0 },
+      startsAt: { type: Date },
+      expiresAt: { type: Date },
+    },
     totalSeats: {
       type: Number,
       default: 5,

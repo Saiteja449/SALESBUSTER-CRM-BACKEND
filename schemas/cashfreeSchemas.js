@@ -30,6 +30,12 @@ export const addonQuoteSchema = z.object({
   body: z.object({ addonId: z.string().trim().min(1) }),
 });
 
+export const seatQuoteSchema = z.object({
+  body: z.object({
+    additionalReps: z.union([z.number(), z.string()]).optional().default(1),
+  }),
+});
+
 export const queryOrdersSchema = z.object({
   query: z
     .object({
@@ -46,4 +52,5 @@ export default {
   createCashfreeOrderSchema,
   queryOrdersSchema,
   addonQuoteSchema,
+  seatQuoteSchema,
 };

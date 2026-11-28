@@ -37,4 +37,31 @@ export const isOrganizationSubscriptionActive = (org, now = new Date()) => {
   return !Number.isNaN(expiryMs) && expiryMs > nowMs;
 };
 
+/**
+ * Returns total usable sales-rep seats: base plan seats plus any active
+ * (non-expired) extra-seat entitlements.
+ */
+export const getEffectiveOrganizationSeats = (org, now = new Date()) => {
+  if (!org) return 1;
+  const baseSeats = Math.max(1, Number(org.seats) || 1);
+  const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  const entitlements = Array.isArray(org.seatEntitlements)
+    ? org.seatEntitlements
+    : [];
+
+  const activeExtraSeats = entitlements.reduce((sum, item) => {
+    const qty = Number(item?.quantity) || 0;
+    if (qty <= 0 || !item?.expiresAt) return sum;
+    const startsMs = item.startsAt ? new Date(item.startsAt).getTime() : 0;
+    const expiresMs = new Date(item.expiresAt).getTime();
+    if (Number.isNaN(expiresMs) || expiresMs <= nowMs) return sum;
+    if (item.startsAt && (Number.isNaN(startsMs) || startsMs > nowMs)) {
+      return sum;
+    }
+    return sum + qty;
+  }, 0);
+
+  return baseSeats + activeExtraSeats;
+};
+
 export default isAddonActive;

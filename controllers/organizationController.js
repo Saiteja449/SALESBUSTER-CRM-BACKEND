@@ -9,6 +9,7 @@ import {
   generateSecurePassword,
 } from "../services/tenantManager.js";
 import { getDefaultAISettings } from "../models/Organization.js";
+import { getEffectiveOrganizationSeats } from "../services/addonEntitlementService.js";
 import {
   ingestDocumentForOrg,
   deleteDocumentForOrg,
@@ -368,13 +369,15 @@ export const getOrganizations = async (req, res) => {
           org.subscriptionEndDate &&
           new Date() > new Date(org.subscriptionEndDate);
 
+        const effectiveSeats = getEffectiveOrganizationSeats(org);
         return {
           ...org.toJSON(),
           accountType: org.accountType || "crm",
           whatsappLineLimit: org.whatsappLineLimit || 1,
           whatsappConnectionMode: (org.whatsappLineLimit || 1) === 2 ? "double" : "single",
+          seats: effectiveSeats,
           usedSeats,
-          remainingSeats: Math.max(0, org.seats - usedSeats),
+          remainingSeats: Math.max(0, effectiveSeats - usedSeats),
           isExpired: !!isExpired,
         };
       }),
@@ -422,14 +425,16 @@ export const getOrganizationById = async (req, res) => {
     const isExpired =
       org.subscriptionEndDate && new Date() > new Date(org.subscriptionEndDate);
 
+    const effectiveSeats = getEffectiveOrganizationSeats(org);
     res.status(200).json({
       success: true,
       data: {
         ...org.toJSON(),
         whatsappLineLimit: org.whatsappLineLimit || 1,
         whatsappConnectionMode: (org.whatsappLineLimit || 1) === 2 ? "double" : "single",
+        seats: effectiveSeats,
         usedSeats,
-        remainingSeats: Math.max(0, org.seats - usedSeats),
+        remainingSeats: Math.max(0, effectiveSeats - usedSeats),
         isExpired: !!isExpired,
       },
     });
@@ -920,6 +925,7 @@ export const getMyOrganization = async (req, res) => {
     orgJson.aiSettings = effectiveAiSettings;
     orgJson.isAiConfigured = isAiConfigured;
 
+    const effectiveSeats = getEffectiveOrganizationSeats(org);
     res.status(200).json({
       success: true,
       data: {
@@ -928,11 +934,12 @@ export const getMyOrganization = async (req, res) => {
         addons: org.addons || { whatsappCampaigns: false, biAnalyst: false, targetIntelligence: false },
         whatsappLineLimit: org.whatsappLineLimit || 1,
         whatsappConnectionMode: (org.whatsappLineLimit || 1) === 2 ? "double" : "single",
+        seats: effectiveSeats,
         usedSeats,
         salesPersonCount: usedSeats,
         hasSalesPerson,
         isAiConfigured,
-        remainingSeats: Math.max(0, org.seats - usedSeats),
+        remainingSeats: Math.max(0, effectiveSeats - usedSeats),
         totalLeads,
         totalFollowups,
         isExpired: !!isExpired,

@@ -3,6 +3,7 @@ import User from "../models/User.js";
 import Lead from "../models/Lead.js";
 import Notification from "../models/Notification.js";
 import { getMasterModels, generateSecurePassword } from "../services/tenantManager.js";
+import { getEffectiveOrganizationSeats } from "../services/addonEntitlementService.js";
 import { sendSalesPersonWelcomeEmail } from "../helpers/emailHelper.js";
 import {
   validateAndNormalizePhone,
@@ -32,7 +33,7 @@ export const getUsers = async (req, res) => {
     let seatMeta = null;
     if (req.organization) {
       const usedSeats = users.length;
-      const totalSeats = req.organization.seats || 1;
+      const totalSeats = getEffectiveOrganizationSeats(req.organization);
       seatMeta = {
         totalSeats,
         usedSeats,
@@ -49,7 +50,7 @@ export const getUsers = async (req, res) => {
         ? {
             id: req.organization._id,
             name: req.organization.name,
-            seats: req.organization.seats,
+            seats: getEffectiveOrganizationSeats(req.organization),
             subscriptionPlan: req.organization.subscriptionPlan,
             subscriptionStartDate: req.organization.subscriptionStartDate,
             subscriptionEndDate: req.organization.subscriptionEndDate,
@@ -133,7 +134,7 @@ export const addSalesPerson = async (req, res) => {
       const currentRepsCount = await UserModel.countDocuments({
         role: "sales person",
       });
-      const maxSeats = req.organization.seats;
+      const maxSeats = getEffectiveOrganizationSeats(req.organization);
 
       if (currentRepsCount >= maxSeats) {
         return res.status(403).json({

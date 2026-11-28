@@ -8,6 +8,7 @@ import {
   generateSecurePassword,
 } from "../services/tenantManager.js";
 import { getDefaultAISettings } from "../models/Organization.js";
+import { getEffectiveOrganizationSeats } from "../services/addonEntitlementService.js";
 import { sendPaymentReceiptEmail } from "../helpers/emailHelper.js";
 import { generateInvoicePdfBuffer } from "../helpers/invoicePdfHelper.js";
 import {
@@ -259,6 +260,79 @@ export const calculateAddonQuote = ({ addon, term, durationMonths, startsAt = ne
   return { term: normalizedTerm, termPrice, baseAmount, daysCovered, totalTermDays, startsAt: startDate, expiresAt: endDate };
 };
 
+export const calculateExtraSeatQuote = ({
+  quantity = 1,
+  monthlyRate,
+  term,
+  durationMonths,
+  startsAt = new Date(),
+  expiresAt,
+  planStart,
+  prorate = true,
+}) => {
+  const reps = Math.max(1, parseInt(quantity, 10) || 1);
+  const rate = Number(monthlyRate);
+  if (!Number.isFinite(rate) || rate < 0) {
+    throw new Error("Extra seat pricing is not configured with a valid monthly rate.");
+  }
+  const perSeatQuote = calculateAddonQuote({
+    addon: { price: rate },
+    term,
+    durationMonths,
+    startsAt,
+    expiresAt,
+    planStart,
+    prorate,
+  });
+  const totalQuote = calculateAddonQuote({
+    addon: { price: rate * reps },
+    term,
+    durationMonths,
+    startsAt,
+    expiresAt,
+    planStart,
+    prorate,
+  });
+  return {
+    quantity: reps,
+    term: totalQuote.term,
+    monthlyRate: rate,
+    unitTermPrice: perSeatQuote.termPrice,
+    unitBaseAmount: perSeatQuote.baseAmount,
+    termPrice: totalQuote.termPrice,
+    baseAmount: totalQuote.baseAmount,
+    daysCovered: totalQuote.daysCovered,
+    totalTermDays: totalQuote.totalTermDays,
+    startsAt: totalQuote.startsAt,
+    expiresAt: totalQuote.expiresAt,
+  };
+};
+
+export const applyPaidSeatEntitlement = (org, order) => {
+  const repsAdded = Math.max(
+    1,
+    Number(order?.seatEntitlement?.quantity || order?.additionalReps || 1)
+  );
+  const expiresAt =
+    order?.seatEntitlement?.expiresAt || org?.subscriptionEndDate || null;
+  if (!expiresAt) {
+    org.seats = (Number(org.seats) || 1) + repsAdded;
+    return;
+  }
+  org.seatEntitlements = org.seatEntitlements || [];
+  const alreadyApplied = org.seatEntitlements.some(
+    (entitlement) => entitlement.orderId && entitlement.orderId === order.orderId
+  );
+  if (alreadyApplied) return;
+  org.seatEntitlements.push({
+    quantity: repsAdded,
+    startsAt: order?.seatEntitlement?.startsAt || new Date(),
+    expiresAt,
+    orderId: order.orderId || "",
+    source: "payment",
+  });
+};
+
 export const isOrganizationAddonActive = (org, addonId, now = new Date()) => {
   const entitlement = Array.isArray(org?.addonEntitlements)
     ? [...org.addonEntitlements].reverse().find((item) => item.addonId === addonId)
@@ -319,11 +393,16 @@ const termPeriod = (term, durationMonths = null) => {
   return Number.isFinite(months) && months > 0 ? months : term === "yearly" ? 12 : 3;
 };
 
-const getActivePlanCycle = (org, now = new Date(), durationMonths = null) => {
+const getActivePlanCycle = (
+  org,
+  now = new Date(),
+  durationMonths = null,
+  errorMessage = "An active quarterly or yearly subscription is required to purchase add-ons."
+) => {
   const term = getAddonTerm(org?.subscriptionPlan || org?.plan);
   const end = org?.subscriptionEndDate ? new Date(org.subscriptionEndDate) : null;
   if (!term || !org || org.isTrial || org.status !== "active" || !end || end <= now) {
-    throw new Error("An active quarterly or yearly subscription is required to purchase add-ons.");
+    throw new Error(errorMessage);
   }
   const planMonths = termPeriod(term, durationMonths);
   const start = new Date(end);
@@ -386,6 +465,7 @@ export const resolveAuthoritativePrice = ({
   addonTerm = "",
   addonTermDurationMonths = null,
   addonItems = [],
+  seatQuote = null,
 }) => {
   const normalizedPurpose = purpose === "plan" ? "subscription" : purpose;
   let basePlanAmount = 0;
@@ -401,8 +481,12 @@ export const resolveAuthoritativePrice = ({
 
   if (normalizedPurpose === "extra_reps") {
     const repsToAdd = Math.max(1, parsedAdditionalReps);
-    const extraRepTerm = normalizeAddonTerm(planId);
-    if (extraRepTerm === "yearly") {
+    const extraRepTerm = seatQuote?.term || normalizeAddonTerm(planId);
+    if (seatQuote && typeof seatQuote.baseAmount === "number") {
+      additionalRepsCost = Math.round(seatQuote.baseAmount * 100) / 100;
+      const termLabel = extraRepTerm === "yearly" ? "Annual" : "Quarterly";
+      title = `${repsToAdd} Additional Sales Rep${repsToAdd > 1 ? "s" : ""} (${termLabel})`;
+    } else if (extraRepTerm === "yearly") {
       additionalRepsCost = repsToAdd * extraRepPriceYearly * 12;
       title = `${repsToAdd} Additional Sales Rep${repsToAdd > 1 ? "s" : ""} (Annual)`;
     } else if (extraRepTerm === "quarterly") {
@@ -705,8 +789,7 @@ export const fulfillOrderBenefits = async (order) => {
     } else {
       // Existing Organization: fulfill addon, extra_reps, or subscription
       if (order.purpose === "extra_reps") {
-        const repsAdded = Math.max(1, Number(order.additionalReps) || 1);
-        org.seats = (Number(org.seats) || 1) + repsAdded;
+        applyPaidSeatEntitlement(org, order);
         org.amountPaid = (org.amountPaid || 0) + (order.orderAmount || 0);
       } else if (order.purpose === "subscription") {
         if (order.planId) {
@@ -1020,6 +1103,7 @@ export const createOrderHandler = async (req, res) => {
     let resolvedAddonTerm = normalizeAddonTerm(addonTerm);
     let resolvedAddonTermDurationMonths = null;
     let addonItems = [];
+    let seatQuote = null;
     let cycle = null;
     if (purpose === "addon") {
       if (!billingOrganization) throw new Error("An active subscription is required to purchase add-ons.");
@@ -1058,22 +1142,30 @@ export const createOrderHandler = async (req, res) => {
       });
     } else if (purpose === "extra_reps") {
       const orgTerm = getAddonTerm(billingOrganization?.subscriptionPlan || billingOrganization?.plan);
-      if (
-        !billingOrganization ||
-        billingOrganization.isTrial ||
-        billingOrganization.status !== "active" ||
-        !orgTerm ||
-        !billingOrganization.subscriptionEndDate ||
-        new Date(billingOrganization.subscriptionEndDate) <= new Date()
-      ) {
-        throw new Error("Extra seats are available after starting a paid quarterly or yearly plan.");
-      }
+      cycle = getActivePlanCycle(
+        billingOrganization,
+        new Date(),
+        configuredDuration(orgTerm),
+        "Extra seats are available after starting a paid quarterly or yearly plan."
+      );
+      const seatMonthlyRate =
+        cycle.term === "yearly" ? extraRepPriceYearly : extraRepPriceQuarterly;
+      seatQuote = calculateExtraSeatQuote({
+        quantity: additionalReps,
+        monthlyRate: seatMonthlyRate,
+        term: cycle.term,
+        durationMonths: cycle.durationMonths,
+        startsAt: new Date(),
+        expiresAt: cycle.expiresAt,
+        planStart: cycle.startsAt,
+        prorate: true,
+      });
     }
 
     // 1. Authoritative Server-Side Price Resolution (prevents parameter tampering)
     const priceResolution = resolveAuthoritativePrice({
       purpose,
-      planId,
+      planId: purpose === "extra_reps" && cycle ? cycle.term : planId,
       addonType,
       clientAmount,
       additionalReps,
@@ -1085,6 +1177,7 @@ export const createOrderHandler = async (req, res) => {
       addonTerm: resolvedAddonTerm,
       addonTermDurationMonths: resolvedAddonTermDurationMonths,
       addonItems,
+      seatQuote,
     });
     const finalAmount = priceResolution.amount;
     const finalCurrency = priceResolution.currency;
@@ -1183,7 +1276,21 @@ export const createOrderHandler = async (req, res) => {
       gstAmount: priceResolution.gstAmount,
       gstRate: priceResolution.gstRate,
       additionalReps: priceResolution.additionalReps,
-      totalSeats: 5 + priceResolution.additionalReps,
+      seatEntitlement: seatQuote
+        ? {
+            quantity: seatQuote.quantity,
+            term: seatQuote.term,
+            baseAmount: seatQuote.baseAmount,
+            daysCovered: seatQuote.daysCovered,
+            totalTermDays: seatQuote.totalTermDays,
+            startsAt: seatQuote.startsAt,
+            expiresAt: seatQuote.expiresAt,
+          }
+        : undefined,
+      totalSeats:
+        purpose === "extra_reps"
+          ? getEffectiveOrganizationSeats(billingOrganization) + priceResolution.additionalReps
+          : 5 + priceResolution.additionalReps,
       orderCurrency: cfResult.orderCurrency,
       orderStatus: cfResult.orderStatus || "ACTIVE",
       purpose,
@@ -1702,6 +1809,85 @@ export const getAddonQuoteHandler = async (req, res) => {
     });
   } catch (error) {
     return res.status(400).json({ success: false, message: error.message || "Could not calculate add-on price." });
+  }
+};
+
+export const getSeatQuoteHandler = async (req, res) => {
+  try {
+    const org = req.organization;
+    if (!org || org.isTrial) {
+      return res.status(400).json({
+        success: false,
+        message: "Extra seats are available after starting a paid quarterly or yearly plan.",
+      });
+    }
+    const { SystemSettings } = getMasterModels();
+    const settings = SystemSettings ? await SystemSettings.findOne().lean().catch(() => null) : null;
+    const planCatalog = getEffectivePlanCatalog(settings).filter((plan) => plan.isActive !== false);
+    const orgTerm = getAddonTerm(org.subscriptionPlan || org.plan);
+    const configuredPlan = planCatalog.find((plan) => plan.id === orgTerm);
+    const configuredMonths = Number(configuredPlan?.durationMonths);
+    const durationMonths =
+      Number.isFinite(configuredMonths) && configuredMonths > 0
+        ? configuredMonths
+        : orgTerm === "yearly"
+        ? 12
+        : 3;
+
+    const cycle = getActivePlanCycle(
+      org,
+      new Date(),
+      durationMonths,
+      "Extra seats are available after starting a paid quarterly or yearly plan."
+    );
+    const extraRepPriceYearly =
+      typeof settings?.extraRepMonthlyPriceYearly === "number"
+        ? settings.extraRepMonthlyPriceYearly
+        : 899;
+    const extraRepPriceQuarterly =
+      typeof settings?.extraRepMonthlyPriceQuarterly === "number"
+        ? settings.extraRepMonthlyPriceQuarterly
+        : 1199;
+    const monthlyRate =
+      cycle.term === "yearly" ? extraRepPriceYearly : extraRepPriceQuarterly;
+
+    const seatQuote = calculateExtraSeatQuote({
+      quantity: req.body?.additionalReps ?? 1,
+      monthlyRate,
+      term: cycle.term,
+      durationMonths: cycle.durationMonths,
+      startsAt: new Date(),
+      expiresAt: cycle.expiresAt,
+      planStart: cycle.startsAt,
+      prorate: true,
+    });
+
+    const resolution = resolveAuthoritativePrice({
+      purpose: "extra_reps",
+      planId: cycle.term,
+      additionalReps: seatQuote.quantity,
+      dynamicGstRate: settings?.gstRate,
+      extraRepPriceYearly,
+      extraRepPriceQuarterly,
+      seatQuote,
+    });
+
+    return res.status(200).json({
+      success: true,
+      quote: {
+        ...seatQuote,
+        baseAmount: resolution.baseAmount,
+        gstRate: resolution.gstPercent,
+        gstAmount: resolution.gstAmount,
+        totalAmount: resolution.amount,
+        currency: resolution.currency,
+      },
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Could not calculate extra seat price.",
+    });
   }
 };
 

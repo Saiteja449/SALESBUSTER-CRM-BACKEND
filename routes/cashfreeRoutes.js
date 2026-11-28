@@ -5,6 +5,7 @@ import {
   createCashfreeOrderSchema,
   queryOrdersSchema,
   addonQuoteSchema,
+  seatQuoteSchema,
 } from "../schemas/cashfreeSchemas.js";
 import {
   createOrderHandler,
@@ -23,6 +24,7 @@ import {
   updateAdminPlanHandler,
   deleteAdminPlanHandler,
   getAddonQuoteHandler,
+  getSeatQuoteHandler,
   downloadInvoiceHandler,
   resendInvoiceHandler,
 } from "../controllers/cashfreeController.js";
@@ -42,6 +44,7 @@ router.post(
 );
 
 router.post("/addon-quote", protect, requireCrmAccount, validateRequest(addonQuoteSchema), getAddonQuoteHandler);
+router.post("/seat-quote", protect, requireCrmAccount, validateRequest(seatQuoteSchema), getSeatQuoteHandler);
 
 // 1b. Public Website Order Creation (No auth required for marketing web checkout)
 router.post(
